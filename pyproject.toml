@@ -1,0 +1,17 @@
+# 描述项目配置
+[project]
+
+# 本项目的名字
+name = "llm-service"
+
+# 本项目 llm-service 自己的版本号
+version = "0.1.0"
+
+# 本项目自己的一句话说明
+description = "LLM application backend, built from scratch"
+
+# 本项目运行所要求的 Python 解释器版本范围
+requires-python = ">=3.12"
+
+# 本项目依赖的第三方包清单
+dependencies = []
