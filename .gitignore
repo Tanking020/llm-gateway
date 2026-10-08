@@ -1,0 +1,52 @@
+# .gitignore:告诉 Git 这些文件/文件夹不要纳入版本管理
+# 语法：一行一个规则
+# 匹配规则支持通配符：* 匹配任意字符，/ 结尾表示这是个目录
+
+# python 运行时产生的缓存
+# Python 每次 import 模块都会生成字节码缓存，属于"可再生的垃圾"，不该进仓库。
+# **/ 表示"任意深度的目录"，因此不论多深的层级都能匹配。
+__pycache__/
+
+# 匹配所有 .pyc / .pyo / .pyd 结尾的文件（[cod] 表示可选字符 c、o、d 之一）
+*.py[cod]
+
+# 打包工具生成的元数据目录
+*.egg-info/
+.eggs/
+
+# 构建目录产物（dist 是发布包，build 是中间产物）
+build/
+dist/
+
+# 虚拟环境——【最重要的一条】
+# 体积大且换台机器就必须重建，所以绝不能提交
+# 别人拿到后用 uv sync 就能按 uv.lock 重建出一模一样的 .venv
+.venv/
+
+venv/
+
+# 配置与密钥【安全红线】
+# .env 里放的是真实密钥（如 API Key）、数据库密码 —— 一旦提交进 Git，
+# 即使后来删掉，历史记录里依然能翻出来（Git 是"只增不减"的）。
+# 所以规矩是：.env 永远不进仓库；只在仓库里放 .env.example 模板
+.env
+
+# 测试 / 静态检查工具的缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 编辑器 / 操作系统的杂项文件
+# VS Code 的个人设置
+.vscode/
+
+# JetBrains 系列（Pycharm）的项目配置
+.idea/
+
+# macOS 的资源叉文件
+.DS_Store
+
+# Windows 自动生成的缩略图缓存
+Thumbs.db
