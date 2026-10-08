@@ -1,7 +1,7 @@
 # 描述项目配置
 [project]
 
-# 本项目的名字
+# 本项目的名字（也是打包出来的包名，必须和 src\app 的包结构对得上）
 name = "llm-service"
 
 # 本项目 llm-service 自己的版本号
@@ -14,6 +14,24 @@ description = "LLM application backend, built from scratch"
 requires-python = ">=3.12"
 
 # 本项目依赖的第三方包清单
+# < 用于防止 uv.lock --upgrade 后可能出现的破坏性升级（通过上界明确排除 3.x）
 dependencies = [
-    "pydantic>=2.13.5",
+    "pydantic>=2.13.5,<3",
 ]
+
+# ============ 下面是构建系统配置 ============
+# 这一段回答的问题是：如果别人要「把本项目打包成一个可安装的包」，用哪个工具来干？
+
+# 构建这个包时，需要先装上哪些工具（这里只要 hatchling 一个）。
+# 注意 require 用的是「复数」+ 方括号 —— 因为它是【列表】，可以有多个
+[build-system]
+requires = ["hatchling"]
+
+# 具体用哪个工具来执行构建。约定格式是 "包名.入口"（这里是 hatchling 的 build 模块）
+build-backend = "hatchling.build"
+
+# ============ 下面是告诉构建器：包在哪 ============
+# 但我们的代码在 src/app（不是根目录下的 llm-service），所以要显式告诉它。
+# 这里写的是【目录路径】：src 下面有个叫 app 的包
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]
