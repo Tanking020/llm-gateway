@@ -58,11 +58,3 @@ class Settings(BaseSettings):
 # 模块级单例：整个应用共用这一个 settings 对象。
 # 其它文件通过 `from app.config import settings` 拿到它
 settings = Settings()
-
-def no_annotations(x):
-    return x
-
-wrong_type: int = "我是字符串"
-
-def claims_int_returns_str() -> int:
-    return "字符串"
