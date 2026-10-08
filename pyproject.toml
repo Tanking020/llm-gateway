@@ -17,6 +17,7 @@ requires-python = ">=3.12"
 # < 用于防止 uv.lock --upgrade 后可能出现的破坏性升级（通过上界明确排除 3.x）
 dependencies = [
     "pydantic>=2.13.5,<3",
+    "pydantic-settings>=2.15.0",
 ]
 
 # ============ 下面是构建系统配置 ============
