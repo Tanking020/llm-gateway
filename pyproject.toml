@@ -40,6 +40,7 @@ packages = ["src/app"]
 [dependency-groups]
 dev = [
     "mypy>=2.4.0",
+    "ruff>=0.16.10",
 ]
 
 # ============ 类型检查工具 mypy 的配置 ============
@@ -70,3 +71,22 @@ files = ["src"]
 # 检查"永远执行不到"的代码（如 return 之后的语句）
 # ⚠️ 实测：这一项【不在 strict 预设里】，必须显式开启
 warn_unreachable = true
+
+# ============ ruff 的配置 ============
+# ruff 一个工具干两件事：format（排版）+ check（找可疑写法）
+[tool.ruff]
+
+# 一行的最大长度。超过就换行
+# 100 是常见选择：比 79（PEP 8 旧建议）宽松，屏幕放得下，又不至于长到读不动
+line-length = 100
+
+[tool.ruff.lint]
+# select = 启用哪些规则集
+# ⚠️ ruff 默认只开一小部分（E4/E7/E9/F），这里显式点亮更多
+# 每个字母是一个"规则家族"：
+#   E  = pycodestyle 的 Error（缩进、空格等）
+#   F  = Pyflakes（未使用的变量/import、未定义的名称等真正的 bug）
+#   I  = isort（import 的排序与分组）
+#   UP = pyupgrade（把旧写法升级成新写法，如用 X | None 代替 Optional[X]）
+#   B  = flake8-bugbear（容易写出 bug 的写法，如可变默认参数）
+select = ["E", "F", "I", "UP", "B"]
