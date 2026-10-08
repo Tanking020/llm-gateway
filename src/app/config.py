@@ -5,6 +5,7 @@
 其他代码只 'from app.config import settings', 不直接读 os.environ
 这样本项目有哪些配置项一目了然而不是靠全局搜索
 """
+
 # Literal 是 Python 标准库 typing 里的类型，用来表达“只能是这几个值之一”
 from typing import Literal
 
@@ -13,11 +14,12 @@ from typing import Literal
 # SettingsConfigDict：专门描述"去哪里读、怎么读"的配置字典类型
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     # model_config 是本模型的行为配置（pydantic 约定用这个固定名字）
     model_config = SettingsConfigDict(
         # 去工作目录下的 .env 文件里读配置。文件不存在也不报错，会退回用默认值
-        env_file='.env',
+        env_file=".env",
         # 用 UTF-8 解码 .env —— Windows 上不写这句可能按 GBK 读，中文会乱码
         env_file_encoding="utf-8",
         # .env 里出现"本模型没定义的键"时【直接报错】，而不是默默忽略
@@ -54,6 +56,7 @@ class Settings(BaseSettings):
     # 默认 None 表示"允许不填"
     # ⚠️ 真实密钥只放 .env（不进 Git），这个字段只是用来读取它
     openai_api_key: str | None = None
+
 
 # 模块级单例：整个应用共用这一个 settings 对象。
 # 其它文件通过 `from app.config import settings` 拿到它
