@@ -36,3 +36,37 @@ build-backend = "hatchling.build"
 # 这里写的是【目录路径】：src 下面有个叫 app 的包
 [tool.hatch.build.targets.wheel]
 packages = ["src/app"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+]
+
+# ============ 类型检查工具 mypy 的配置 ============
+# mypy 做的事：不运行代码，只读源码，检查"类型是否自相矛盾"
+# 关键区别：pydantic 查【运行时的数据】，mypy 查【写代码时的代码】
+
+# TOML的表头[]决定下面的键归谁
+#（不加会让类型检查工具 mypy 的配置落到表头 [dependency-groups] 里面）
+[tool.mypy]
+
+# 告诉 mypy 按哪个 Python 版本的语法和标准库来理解代码
+# （不同版本的标准库类型签名可能不同，写错版本会误报）
+python_version = "3.12"
+
+# strict = true 是一组严格检查的总开关（一条顶十几条）
+# 最关键的两个后果：
+#   1. 函数必须写类型注解，否则报 no-untyped-def
+#   2. 类型不匹配立刻报错，不允许"含糊过去"
+# 为什么开：错误在写代码时暴露，代价最低
+strict = true
+
+# 每次跑 mypy 时默认检查哪些路径（这样敲 `uv run mypy` 不用带参数）
+# ⚠️ 现在【不能写 "tests"】—— tests 目录还没建，写了会报
+#    "Cannot read file: No such file or directory"（我实测踩到了）
+#    等阶段后补测试时再加进来
+files = ["src"]
+
+# 检查"永远执行不到"的代码（如 return 之后的语句）
+# ⚠️ 实测：这一项【不在 strict 预设里】，必须显式开启
+warn_unreachable = true
