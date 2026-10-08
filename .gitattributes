@@ -1,0 +1,9 @@
+# .gitattributes —— 按文件名模式给文件设置 Git 属性
+# 语法：<模式> <属性> [<属性>...]
+# 和 .gitignore 的区别：.gitignore 决定"谁不进仓库"，
+#                      .gitattributes 决定"进了仓库之后怎么被对待"
+
+# 对 uv.lock 这个文件：
+#   text   = 声明它是文本文件，让 Git 参与换行符统一
+#   eol=lf = 检出到工作区时，一律使用 LF 作为换行符
+uv.lock text eol=lf
