@@ -20,12 +20,9 @@ class Settings(BaseSettings):
         env_file='.env',
         # 用 UTF-8 解码 .env —— Windows 上不写这句可能按 GBK 读，中文会乱码
         env_file_encoding="utf-8",
-        # .env 里出现"本模型没定义的键"时忽略它，而不是报错
-        # extra="ignore",
-
-        # 修改：.env 里出现"本模型没定义的键"时【直接报错】，而不是默默忽略
+        # .env 里出现"本模型没定义的键"时【直接报错】，而不是默默忽略
         # 选 forbid 的原因：拼错键名（如 PORTT）会被立刻发现，
-        # 而不是"以为配上了、实际没配上" —— 静默失效是最难查的 bug
+        # 而不是"以为配上了、实际没配上" —— 静默失效是最难查的一类 bug
         extra="forbid",
     )
 
