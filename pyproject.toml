@@ -80,6 +80,11 @@ warn_unreachable = true
 # 100 是常见选择：比 79（PEP 8 旧建议）宽松，屏幕放得下，又不至于长到读不动
 line-length = 100
 
+# ⚠️ 把 markdown 排除在 ruff 之外
+# ruff format 会格式化 .md 里 ```python 代码块；而文档里的示例是【教学材料】
+# （刻意对齐的注释、故意报错的例子、不完整片段），被格式化后反而失去可读性
+extend-exclude = ["*.md"]
+
 [tool.ruff.lint]
 # select = 启用哪些规则集
 # ⚠️ ruff 默认只开一小部分（E4/E7/E9/F），这里显式点亮更多
