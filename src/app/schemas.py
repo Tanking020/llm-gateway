@@ -14,7 +14,6 @@ from typing import Literal
 #   对比用过的 BaseSettings —— 后者是它的子类，
 #   额外具备"从环境变量 / .env 读取"的能力；BaseModel 没有，
 #   它只负责【校验和转换数据】
-
 # Field：给【单个字段】加约束（范围、长度、默认值…）
 from pydantic import BaseModel, Field
 
@@ -45,7 +44,7 @@ class ChatRequest(BaseModel):
     # 采样温度(控制大模型生成下一个 token时有多随机):
     # ge=0.0 即 >= 0.0，le=2.0 即 <= 2.0，超出会被拦截
     # （这个范围是 OpenAI 兼容接口的约定）
-    temperature: float = Field(default=0.7,ge=0.0,le=2.0)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
 
     # 最多生成多少 token:
     # int | None = "整数或空"，默认 None = 不限制；
