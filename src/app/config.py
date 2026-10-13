@@ -26,6 +26,8 @@ class Settings(BaseSettings):
         # 选 forbid 的原因：拼错键名（如 PORTT）会被立刻发现，
         # 而不是"以为配上了、实际没配上" —— 静默失效是最难查的一类 bug
         extra="forbid",
+        # 校检失败时，不把读到的原始值打出来！否则可能导致密钥泄露
+        hide_input_in_errors=True,
     )
 
     # ===== 以下是本项目的全部可配置项 =====
@@ -52,10 +54,24 @@ class Settings(BaseSettings):
     # 环境变量里写 "8000"（字符串），pydantic 会自动转成 int 8000
     port: int = 8000
 
-    # 上游 LLM 的 API Key。`str | None` = "字符串 或 空"，
-    # 默认 None 表示"允许不填"
+    # ===== 上游 LLM 供应商（OpenAI 兼容协议）=====
+    # 字段名故意不用 openai_*：我们走的是"OpenAI 兼容"协议，具体供应商可替换
+    # （现在接 DeepSeek，将来换别家或本地推理，只改 .env，代码不动）
+
+    # 上游 LLM 的 API Key
     # ⚠️ 真实密钥只放 .env（不进 Git），这个字段只是用来读取它
-    openai_api_key: str | None = None
+    llm_api_key: str | None = None
+
+    # 上游基础地址
+    # 末尾不要带斜杠（相对路径 /models 会接到它后面）
+    llm_base_url: str = "https://api.deepseek.com"
+
+    # 默认模型名：客户端没在请求里指定 model 时用它兜底
+    llm_model: str = "deepseek-flash"
+
+    # 单次上游请求的超时时间（秒）
+    # httpx 默认只有 5 秒，LLM 生成动辄十几秒
+    request_timeout: float = 30.0
 
 
 # 模块级单例：整个应用共用这一个 settings 对象。
