@@ -57,7 +57,7 @@ def create_client() -> httpx.AsyncClient:
 
 
 async def fetch_model_ids(client: httpx.AsyncClient) -> list[str]:
-    """套上游可用模型。client 由调用方传入（依赖注入），测试时可换成假的"""
+    """查上游可用模型。client 由调用方传入（依赖注入），测试时可换成假的"""
     response = await client.get("/models")
     response.raise_for_status()
     payload: dict[str, list[dict[str, object]]] = response.json()
