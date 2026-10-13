@@ -38,8 +38,10 @@ class ChatRequest(BaseModel):
     # 传空列表会被拦截（"一条消息都没有"的请求是无意义的）
     messages: list[Message] = Field(min_length=1)
 
-    # 用哪个模型。给了默认值，所以客户端可以不传
-    model: str = "gpt-4o-mini"
+    # 用哪个模型。None = "客户端不指定"，由服务端用配置里的默认模型兜底
+    # 为什么不在契约里写死模型名：契约层只描述【形状】，不该直到【哪家供应商的哪个模型】
+    # 换供应商时这里不该跟着改（见 config.llm_model）
+    model: str | None = None
 
     # 采样温度(控制大模型生成下一个 token时有多随机):
     # ge=0.0 即 >= 0.0，le=2.0 即 <= 2.0，超出会被拦截
