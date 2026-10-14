@@ -63,11 +63,10 @@ python_version = "3.12"
 # 为什么开：错误在写代码时暴露，代价最低
 strict = true
 
-# 每次跑 mypy 时默认检查哪些路径（这样敲 `uv run mypy` 不用带参数）
-# ⚠️ 现在【不能写 "tests"】—— tests 目录还没建，写了会报
-#    "Cannot read file: No such file or directory"（我实测踩到了）
-#    等阶段后补测试时再加进来
-files = ["src"]
+# 每次跑 mypy 时默认检查哪些路径（这样敲 `uv run mypy` 不带参数也是全项目）
+# ⚠️ 2026-10-14 由 ["src"] 改为 ["."]：带路径与不带路径结果一致，避免"只查 4 个文件却显示全绿"
+#    （mypy 默认就排除 .venv / 第三方目录，实测 .venv 里 643 个 .py 不会进检查）
+files = ["."]
 
 # 检查"永远执行不到"的代码（如 return 之后的语句）
 # ⚠️ 实测：这一项【不在 strict 预设里】，必须显式开启
