@@ -98,7 +98,7 @@ uv run python -c "from app.config import settings; print(settings)"
 ```bash
 uv run ruff format .          # 1. 格式化
 uv run ruff check . --fix     # 2. lint（规则集 E/F/I/UP/B）
-uv run mypy                   # 3. 类型检查（strict + warn_unreachable）
+uv run mypy .                 # 3. 类型检查（strict + warn_unreachable，全项目含 playground/）
 uv run pytest -q              # 4. 测试（阶段 1 起）
 ```
 
