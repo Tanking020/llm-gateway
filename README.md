@@ -27,7 +27,7 @@
 | 环境与依赖 | **uv**（`pyproject.toml` 声明 + `uv.lock` 锁定） | uv 0.12.23 |
 | 数据契约与配置 | pydantic / pydantic-settings | 2.13.5 / 2.15.0 |
 | 静态检查 | mypy（strict）/ ruff | 2.4.0 / 0.16.10 |
-| Web 框架 | FastAPI + uvicorn | 阶段 1 引入 |
+| Web 框架 | FastAPI + uvicorn（ASGI） | 0.143.0 / 0.54.0 |
 | 数据库 | SQLAlchemy 2.0 async + SQLite → PostgreSQL | 阶段 1 引入 |
 | 测试 | pytest + pytest-asyncio | 阶段 1 引入 |
 | 交付 | Docker（多阶段构建 + 非 root 运行） | 阶段 1 引入 |
@@ -53,10 +53,21 @@ cp .env.example .env
 
 # 3. 验证环境（可选）
 uv run python -c "from app.config import settings; d = settings.model_dump(); d['llm_api_key'] = '已配置' if d['llm_api_key'] else '未配置'; print(d)"
+
+# 4. 启动 HTTP 服务（开发模式：改代码自动重启）
+uv run uvicorn app.api.app:app --reload
+# 然后打开 http://127.0.0.1:8000/docs —— 自动生成的交互式 API 文档
 ```
 
 > 所有命令都用 `uv run` 前缀。原因是 `uv run` 会自动指向项目自己的 `.venv`，
 > 并在依赖发生变化时**先自动同步**，避免"装了依赖却仍然导入失败"这类问题。
+
+**另一个入口**：阶段 0 的 CLI 仍可用，用于验证配置与上游 LLM 的连通性（不属于服务）：
+
+```bash
+uv run python -m app.main        # 离线演示：打印配置与占位响应
+uv run python -m app.main ping   # 真实调用上游 /models，列出可用模型
+```
 
 ---
 
@@ -72,7 +83,12 @@ uv run python -c "from app.config import settings; d = settings.model_dump(); d[
 │
 ├── src/app/                  # 应用代码
 │   ├── __init__.py
-│   └── config.py             # 全部可调参数集中在这里，类型安全且带校验
+│   ├── config.py             # 全部可调参数集中在这里，类型安全且带校验
+│   ├── schemas.py            # 对外数据契约：请求 / 响应的形状定义
+│   ├── main.py               # 命令行入口：离线演示 + `ping` 上游连通性检查
+│   └── api/
+│       ├── __init__.py
+│       └── app.py            # FastAPI 应用对象（uvicorn app.api.app:app）
 │
 ├── playground/               # 实验区：一次性验证代码，随时可删，不参与交付
 │
@@ -106,9 +122,12 @@ uv run pytest -q              # 4. 测试（阶段 1 起）
 
 | 检查 | 结果 |
 |---|---|
-| `ruff check src` | All checks passed! |
-| `ruff format --check src` | already formatted |
-| `mypy` | Success: no issues found |
+| `ruff check .` | All checks passed! |
+| `ruff format --check .` | 9 files already formatted |
+| `mypy .` | Success: no issues found in 9 source files |
+
+> 三条命令的**范围一律用 `.`**（全项目，含 `playground/`）。`mypy` 的默认范围由
+> `[tool.mypy] files = ["."]` 保证，所以带不带参数结果一致。
 
 mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` 等），并额外开启 `warn_unreachable`
 —— 后者**不在 `strict` 预设内**，需要显式打开，用于发现"永远执行不到"的死代码。
@@ -126,6 +145,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **`.venv` 与 `.env` 永不提交** | 二者都可由仓库内文件重建（`.venv` ← `uv.lock`）或属于本机私有（`.env` 含密钥）。尤其密钥：Git 历史**只增不减**，一旦提交只能吊销重发 | 新人需多跑一条 `cp .env.example .env` |
 | **异步优先（`async`/`await`）** | LLM 应用的时间几乎全花在"等"（等模型返回 1~30 秒、等数据库、等外部 API）。同步写法在等待时占住执行权，并发请求会退化成串行 | 需避免在异步路径里调用阻塞库；CPU 密集任务更适合进程池 |
 | **mypy strict + ruff 双工具** | 二者分工不同：**ruff 管"形状"**（格式、导入顺序、可疑写法），**mypy 管"含义"**（类型是否自相矛盾）。后者需要理解代码语义，是 ruff 做不到的 | 严格模式初期会报较多错，需要写全类型注解 |
+| **上层供应商中立**（`llm_api_key` / `llm_base_url` / `llm_model`） | 走"OpenAI 兼容协议"，但配置项**不以供应商命名** —— 换厂商只改 `.env` 三行，代码零改动（实测：把 `base_url` 指向另一家兼容服务，`/models` 检查命令原样可用） | 需要在代码与供应商 JSON 之间做一层转换；专有能力（如某家私有参数）不能直接用 |
 
 ---
 
@@ -149,6 +169,8 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - `.gitattributes` 放在子目录导致规则**静默失效**：用 `git check-attr` 验证，而非假设
 - TOML 表头写错导致的"键归属错误"：报错信息只说类型不对，根因却是少了表头
 - `extra="ignore"` 静默吞掉拼错的配置键：改为 `forbid` 后错误暴露在启动时
+- **密钥被自己的报错打印出来**：配置校验失败时 pydantic 默认回显原始值 —— 处理方式（全历史取证、吊销重发、`hide_input_in_errors`）与整改规则见规范 §10.1
+- **一个曾被记错的结论被自己推翻**：行宽规则原先记成"按字符数"，后用**判定性实验**证伪并纠正为"按显示宽度（汉字占 2 列）"—— 错误来源是实验时把中文经管道喂进工具导致编码损坏，见[工具与依赖速查](study_notes/工具与依赖速查.md) §5
 
 | 文档 | 内容 |
 |---|---|
