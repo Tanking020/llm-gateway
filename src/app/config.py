@@ -26,7 +26,7 @@ class Settings(BaseSettings):
         # 选 forbid 的原因：拼错键名（如 PORTT）会被立刻发现，
         # 而不是"以为配上了、实际没配上" —— 静默失效是最难查的一类 bug
         extra="forbid",
-        # 校检失败时，不把读到的原始值打出来！否则可能导致密钥泄露
+        # 校验失败时，不把读到的原始值打出来！否则可能导致密钥泄露
         hide_input_in_errors=True,
     )
 

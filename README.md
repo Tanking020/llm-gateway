@@ -52,7 +52,7 @@ uv sync
 cp .env.example .env
 
 # 3. 验证环境（可选）
-uv run python -c "from app.config import settings; print(settings)"
+uv run python -c "from app.config import settings; d = settings.model_dump(); d['llm_api_key'] = '已配置' if d['llm_api_key'] else '未配置'; print(d)"
 ```
 
 > 所有命令都用 `uv run` 前缀。原因是 `uv run` 会自动指向项目自己的 `.venv`，
