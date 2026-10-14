@@ -4,7 +4,7 @@
 职责边界（重要）：
     定义配置 -> config.py
     定义数据形状 -> schemas.py
-    决定执行流程 -> 本文件
+    决定执行流程 -> 本文件(主要用于演示 + ping 连通性检查)
 """
 
 import asyncio
