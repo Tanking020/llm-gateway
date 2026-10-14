@@ -13,9 +13,9 @@
 | 依赖 | 实测版本 |
 |------|---------|
 | Python | 3.12.15 |
-| fastapi | **0.142.2** |
-| starlette | **1.7.0** |
-| uvicorn | 0.54.0 |
+| fastapi | **0.143.0**（2026-10-14 本仓库实测；本笔记其余示例写于 0.142.2 时期） |
+| starlette | **1.8.0**（2026-10-14 本仓库实测；原为 1.7.0） |
+| uvicorn | 0.54.0（2026-10-14 实测一致） |
 | pydantic | 2.13.5 |
 | httpx | 0.28.1 |
 | sqlalchemy | **2.1.3**（+ `greenlet` 3.5.6） |
@@ -25,6 +25,26 @@
 > ⭐ **为什么强调这个**：网上大量 FastAPI 教程停留在 0.7x / pydantic v1 时代，
 > 而 **Starlette 已经从 0.x 跨到 1.x**，写法有变（本笔记标注了每一处"旧写法已废弃"）。
 > 下面每一段代码都在上述版本上**真实跑通**，并有断言支撑。
+
+**2026-10-14 本仓库 `uv add fastapi "uvicorn[standard]"` 的实际结果**（步骤 1.1）：
+
+```text
+Resolved 31 packages | Installed 11 packages
+
+直接依赖（我们声明的）：fastapi==0.143.0、uvicorn==0.54.0
+间接依赖（它们自己带来的）：
+  annotated-doc==0.0.5    click==8.5.0        httptools==0.9.0
+  opentelemetry-api==1.45.1  pyyaml==6.0.3    starlette==1.8.0
+  watchfiles==1.3.0       websockets==17.2
+```
+
+| 观察 | 说明 |
+|---|---|
+| `fastapi 0.142.2 → 0.143.0`、`starlette 1.7.0 → 1.8.0` | **文档写的是当时版本，装到的是新版本** —— 这正是"版本号必须实测"的原因 |
+| `click` / `pyyaml` / `watchfiles` | uvicorn 的 `[standard]` extras 带来的（`watchfiles` 支撑 `--reload`） |
+| `httptools` / `websockets` | 更快解析 / 支持 WebSocket 协议 |
+| `annotated-doc` / `opentelemetry-api` | fastapi 新版引入的间接依赖（标注文档 / 可观测性接口） |
+| `Resolved 31 packages` | 是**整张依赖图**的解析总数，不是新增 31 个 |
 
 ---
 
