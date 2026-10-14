@@ -1946,8 +1946,8 @@ class Settings(BaseSettings):
     env: str = "local"
     debug: bool = False
     database_url: str = "sqlite+aiosqlite:///./app.db"
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: str = ""
+    llm_base_url: str = "https://api.deepseek.com"
     max_context_messages: int = 20          # ⭐ LLM 应用特有：上下文窗口控制
     request_timeout: float = 60.0           # ⭐ LLM 请求要长超时
 ```
@@ -2401,7 +2401,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--worker
 | 点 | 说明 |
 |----|------|
 | ⚠️ **绝不要 `COPY .env`** | Key 会进镜像层（历史里也删不掉） |
-| 运行时注入配置 | `docker run -e APP_OPENAI_API_KEY=...` 或用 secrets |
+| 运行时注入配置 | `docker run -e LLM_API_KEY=...` 或用 secrets |
 | 基础镜像要固定版本 | `python:3.12-slim`，不用 `latest` |
 | `HEALTHCHECK` | 让编排系统知道服务是否活着 |
 
@@ -2451,7 +2451,7 @@ flowchart LR
 projects/01-fastapi-chat/
 ├── pyproject.toml
 ├── uv.lock
-├── .env.example                  # 配置模板（APP_OPENAI_API_KEY 等）
+├── .env.example                  # 配置模板（LLM_API_KEY 等）
 ├── Dockerfile                    # Step 13
 ├── src/app/
 │   ├── main.py                   # FastAPI 实例 + lifespan + 中间件注册
