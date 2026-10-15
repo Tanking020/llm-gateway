@@ -842,6 +842,72 @@ src\app\api\app.py:65: error: "ChatRequest" has no attribute "message"; maybe "m
 ⭐ **为什么要显式记"待办"而不是记"已知缺陷"**：缺陷清单会越积越长、没人管；**待办有归属** ——
 每条都写明"留给哪个 Step 修"，到那一步自然会被处理（这是"一次只解决一类问题"的具体做法）。
 
+### 3.6e `POST /v1/chat` 逐行解剖（2026-10-15，配 4 组实测）⭐
+
+> 提出问题："这 5 行到底是在干什么、怎么做的"。为了不靠背诵、靠事实回答，
+> 做了 4 组实测。**探针均为内存里临时搭的 app（`TestClient`），不写任何文件，
+> 不属于本项目；命令原样可复现**（见规范 §4.2b）。
+
+#### ① `@app.post("/v1/chat")` 是"登记动作"，不是"运行时行为"
+
+打印 `app.routes` 的实测结果：
+
+| 类型 | 路径 | 方法 | name |
+|---|---|---|---|
+| `Route` | `/openapi.json`、`/docs`、`/docs/oauth2-redirect`、`/redoc` | `{'HEAD','GET'}` | 框架白送 |
+| `APIRoute` | `/health` | `{'GET'}` | `health` |
+| `APIRoute` | `/v1/models` | `{'GET'}` | `list_models` |
+| `APIRoute` | `/v1/models/latest` | `{'GET'}` | `latest_model` |
+| `APIRoute` | `/v1/models/{model_name}` | `{'GET'}` | `get_model` |
+| `APIRoute` | `/v1/chat` | `{'POST'}` | `chat` |
+
+⭐ **两个新事实**：
+1. **框架白送的 4 条是 `Route`，自己写的是 `APIRoute`** —— 后者才是"带自动校验 + 自动文档"的那个类；
+2. `name` 列**就是函数名**。所以函数名不是随便起的：改函数名，`/docs` 上的接口标题跟着变。
+
+#### ② 返回类型注解 `-> ChatResponse` **等价于 `response_model`，并且会过滤字段**
+
+实测（探针）：让一个模型在 `ChatResponse` 之上多带一个 `secret` 字段，返回 `"TOP-SECRET"`：
+
+| 函数签名 | 实际返回的 JSON |
+|---|---|
+| `def a() -> ChatResponse:`（**有**注解） | `{'content':'hi','model':'m','usage_tokens':0}` |
+| `def b():`（**无**注解） | `{'content':'hi','model':'m','usage_tokens':0,'secret':'TOP-SECRET'}` |
+
+⭐ **`secret` 被剥掉了**。结论：**返回注解不是注释，是"返回值合同"** ——
+它既是 `/docs` 里 200 响应的 schema（实测 `200 → $ref ChatResponse`），
+也**真的会拦截未声明字段**。所以"随手不写返回类型"在 FastAPI 里是有风险的。
+
+#### ③ `or` 按「真值」判断，不是按「是否为 None」（实测 5 种输入）
+
+| 请求里的 `model` | `req.model` | 最终 model |
+|---|---|---|
+| 没写 | `None` | `deepseek-flash`（回落配置） |
+| `null` | `None` | `deepseek-flash` |
+| `""` | `""` | `deepseek-flash` ⚠️ **空字符串算"假"，也被兜掉** |
+| `"deepseek-v4-pro"` | `"deepseek-v4-pro"` | `"deepseek-v4-pro"` |
+| `"0"` | `"0"` | `"0"`（非空字符串算"真"） |
+
+⭐ **规则**：`""` / `0` / `[]` / `{}` / `None` 都算假。`or` 适合"兜底默认值"，
+但会连空字符串一起兜。若要求"只有明确没填才兜底"，须写
+`request.model if request.model is not None else settings.llm_model`。
+
+#### ④ 校验发生在你的函数体**之前**（实测）
+
+探针在函数体里放了一条"被调用就留痕"的语句，然后发 1 个合法 + 3 个非法请求：
+
+| 阶段 | 函数被执行次数 |
+|---|---|
+| 1 个合法请求后 | **1** |
+| 再发 3 个非法请求后 | **仍然是 1** |
+
+⭐ **3 个非法请求一次都没进函数体**，全被挡在门外返回 422（响应体只有 `['detail']` 一个键）。
+那 3 个请求分别触发 `too_short` / `literal_error` / `list_type` —— **同一个 422 后面是三种不同规则**。
+另：OpenAPI 里的 `422: HTTPValidationError` **不是手写的**，是 FastAPI 检测到"有请求体"后自动加的。
+
+⭐ **教学结论**：把校验写进契约（`min_length=1`）之后，函数体里那句 `messages[-1]`
+**不需要任何越界防御** —— 空列表根本到不了这一行。这是"契约时代替防御代码"的具体收益。
+
 ## 3.7 自检
 
 1. 说出 FastAPI 判定"参数从哪来"的规则。
