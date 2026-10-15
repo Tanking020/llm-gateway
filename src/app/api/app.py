@@ -10,7 +10,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, Query
 
-from app.config import settings
+from app.api.deps import SettingsDep
 from app.schemas import ChatRequest, ChatResponse
 
 # app 就是 uvicorn 要托管的那个对象
@@ -67,7 +67,10 @@ async def get_model(model_name: str) -> dict[str, str]:
 
 
 @app.post("/v1/chat")
-async def chat(request: ChatRequest) -> ChatResponse:
-    """request 是【请求体】—— 类型是 pydantic 模型，所以 FastAPI 从 JSON body 里面取"""
+async def chat(request: ChatRequest, config: SettingsDep) -> ChatResponse:
+    """
+    request 是【请求体】—— 类型是 pydantic 模型，所以 FastAPI 从 JSON body 里面取；
+    config 是【依赖】—— FastAPI 调 get_settings() 后注入
+    """
     last = request.messages[-1]
-    return ChatResponse(content=f"[echo] {last.content}", model=request.model or settings.llm_model)
+    return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
