@@ -9,6 +9,7 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
 # Annotated：用于给函数签名中参数的 "类型位" 扩容
 from typing import Annotated
 
+# Query: 用于在上面勾选"这个查询参数要被怎么对待"，FastAPI 读它去约束和写文档
 from fastapi import FastAPI, Query
 
 from app.api.deps import SettingsDep
