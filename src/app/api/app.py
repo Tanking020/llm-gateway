@@ -6,6 +6,7 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
     本文件是【常驻服务】的应用对象，两者生命周期与职责都不同
 """
 
+# Annotated：用于给函数签名中参数的 "类型位" 扩容
 from typing import Annotated
 
 from fastapi import FastAPI, Query
