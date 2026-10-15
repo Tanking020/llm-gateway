@@ -1364,6 +1364,59 @@ clear 之后 c2-> deepseek-flash
 ⭐ 它是**挂在 app 上的可变字典**，生命周期 = **app 的生命周期（整个进程）**，不是"一次请求"。
 忘了 clear → 后续测试全被污染 → 症状是**"单独跑过、一起跑挂"**。
 
+## 5.6c 三条补充实测（2026-10-15，收口时做的判定性实验）⭐
+
+### ① 给依赖参数加默认值 `= None` —— 无效且有害
+
+| 观察 | 结果 |
+|---|---|
+| 运行时 | 200，正常返回（**看起来没坏**） |
+| **判定性实验** | 把 `get_settings` 覆盖成"会抛异常的函数" → **异常真的抛出了** → 证明**依赖照常被调用，`None` 被完全忽略** |
+| mypy | `Incompatible default for parameter "config" (default has type "None", parameter has type "Settings") [assignment]` |
+
+⭐ **结论：依赖参数不要加默认值。** 加了不但无效，还会**误导读者**以为"可以不传"。
+
+> 判定性实验的价值：只看"返回 200"无法区分"默认值生效了"和"依赖照常执行"。
+> 把一个**可观测的副作用**（这里是抛异常）放进依赖里，才能判定它到底有没有被调用。
+
+### ② `dependency_overrides` 是【全局表】，做不到"按请求区分"
+
+| 实验 | 结果 |
+|---|---|
+| 覆盖成 `fake-A` 后连发两次 | 两次都是 `fake-A`（**无法区分**） |
+| 8 个**并发**请求（线程池） | distinct results = `["fake-A"]`（无竞态，但也无差异） |
+| **正确姿势**：让替身自己读请求 | 不带 header → `deepseek-flash`；带 `x-use-fake: 1` → `fake-model` ✅ |
+
+**正确姿势的代码形状**：
+
+```python
+def per_request_settings(request: Request) -> Settings:
+    if request.headers.get("x-use-fake") == "1":
+        return Settings(llm_model="fake-model")
+    return get_settings()
+
+app.dependency_overrides[get_settings] = per_request_settings
+```
+
+⭐ **`dependency_overrides` 的设计目标是"整场测试换成假的"**（上游源码注释原话：
+*This is for testing*），**不是**"按请求动态切配置"。要按请求变，就把判断逻辑放进**依赖本身**。
+
+### ③ 打补丁必须打在「用的地方」（`import` 的绑定语义）
+
+内存实验（模拟 `config` 模块 + `app` 模块做 `from config import settings`）：
+
+```text
+初始                 -> REAL
+改 config 模块里的    -> REAL                 <-- 没用！
+改 app 模块里的       -> PATCHED_AT_USE_SITE   <-- 这才生效
+```
+
+⭐ 根因：`from app.config import settings` 是**在 app.py 这个模块里新建了一个名字绑定**。
+`chat` 查的是**自己模块的全局名** → 要改的是 `app.api.app.settings`，**不是** `app.config.settings`。
+
+**这正是"字符串路径"脆弱的含义**：你得知道**每一个使用点的准确路径**；
+而 `depends_overrides` 的键是**函数对象**，与文件位置无关。
+
 ## 5.7 依赖可以嵌套（会形成一棵树）
 
 ```python
