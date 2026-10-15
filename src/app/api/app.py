@@ -8,6 +8,8 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
 
 from fastapi import FastAPI
 
+from app.schemas import ChatRequest, ChatResponse
+
 # app 就是 uvicorn 要托管的那个对象
 # 命令行里写 app.api.app:app 的读法：包 app -> 子包 api -> 模块 app -> 里面的变量 app
 app = FastAPI(
@@ -29,3 +31,36 @@ async def health() -> dict[str, str]:
     """健康检查：最轻的接口，用来确认【服务活着】"""
     # 部署后 Docker / 负载均衡 会定期打这个接口来判断实例是否可用
     return {"status": "ok"}
+
+
+# ===== 1.3 三段参数：路径 / 查询 / 请求体 =====
+
+# 演示用的模型清单（真实项目里会从 config 或上游 API 拿）
+KNOWN_MODELS = ["deepseek-flash", "deepseek-v4-pro"]
+
+
+@app.get("/v1/models")
+async def list_models(prefix: str | None = None, limit: int = 20) -> dict[str, object]:
+    """列出模型。prefix / limit 是【查询参数】—— 来自 ?prefix=...&limit=..."""
+    # 前缀过滤设计：prefix = 前缀，m.startswith(prefix) 查询 "m 是否以 prefix 开头"
+    matched = [m for m in KNOWN_MODELS if prefix is None or m.startswith(prefix)]
+    return {"total": len(matched), "items": matched[:limit]}
+
+
+@app.get("/v1/models/latest")
+async def latest_model() -> dict[str, str]:
+    """固定路径。⚠️ 必须写在下面 /v1/models/{model_name} 的【前面】"""
+    return {"model_name": KNOWN_MODELS[0]}
+
+
+@app.get("/v1/models/{model_name}")
+async def get_model(model_name: str) -> dict[str, str]:
+    """model_name 是【路径参数】—— 来自 URL 路径那一小段"""
+    return {"model_name": model_name}
+
+
+@app.post("/v1/chat")
+async def chat(request: ChatRequest) -> ChatResponse:
+    """request 是【请求体】—— 类型是 pydantic 模型，所以 FastAPI 从 JSON body 里面取"""
+    last = request.messages[-1]
+    return ChatResponse(content=f"[echo] {last.content}", model=request.model or "deepseek-flash")
