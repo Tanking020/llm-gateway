@@ -103,7 +103,7 @@ Resolved 31 packages | Installed 11 packages
 | 2 | 最小应用与自动文档 | ✅ 已整理 | ✅ 已完成（1.1：`/health` + `/docs` + `/openapi.json` 实测 200） |
 | 3 | 三段参数 | ✅ 已整理 | ✅ 已完成（1.3：4 条路由，15 组请求实测；提交 `19aa9cf` / `94fb0a2`） |
 | 4 | pydantic 契约 | ✅ 已整理 | 🟡 部分（**输入契约已接入**：`POST /v1/chat` 用 `ChatRequest` 自动校验；`response_model` / 输出过滤未做） |
-| 5 | `Depends` 依赖注入 | ✅ 已整理 | ⬜ 未开始（阶段 0 手工版已掌握） |
+| 5 | `Depends` 依赖注入 | ✅ 已整理 | 🟡 部分（1.4a/1.4b 完成：`deps.py` + 覆盖机制；1.4c `yield` 依赖待做） |
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ⬜ 未开始 |
 | 7 | 中间件与 CORS | ✅ 已整理 | ⬜ 未开始 |
 | 8 | 异步正确姿势 | ✅ 已整理 | 🟡 部分（阶段 0 的 `playground/` 实验已覆盖协程与并发基础） |
@@ -838,6 +838,7 @@ src\app\api\app.py:65: error: "ChatRequest" has no attribute "message"; maybe "m
 | 1 | `GET /v1/models/this-model-does-not-exist` → **200** `{"model_name":"this-model-does-not-exist"}` | 不存在的模型**返回 200**，接口"假装查到了"。应 **404** | **Step 6**（`HTTPException`） |
 | 2 | `POST /v1/chat {"messages":[{"role":"assistant",...}]}` → **200** 把"模型以前说的话"当答案回显 | **不检查最后一条是谁说的**（`system` / `assistant` 也会被回显） | **Step 4 / 6** |
 | 3 | `/v1/models/latest` 返回 `KNOWN_MODELS[0]`（硬编码） | 与 `settings.llm_model` **无关联**：改配置时两处会不一致 | **Step 4**（接真实上游 `/models`） |
+| 4 | `deps.py` 的 `get_llm_client()` 与 `main.py` 的 `create_client()` 的三行构造参数**刻意重复** | 1.4c 出现第 2 个消费者。**先不抽象**（不为"将来可能"提前建抽象），等 1.4d 确认它长期存在再抽共用模块 | **1.4d** |
 
 ⭐ **为什么要显式记"待办"而不是记"已知缺陷"**：缺陷清单会越积越长、没人管；**待办有归属** ——
 每条都写明"留给哪个 Step 修"，到那一步自然会被处理（这是"一次只解决一类问题"的具体做法）。
@@ -1241,11 +1242,47 @@ sequenceDiagram
 |--------|------|
 | `yield` 前是 **setup** | 创建连接/会话 |
 | `yield` 后是 **teardown** | 提交/回滚/关闭 |
-| **即使抛异常也会走 teardown** | 和 `async with` / `try-finally` 同理 |
+| ⚠️ **异常时只有 `finally` / `async with` 的清理会执行** | `yield` 之后的**普通语句会被跳过** —— 详见 §5.4b（2026-10-15 实测，本行原表述"即使抛异常也会走 teardown"**过于笼统，已订正**） |
 | ⚠️ 别在 `yield` 之后 `return` | 那里的返回值**不会被使用** |
 
 > ⭐ **这是阶段 0 `async with create_client()` 的"框架版"**。
 > 你自己写的时候要记得手动 `async with`；用 `Depends` 时，FastAPI 帮你记住生命周期。
+
+### 5.4b ⚠️ 关键实测：异常时 `yield` 之后的**普通语句会被跳过**（2026-10-15）⭐⭐
+
+**问题**：`yield` 之后的清理代码，在"路由抛异常"时到底执行吗？
+（原 §5.4 只写了"即使抛异常也会走 teardown"，**没有区分"用什么写法"**，容易让人以为随便写都行。）
+
+**两种写法的对照实测**：
+
+| 写法 | 正常返回 | 路由抛异常 |
+|---|---|---|
+| ✅ 用 `async with` 包住 `yield` | `client.is_closed=True` | **`client.is_closed=True`** |
+| ❌ `await client.aclose()` 写在 `yield` **之后** | `client.is_closed=True` | **`client.is_closed=False`** ⛔ |
+
+```python
+# ✅ 正确：清理由上下文管理器保证
+async def client_ok() -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient(...) as client:
+        yield client
+
+# ❌ 反面：清理是 yield 之后的普通语句
+async def client_bad() -> AsyncIterator[httpx.AsyncClient]:
+    client = httpx.AsyncClient(...)
+    yield client
+    await client.aclose()      # ← 路由抛异常时，这行【被跳过】
+```
+
+**根因**：路由抛异常时，异常会被**"抛进"生成器的 `yield` 那一行** →
+`yield` 之后的**普通语句全被跳过**，直接去找 `finally` / `async with.__aexit__` 的清理。
+
+⭐ **后果**：**连接永远不会被关闭**。本机看不出（除非你主动检查 `is_closed`），
+**上生产就是连接池耗尽、服务卡死**。
+
+⭐ **规则（记死）**：**`yield` 之后只写"清理"，而且清理必须包在 `async with` 或 `try/finally` 里 —— 绝不写裸的普通语句。**
+
+**另一条实测**（顺带验证）：无论路由抛的是 `HTTPException`（客户端错）还是裸 `RuntimeError`（500），
+`async with` 的清理**都执行**。区分异常类型的是"要不要继续向上抛"，不是"要不要清理"。
 
 ## 5.5 ⭐ 依赖缓存：同一次请求内只算一次
 
