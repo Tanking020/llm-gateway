@@ -908,6 +908,35 @@ src\app\api\app.py:65: error: "ChatRequest" has no attribute "message"; maybe "m
 ⭐ **教学结论**：把校验写进契约（`min_length=1`）之后，函数体里那句 `messages[-1]`
 **不需要任何越界防御** —— 空列表根本到不了这一行。这是"契约时代替防御代码"的具体收益。
 
+### 3.6f `Annotated` 与 `Query` 分别干嘛（2026-10-15 实测）⭐
+
+> **完整实测与对照表见 [工具与依赖速查.md](工具与依赖速查.md) §7「`Annotated` 与 `Query` 的分工」**
+> —— 这里只留"必须记住"的部分，避免同一事实抄两遍（规范 §12.1）。
+
+**一句话分工**：`Annotated` 是**信封**（`typing` 标准库，只会"装"，不解释任何元数据）；
+`Query` 是**信封里那张纸**（`fastapi`，是 FastAPI 认识的词汇，管约束 + 文档）。
+
+**四条必须记住的实测结论**：
+
+1. **`Query` 是 pydantic `FieldInfo` 的子类** → `ge=1` 经它转成 pydantic 元数据
+   （`Query(ge=1).metadata` = `[Ge(ge=1)]`；`Query(ge=1).ge` 根本不存在）→ 真正执行约束的是 **pydantic 引擎**。
+2. **为什么要 `Annotated`**：老写法 `limit: int = Query(20, ge=1)` 生成的 OpenAPI 与新的**完全一样**，
+   但它把"默认值"位置**征用**了 —— 于是 `inspect.signature` 拿到的默认值是 `Query(20)` 而不是 `20`，
+   **直接调用函数（单元测试就这么干）会 `TypeError`**。`Annotated` 把"元数据"和"默认值"两个位置**分开**。
+3. **`Query()` 不负责"决定它是查询参数"**：`async def plain(n: int)` 什么都不加，OpenAPI 里也是 `in: query`。
+   `Query()` 只加**约束和文档**。
+4. **`required` 由"有没有默认值"决定，不由 `Query` 决定**：
+   `x: Annotated[str | None, Query(...)]`（**没有** `= None`）→ `required: true` → 不带参数请求直接 **422**。
+   ⚠️ **这正是本项目踩过的坑**：`str \| None` 只说"能装 None"，**不等于"可以不传"**。
+
+**怎么读你自己的这行**：
+
+```python
+limit: Annotated[int, Query(ge=1, le=100, description="最多返回几条")] = 20,
+#      └ Annotated 内 ────────────────────────────────┘  └ Annotated 外 ┘
+#        类型 int  +  Query 指令（约束+文档）              默认值 → 决定"可选"
+```
+
 ## 3.7 自检
 
 1. 说出 FastAPI 判定"参数从哪来"的规则。
