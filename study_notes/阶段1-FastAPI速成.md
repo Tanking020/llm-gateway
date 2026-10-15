@@ -720,6 +720,80 @@ async def list_items(limit: LimitParam = 10): ...
 
 > ⭐ **FastAPI 官方从 0.95 起推荐 `Annotated`**。看到旧写法不用慌，但新代码一律用 `Annotated`。
 
+### 3.6b 本仓库实测：1.3 的 4 条路由（2026-10-15）
+
+> ✅ **代码在 [`src/app/api/app.py`](../src/app/api/app.py)**（本项目真实文件，非临时演示）。
+> 验证方式：用 `httpx.ASGITransport` 直接打 `app`（不启服务、不占端口）。
+
+**实装的 4 条路由**：
+
+| 路由 | 演示哪种参数 | 要点 |
+|---|---|---|
+| `GET /v1/models` | **查询参数** | `prefix` 可选（前缀过滤）、`limit` 可选（默认 20） |
+| `GET /v1/models/latest` | 无参数（固定路径） | ⚠️ **必须写在 `{model_name}` 之前**（见 2.4 的顺序陷阱） |
+| `GET /v1/models/{model_name}` | **路径参数** | 路径里的 `{model_name}` 与参数名**必须一字不差** |
+| `POST /v1/chat` | **请求体** | 参数类型是 `ChatRequest`（pydantic 模型）→ 判定为 JSON body |
+
+**15 组请求实测结果**：
+
+```text
+GET  /health                         -> 200  {"status":"ok"}
+GET  /v1/models                      -> 200  {"total":2,"items":["deepseek-flash","deepseek-v4-pro"]}
+GET  /v1/models?limit=1              -> 200  {"total":2,"items":["deepseek-flash"]}
+GET  /v1/models?prefix=deepseek-v4   -> 200  {"total":1,"items":["deepseek-v4-pro"]}   ← 前缀过滤生效
+GET  /v1/models?prefix=flash         -> 200  {"total":0,"items":[]}
+GET  /v1/models?limit=abc            -> 422  loc=['query','limit'] type=int_parsing     ← ⭐ 自动拦截
+GET  /v1/models/latest               -> 200  {"model_name":"deepseek-flash"}            ← 固定路径优先
+GET  /v1/models/deepseek-v4-pro      -> 200  {"model_name":"deepseek-v4-pro"}           ← 路径参数
+POST /v1/chat {"messages":[{"role":"user","content":"你好"}]}
+                                     -> 200  {"content":"[echo] 你好","model":"deepseek-flash"}
+POST /v1/chat {"messages":[]}        -> 422  loc=['body','messages'] type=too_short     ← ⭐ min_length=1 生效
+POST /v1/chat {"messages":[{"role":"tool",...}]}
+                                     -> 422  loc=['body','messages',0,'role'] type=literal_error  ← ⭐ Literal 生效
+```
+
+⭐ **最后两组是"阶段 0 的 `schemas.py` 开始干活"的证据**：`Field(min_length=1)` 与 `Literal["system","user","assistant"]`
+变成了**自动的请求校验**，我们**一行校验代码都没写**。
+
+**⚠️ 三个"工具抓不到、只能实测发现"的坑**：
+
+| 坑 | 现象 | 谁来发现 |
+|---|---|---|
+| `prefix: str \| None` **漏写 `= None`** | `/v1/models` 直接 **422 `Field required`** —— `str \| None` 只说"能装空"，不等于"可以不传" | ❌ ruff / ❌ mypy / ✅ **打请求** |
+| `?limit=0` | 200，但 `items` 为空 | 同上 |
+| `?limit=-1` | 200，返回 `["deepseek-flash"]` ⛔ **负索引切片**（`matched[:-1]` = "去掉最后一个"），**静默给出错误结果** | 同上 |
+
+**修法**：给 `limit` 加约束（`Query(ge=1, le=100)`），让 `0` / `-1` / `101` 都被 422 拦下：
+
+```python
+limit: Annotated[int, Query(ge=1, le=100, description="最多返回几条")] = 20
+```
+
+**⚠️ 第四个坑：多余字段被静默忽略。**
+
+```text
+POST /v1/chat {"messages":[...], "extra":1}  ->  200  ✅（没报错！）
+```
+
+原因：pydantic `BaseModel` **默认 `extra="ignore"`** —— ⚠️ **与 `config.py` 里特意设的 `extra="forbid"` 相反**。
+
+| 模型 | 设置 | 客户端多传字段 |
+|---|---|---|
+| `Settings`（配置） | `extra="forbid"`（故意选的） | 报错 |
+| `ChatRequest`（数据契约） | **默认 `ignore`** | **静默忽略** |
+
+⭐ **这意味着**：客户端把 `max_token`（少个 `s`）发过来，服务端会**默默用默认值**，两边都以为没问题 —— 又一处**静默失效**。
+**要不要改成 `forbid` 是真实取舍**（严格能挡拼写错误，但客户端多传就 422），Step 4 正式讨论。
+
+**⭐ 顺便：`mypy` 在本步抓到了一个会变成 500 的 bug**（详见 [学习过程记录](../study_notes/学习过程记录.md)）：
+
+```text
+src\app\api\app.py:65: error: "ChatRequest" has no attribute "message"; maybe "messages"?  [attr-defined]
+```
+
+`request.message`（少一个 `s`）**语法合法、`ruff` 也通过**，但运行时会抛 `AttributeError` → FastAPI 回 **500**。
+**mypy 静态抓到它并直接给出正确拼写** —— 这正是"给数据模型写注解"的额外红利：**字段名拼写检查**。
+
 ## 3.7 自检
 
 1. 说出 FastAPI 判定"参数从哪来"的规则。
