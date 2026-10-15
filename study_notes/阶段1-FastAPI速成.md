@@ -101,8 +101,8 @@ Resolved 31 packages | Installed 11 packages
 |------|------|------|------|
 | 1 | HTTP 与 ASGI 地基 | ✅ 已整理 | ✅ 已完成（1.2；新增 §1.4b / §1.4c 两组本仓库实测：并发三种命运、原始报文与状态码） |
 | 2 | 最小应用与自动文档 | ✅ 已整理 | ✅ 已完成（1.1：`/health` + `/docs` + `/openapi.json` 实测 200） |
-| 3 | 三段参数 | ✅ 已整理 | ⬜ 未开始 |
-| 4 | pydantic 契约 | ✅ 已整理 | 🟡 部分（`schemas.py` 已在阶段 0 完成，尚未接入路由 / `response_model`） |
+| 3 | 三段参数 | ✅ 已整理 | ✅ 已完成（1.3：4 条路由，15 组请求实测；提交 `19aa9cf` / `94fb0a2`） |
+| 4 | pydantic 契约 | ✅ 已整理 | 🟡 部分（**输入契约已接入**：`POST /v1/chat` 用 `ChatRequest` 自动校验；`response_model` / 输出过滤未做） |
 | 5 | `Depends` 依赖注入 | ✅ 已整理 | ⬜ 未开始（阶段 0 手工版已掌握） |
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ⬜ 未开始 |
 | 7 | 中间件与 CORS | ✅ 已整理 | ⬜ 未开始 |
@@ -828,6 +828,19 @@ src\app\api\app.py:65: error: "ChatRequest" has no attribute "message"; maybe "m
 >
 > ⚠️ 附带一条能力边界：**注释 / docstring 里的英文单词拼错，没有任何工具能抓**
 > （ruff / mypy 都不查拼写）。这与**属性名**拼错形成对比 —— 后者 mypy 的 `attr-defined` 能抓。
+
+### 3.6d 当前已知待办（2026-10-15 工作区体检发现，归属到后续 Step 再修）⭐
+
+> 这 3 条**不是"忘了改"，是刻意留到对应 Step 一起做** —— 避免零散打补丁、每处都有自己的归属。
+
+| # | 现状（实测） | 问题 | 归属 |
+|---|---|---|---|
+| 1 | `GET /v1/models/this-model-does-not-exist` → **200** `{"model_name":"this-model-does-not-exist"}` | 不存在的模型**返回 200**，接口"假装查到了"。应 **404** | **Step 6**（`HTTPException`） |
+| 2 | `POST /v1/chat {"messages":[{"role":"assistant",...}]}` → **200** 把"模型以前说的话"当答案回显 | **不检查最后一条是谁说的**（`system` / `assistant` 也会被回显） | **Step 4 / 6** |
+| 3 | `/v1/models/latest` 返回 `KNOWN_MODELS[0]`（硬编码） | 与 `settings.llm_model` **无关联**：改配置时两处会不一致 | **Step 4**（接真实上游 `/models`） |
+
+⭐ **为什么要显式记"待办"而不是记"已知缺陷"**：缺陷清单会越积越长、没人管；**待办有归属** ——
+每条都写明"留给哪个 Step 修"，到那一步自然会被处理（这是"一次只解决一类问题"的具体做法）。
 
 ## 3.7 自检
 
