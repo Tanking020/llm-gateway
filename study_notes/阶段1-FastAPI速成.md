@@ -1296,6 +1296,74 @@ finally:
 > ⭐ 回到阶段 0 的结论：**依赖注入的全部价值就是"让调用方决定给真的还是给假的"**。
 > `dependency_overrides` 把这句话变成了框架级能力。
 
+## 5.6b 机制：覆盖到底怎么生效的（2026-10-15 读源码 + 实测）⭐
+
+**问题来源**：学习者问"`app.dependency_overrides` 是哪来的？我好像没定义啊"。
+
+### 它是 `FastAPI()` 送的，不是 Starlette 给的
+
+出生证明在 `fastapi/applications.py` 第 986~1002 行（`FastAPI.__init__` 内）：
+
+```python
+self.dependency_overrides: Annotated[
+    dict[Callable[..., Any], Callable[..., Any]],
+    Doc("""... A dictionary with overrides for the dependencies.
+             This is for testing, to replace expensive dependencies with testing versions."""),
+] = {}
+```
+
+| 项 | 值（实测） |
+|---|---|
+| 何时产生 | 写 `app = FastAPI(title=...)` 的那一刻 |
+| 类型 / 初值 | `dict[Callable, Callable]` / `{}` |
+| 存在哪 | **实例属性**（`"dependency_overrides" in app.__dict__` → `True`） |
+| Starlette 有吗 | **完全没有**（搜遍 `starlette/` 无此名）→ FastAPI 独有 |
+
+**为什么"没定义也能用"**：Python 找 `app.xxx` 的顺序是
+**实例 `__dict__` → 类 `__dict__` → 基类**。`FastAPI.__init__` 造对象时顺手挂了它，
+所以你在第 ① 步就找到了 —— 它挂在**这个具体的 app 对象**上。
+
+### 读取点在 `solve_dependencies()`（核心一行）
+
+`fastapi/dependencies/utils.py` 第 619~638 行：
+
+```python
+for sub_dependant in dependant.dependencies:      # 遍历该路由的每个依赖
+    original_call = sub_dependant.call
+    call = getattr(provider, "dependency_overrides", {}).get(original_call, original_call)
+    use_sub_dependant = get_dependant(path=..., call=call, ...)   # 用替身重新解析
+```
+
+⭐ **整件事的魔法就是 `.get(original_call, original_call)`**：**"查表；查不到就用它自己。"**
+
+| 你做了什么 | 结果 |
+|---|---|
+| 字典为空 | `get` 返回原函数 → 一切照旧 |
+| 登记了替身 | `get` 返回替身 → 替换生效 |
+
+**由此解释三件事**：
+
+1. **键必须是函数对象**：查表用的就是 `original_call` 本身，字符串路径查不到。
+2. **替身签名必须对得上**：查完还要 `get_dependant(call=call)` **重新解析替身的签名**
+   （`get_settings()` 零参数 → 替身也必须零参数）。
+3. **嵌套依赖任意一层都能覆盖**：递归时把 `dependency_overrides_provider` 一路传下去。
+
+另：第 623~626 行先判断"字典非空"才走这条分支 —— 空字典时不进这段逻辑（性能优化）。
+
+### 为什么必须 `clear()`（实测）
+
+同一个 `app` 上造两个 TestClient，只通过第一个做覆盖：
+
+```text
+经 c1 覆盖前 -> deepseek-flash
+经 c1 请求   -> fake-model
+经 c2 请求   -> fake-model   <- c2 什么都没做，也被改了
+clear 之后 c2-> deepseek-flash
+```
+
+⭐ 它是**挂在 app 上的可变字典**，生命周期 = **app 的生命周期（整个进程）**，不是"一次请求"。
+忘了 clear → 后续测试全被污染 → 症状是**"单独跑过、一起跑挂"**。
+
 ## 5.7 依赖可以嵌套（会形成一棵树）
 
 ```python
