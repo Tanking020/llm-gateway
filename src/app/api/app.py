@@ -6,8 +6,11 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
     本文件是【常驻服务】的应用对象，两者生命周期与职责都不同
 """
 
-from fastapi import FastAPI
+from typing import Annotated
 
+from fastapi import FastAPI, Query
+
+from app.config import settings
 from app.schemas import ChatRequest, ChatResponse
 
 # app 就是 uvicorn 要托管的那个对象
@@ -40,9 +43,13 @@ KNOWN_MODELS = ["deepseek-flash", "deepseek-v4-pro"]
 
 
 @app.get("/v1/models")
-async def list_models(prefix: str | None = None, limit: int = 20) -> dict[str, object]:
+async def list_models(
+    prefix: Annotated[str | None, Query(description="只返回名字以此开头的模型")] = None,
+    limit: Annotated[int, Query(ge=1, le=100, description="最多返回几条")] = 20,
+) -> dict[str, object]:
     """列出模型。prefix / limit 是【查询参数】—— 来自 ?prefix=...&limit=..."""
     # 前缀过滤设计：prefix = 前缀，m.startswith(prefix) 查询 "m 是否以 prefix 开头"
+    # prefix 可选（不传 = 不过滤）
     matched = [m for m in KNOWN_MODELS if prefix is None or m.startswith(prefix)]
     return {"total": len(matched), "items": matched[:limit]}
 
@@ -63,4 +70,4 @@ async def get_model(model_name: str) -> dict[str, str]:
 async def chat(request: ChatRequest) -> ChatResponse:
     """request 是【请求体】—— 类型是 pydantic 模型，所以 FastAPI 从 JSON body 里面取"""
     last = request.messages[-1]
-    return ChatResponse(content=f"[echo] {last.content}", model=request.model or "deepseek-flash")
+    return ChatResponse(content=f"[echo] {last.content}", model=request.model or settings.llm_model)
