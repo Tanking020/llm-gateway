@@ -103,7 +103,7 @@ Resolved 31 packages | Installed 11 packages
 | 2 | 最小应用与自动文档 | ✅ 已整理 | ✅ 已完成（1.1：`/health` + `/docs` + `/openapi.json` 实测 200） |
 | 3 | 三段参数 | ✅ 已整理 | ✅ 已完成（1.3：4 条路由，15 组请求实测；提交 `19aa9cf` / `94fb0a2`） |
 | 4 | pydantic 契约 | ✅ 已整理 | 🟡 部分（**输入契约已接入**：`POST /v1/chat` 用 `ChatRequest` 自动校验；`response_model` / 输出过滤未做） |
-| 5 | `Depends` 依赖注入 | ✅ 已整理 | 🟡 部分（1.4a/1.4b 完成：`deps.py` + 覆盖机制；1.4c `yield` 依赖待做） |
+| 5 | `Depends` 依赖注入 | ✅ 已整理 | ✅ 已完成（1.4a~1.4c：`get_settings` / 覆盖机制 / `yield` 依赖；1.4d 待接进路由） |
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ⬜ 未开始 |
 | 7 | 中间件与 CORS | ✅ 已整理 | ⬜ 未开始 |
 | 8 | 异步正确姿势 | ✅ 已整理 | 🟡 部分（阶段 0 的 `playground/` 实验已覆盖协程与并发基础） |
@@ -1283,6 +1283,38 @@ async def client_bad() -> AsyncIterator[httpx.AsyncClient]:
 
 **另一条实测**（顺带验证）：无论路由抛的是 `HTTPException`（客户端错）还是裸 `RuntimeError`（500），
 `async with` 的清理**都执行**。区分异常类型的是"要不要继续向上抛"，不是"要不要清理"。
+
+### 5.4c 学习者亲测复现（2026-10-16）
+
+`playground/depends_yield_demo.py` 把正反两种写法放进同一个 demo app 对照跑，实际输出：
+
+```text
+=== 正常返回 ===
+  async with（正确）           状态码=200  client.is_closed=True
+  yield 后 aclose（反面）       状态码=200  client.is_closed=True
+
+=== 路由抛异常 ===
+  async with（正确）           状态码=500  client.is_closed=True
+  yield 后 aclose（反面）       状态码=500  client.is_closed=False   ← 泄漏
+
+=== 项目里真正的依赖 LlmClientDep ===
+  GET /real                状态码=200  {'ok': True}
+```
+
+⭐ **两行对照的读法**：
+- 第 2 行 vs 第 4 行：**同样一种写法，只在"路由抛异常"时露馅** → 所以"跑一遍正常请求"是发现不了这个 bug 的；
+- 第 4 行 vs 第 3 行：差异**只来自"清理用什么写法"**，与"路由干了什么"无关。
+
+**演示文件里的三个关键技巧**（值得复用）：
+
+| 技巧 | 作用 |
+|---|---|
+| `made: list[httpx.AsyncClient] = []` + 在依赖里 `made.append(client)` | **留下一个"可回查的痕迹"** —— 请求结束后才能回头问"它关了吗"。没有这个列表，`is_closed` 根本没机会看 |
+| `TestClient(demo, raise_server_exceptions=False)` | 让路由异常变成 **500 响应**而不是抛给调用方；否则异常会直接中断脚本，你拿不到后面的检查结果 |
+| 把**正反两种写法**放进**同一个文件**对照 | 单看一种写法"返回 200"无法判断对错；**两个并排跑、只让"异常"这一维变化**，差异才归因得清 |
+
+> ⭐ 第 3 条是通用的实验设计法：**一次只变一个因素**，其余保持一致。
+> 这里"路由是否抛异常"是唯一变量 —— 所以第 2 行与第 4 行的差别，**只能**归因于清理写法。
 
 ## 5.5 ⭐ 依赖缓存：同一次请求内只算一次
 

@@ -75,6 +75,9 @@ async def main(argv: list[str]) -> int:
         if not settings.llm_api_key:  # 先检查有没有
             print("未配置 LLM_API_KEY，跳过网络检查")
             return 1
+        # with 是 Python 的上下文管理器
+        # 核心作用是保证资源【用完自动关闭】，即使中间出错了也会关闭
+        # async with 是其异步版本
         async with create_client() as client:  # 再动手造
             model_ids = await fetch_model_ids(client)
         print(f"可用模型 {len(model_ids)} 个：{', '.join(model_ids[:5])}")
