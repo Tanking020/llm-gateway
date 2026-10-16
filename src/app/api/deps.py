@@ -11,8 +11,13 @@
     放 api/ 里，services/ 就永远不会反向 import 到它
 """
 
+# AsyncIterator 是 Python 中异步迭代器的类型，核心作用是：
+#   逐个获取数据，但每次获取都需要等待（await），而且不一次性加载全部数据到内存
+#   在 SSE 流式中它让"一个请求"的数据能边收边发而不是等全部生成完再一次返回
+from collections.abc import AsyncIterator
 from typing import Annotated
 
+import httpx
 from fastapi import Depends
 
 from app.config import Settings, settings
@@ -32,3 +37,26 @@ def get_settings() -> Settings:
 
 # 类型别名
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+
+async def get_llm_client() -> AsyncIterator[httpx.AsyncClient]:
+    """
+    每个请求造一个 HTTP 客户端，请求结束时【由框架关闭】
+
+    async with 包住 yield，是为了保证【路由抛异常时也能关闭】；
+    如果把关闭写成 yield 之后的普通语句，异常时那行会被跳过
+
+    因此核心规则：yield之后只写“清理”，而且清理必须包在 async with 或
+    try / finally 里 —— 绝不要写成裸的普通语句
+    """
+    async with httpx.AsyncClient(
+        base_url=settings.llm_base_url,
+        timeout=settings.request_timeout,
+        headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+    ) as client:
+        # yield vs return : yield = "暂停并返回一个值，下次从暂停处继续"
+        # 在 FastAPI 里，它主要用于：流式输出（打字机效果）和依赖注入（自动关闭资源）
+        yield client
+
+
+LlmClientDep = Annotated[httpx.AsyncClient, Depends(get_llm_client)]
