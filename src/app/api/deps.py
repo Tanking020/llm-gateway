@@ -35,7 +35,6 @@ def get_settings() -> Settings:
     return settings
 
 
-# 类型别名
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
@@ -43,7 +42,11 @@ async def get_llm_client() -> AsyncIterator[httpx.AsyncClient]:
     """
     每个请求造一个 HTTP 客户端，请求结束时【由框架关闭】
 
-    async with 包住 yield，是为了保证【路由抛异常时也能关闭】；
+    生命周期跟着【请求】走 -> yield 依赖
+    跟着【应用】走 -> lifespan
+    （实际上 HTTP 客户端通常“应该” 全局共享，本项目这里这么做是教学选择，不是性能最优）
+
+    注意：async with 包住 yield，是为了保证【路由抛异常时也能关闭】；
     如果把关闭写成 yield 之后的普通语句，异常时那行会被跳过
 
     因此核心规则：yield之后只写“清理”，而且清理必须包在 async with 或
@@ -59,4 +62,5 @@ async def get_llm_client() -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
+# Annotated[类型, Depends(函数)] = “这个参数的值，由 Depends 里的函数来提供”
 LlmClientDep = Annotated[httpx.AsyncClient, Depends(get_llm_client)]
