@@ -10,7 +10,9 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
 from typing import Annotated
 
 # Query: 用于在上面勾选"这个查询参数要被怎么对待"，FastAPI 读它去约束和写文档
-from fastapi import FastAPI, Query
+# status：是一个装了一堆 HTTP 状态码的模块
+# HTTPException：是一个普通异常类，负责把异常抛给框架，再由框架翻译成 HTTP 响应
+from fastapi import FastAPI, HTTPException, Query, status
 
 from app.api.deps import LlmClientDep, SettingsDep
 from app.schemas import ChatRequest, ChatResponse
@@ -65,6 +67,13 @@ async def latest_model() -> dict[str, str]:
 @app.get("/v1/models/{model_name}")
 async def get_model(model_name: str) -> dict[str, str]:
     """model_name 是【路径参数】—— 来自 URL 路径那一小段"""
+    # 更新：未知模型返回 404
+    # raise 会立即中止函数，后面的 return 不执行；异常由框架统一转成响应
+    if model_name not in KNOWN_MODELS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"模型不存在: {model_name}",
+        )
     return {"model_name": model_name}
 
 
