@@ -21,6 +21,7 @@ import httpx
 from fastapi import Depends
 
 from app.config import Settings, settings
+from app.llm_client import create_llm_client
 
 
 def get_settings() -> Settings:
@@ -52,11 +53,7 @@ async def get_llm_client() -> AsyncIterator[httpx.AsyncClient]:
     因此核心规则：yield之后只写“清理”，而且清理必须包在 async with 或
     try / finally 里 —— 绝不要写成裸的普通语句
     """
-    async with httpx.AsyncClient(
-        base_url=settings.llm_base_url,
-        timeout=settings.request_timeout,
-        headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-    ) as client:
+    async with create_llm_client() as client:
         # yield vs return : yield = "暂停并返回一个值，下次从暂停处继续"
         # 在 FastAPI 里，它主要用于：流式输出（打字机效果）和依赖注入（自动关闭资源）
         yield client
