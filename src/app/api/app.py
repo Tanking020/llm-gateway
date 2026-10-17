@@ -86,6 +86,14 @@ async def chat(request: ChatRequest, config: SettingsDep) -> ChatResponse:
     config 是【依赖】—— FastAPI 调 get_settings() 后注入
     """
     last = request.messages[-1]
+    # 语义检查：形状合法 ≠ 能回答。最后一条不是 user，就没有【要回答的问题】
+    # 这种语义错（业务规则）不进 schemas.py (后者只描述数据形状，避免职责混乱和保证模型可换接口复用)
+    # 规则：形状归 pydantic，语义归路由
+    if last.role != "user":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"最后一条消息必须是 user，当前是 {last.role}",
+        )
     return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
 
 
@@ -123,15 +131,14 @@ async def upstream_models(client: LlmClientDep) -> dict[str, object]:
     try:
         model_ids = await fetch_upstream_models(client)
     except httpx.HTTPStatusError as exc:
-        # 错误类型 1：上游【有回应】但状态码是 4xx / 5xx：
-        #   把上游的号码告诉客户端，但不说细节
-        #   ！注意区分：【上游报给服务器】的 401 和【服务器报给客户端】的 401 意义并不一样
+        # 错误类型 1：上游【有回应】但状态码是 4xx/5xx → 能读 exc.response.status_code
+        #   ⚠️【上游报给服务器】的 401 与【服务器报给客户端】的 401 意义不同，所以不能透传
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"上游返回状态码 {exc.response.status_code}",
         ) from exc
     except httpx.RequestError as exc:
-        # 错误类型 2：上游【根本没回应】：连不上 / 超时 / DNS 失败
+        # 错误类型 2：上游【根本没有回应】（连不上 / 超时 / DNS 失败）→ 没有 .response 可读
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="无法连接上游模型服务",
