@@ -13,6 +13,7 @@ import sys
 import httpx
 
 from app.config import settings  # 直接用同一个 settings 单例，不在别处再 Setting() 一遍
+from app.llm_client import create_llm_client
 from app.schemas import ChatRequest, ChatResponse, Message
 
 
@@ -42,20 +43,6 @@ def echo(request: ChatRequest) -> ChatResponse:
     return ChatResponse(content=last.content, model=request.model or settings.llm_model)
 
 
-def create_client() -> httpx.AsyncClient:
-    """
-    按配置造一个 HTTP 客户端
-    一处配置（以后加代理、重试、日志，只改这四行）、可替换、职责单一
-    用的时候从全局配置 settings 里面拿（依赖注入）
-    """
-    return httpx.AsyncClient(
-        base_url=settings.llm_base_url,  # 客户端地址前缀
-        timeout=settings.request_timeout,
-        # Bearer sk-xxxxxxxx 前者指【持票人】，后者是密钥【凭证】
-        headers={"Authorization": f"Bearer {settings.llm_api_key}"},  # 客户端默认请求头
-    )
-
-
 async def fetch_model_ids(client: httpx.AsyncClient) -> list[str]:
     """查上游可用模型。client 由调用方传入（依赖注入），测试时可换成假的"""
     response = await client.get("/models")
@@ -78,7 +65,7 @@ async def main(argv: list[str]) -> int:
         # with 是 Python 的上下文管理器
         # 核心作用是保证资源【用完自动关闭】，即使中间出错了也会关闭
         # async with 是其异步版本
-        async with create_client() as client:  # 再动手造
+        async with create_llm_client() as client:  # 再动手造
             model_ids = await fetch_model_ids(client)
         print(f"可用模型 {len(model_ids)} 个：{', '.join(model_ids[:5])}")
         return 0
