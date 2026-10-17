@@ -1587,6 +1587,117 @@ if model_name not in KNOWN_MODELS:
 
 实测：`/v1/models/deepseek-flash` → `200`；`/v1/models/this-model-does-not-exist` → `404 {"detail":"模型不存在: ..."}`。
 
+### 6.1c 上游的错误怎么翻译成本服务的状态码（6.2a 实战，2026-10-17 实测）⭐⭐
+
+> **本节是全阶段最重要的语义区分：上游的响应状态码 ≠ 我们回给客户端的状态码。**
+
+#### ① 两层状态码，各自回答"谁的问题"
+
+```text
+客户端 ──请求──▶ 我们的服务 ──请求──▶ 上游（DeepSeek）
+     ◀──响应──          ◀──响应──
+   第 3 层            第 2 层
+```
+
+| 层 | 状态码 | 回答的问题 | 例 |
+|---|---|---|---|
+| 上游 `r.status_code` | 401 | "**你的服务器**对我有资格吗" | 我们的 API Key 错了 |
+| 我方 `HTTPException.status_code` | 502 | "**你（客户端）**这次请求，我这里是什么结果" | 上游故障，不是我方也不是你的问题 |
+
+**⚠️ 绝对不能把上游的码直接透传。** 实测（把 `r.status_code` 原样塞进 `HTTPException`）：
+
+```text
+透传上游 401 -> 401 {"detail":"upstream said no"}
+```
+
+客户端收到 401 的正常反应是**弹登录框 / 清本地 token / 重走认证** —— 而这些动作全都**无效**，
+因为错的不是它，是我们服务器和上游之间的凭证。**错误的状态码会让客户端在错误的方向上努力。**
+
+**所以采用"统一 502"**：上游 401 / 429 / 503 一律翻译成 **502 Bad Gateway**，上游的具体号码只放进 `detail`（人看的）与日志（机器查的）。
+
+| 好处 | 说明 |
+|---|---|
+| 对外只有一种契约 | 客户端只需认"5xx = 等一会儿/找服务方"，不必对每个上游码写分支 |
+| 不泄露上游供应商 | 客户端看不出我们是 DeepSeek 还是别家、以及上游的内部状态 |
+| 语义准确 | 502 = 网关访问上游失败（RFC 9110），正好是"我们替客户端调第三方，第三方不行了" |
+
+#### ② `httpx` 的异常分两支（实测继承链）
+
+```text
+httpx.HTTPError
+├── HTTPStatusError      ← 上游【有回应】，但状态码 4xx/5xx（raise_for_status 抛）
+└── RequestError         ← 上游【根本没有回应】
+    └── TransportError
+        ├── TimeoutException
+        └── NetworkError
+            └── ConnectError
+```
+
+| 分支 | 有 `.response` 吗 | 能读到什么 | detail 该写什么 |
+|---|---|---|---|
+| `HTTPStatusError` | ✅ `Response`（实测状态码 401、`.request` 也在） | `exc.response.status_code` | `上游返回状态码 401` |
+| `RequestError` / `ConnectError` | ❌ **没有**（`hasattr` 实测 `False`） | 只能读 `str(exc)` | `无法连接上游模型服务` |
+
+**推论**：两个分支的 `detail` 注定不同 → 不能合并成 `except httpx.HTTPError`
+（合并就得写 `getattr(exc, "response", None)`，可读性更差）。
+
+#### ③ `httpx.HTTPStatusError` vs `fastapi.HTTPException`（两个不同的东西）
+
+| | `httpx.HTTPStatusError` | `fastapi.HTTPException` |
+|---|---|---|
+| 属于谁 | `httpx`（客户端库） | `fastapi`（Web 框架） |
+| 谁抛 | `resp.raise_for_status()`，**上游**的行为触发 | **我们自己**写的 `raise` |
+| 带什么 | `.request` / `.response` | `.status_code` / `.detail` / `.headers` |
+| FastAPI 认识吗 | ❌ **不认识** → 漏出去就是 **500**（实测） | ✅ 认识，有专门处理器翻译成 JSON |
+| 语义 | "我调上游失败了" | "我要给**我的**客户端回这个码" |
+
+**FastAPI 只认识三个异常**（实测 `app.exception_handlers` 的键）：
+
+```text
+['HTTPException', 'RequestValidationError', 'WebSocketRequestValidationError']
+```
+
+⭐ **机制性结论：任何没被这几张表登记的异常，一律 500。** 所以"翻译"不是风格问题，是必经步骤。
+
+#### ④ `as exc` 与 `from exc`
+
+| 语法 | 作用 | 实测 |
+|---|---|---|
+| `except X as exc:` | 把捕获到的**实例**绑到名字上 | 块内可取；**块外 `NameError`**（Python 3 故意在块结束时删除，防止异常对象延长寿命）。名字随便起，`exc` 是习惯 |
+| `raise Y from exc` | 设置 `Y.__cause__ = exc`（**显式**因果） | `__cause__: ConnectError`；traceback 措辞 `The above exception was the direct cause of the following exception:` |
+| 不写 `from` | `__cause__` 为 `None`，但 `__context__` 仍被自动填（**隐式**因果） | traceback 措辞 `During handling of the above exception, another exception occurred:`（像"翻译代码自己崩了"） |
+
+- 判据：**有意转换 → `from`；意外顺带炸出 → 不写**。
+- 本项目启用了 `ruff` 的 **B904**（实测）：`except` 块里 `raise` 不写 `from` 会直接报错 —— 所以这是**质量门强制的**。
+- 想主动切断因果：`raise ... from None`。
+
+#### ⑤ 本仓库三组实测输出（`/v1/upstream/models`）
+
+```text
+A 真实上游            : 200 {"total":2,"items":["deepseek-flash","deepseek-v4-pro"]}
+B 连不上(127.0.0.1:9) : 502 {"detail":"无法连接上游模型服务"}
+C 上游回 404          : 502 {"detail":"上游返回状态码 404"}
+D MockTransport 造 503: 502 {"detail":"上游返回状态码 503"}
+```
+
+- **B 验的是 `RequestError` 分支**，用 `$env:LLM_BASE_URL="http://127.0.0.1:9"` 临时覆盖（环境变量优先级高于 `.env`，实测）。
+- **D 验的是 `HTTPStatusError` 分支**，用 `httpx.MockTransport` 在**不联网**的情况下造假上游 —— 提前用上了 Step 12（测试）的工具。
+- ⚠️ C 暴露一个细节坑：`base_url="https://httpbin.org/status/503"` + 请求 `"/models"` 实测拼成
+  `https://httpbin.org/status/503/models`（**base_url 的路径部分会被保留并拼上去**），于是一路 404。
+  **`base_url` 应当只写到域名/版本前缀，别带路径。**
+
+#### ⑥ 业务 bug 不能被抓进这两个分支
+
+`payload["data"]` 拼成 `payload["datas"]` → `KeyError`，**两个 `except` 都匹配不上 → 500**（实测）。**这是对的**：
+
+| 若被 502 吃掉 | 后果 |
+|---|---|
+| 监控 | 5xx 里分不出"依赖挂了"和"我写错了" → 告警永远不响 |
+| 排查 | 你去查 DeepSeek 状态页，而不是看自己的 `payload["data"]` |
+| 用户 | 以为"等一下重试就好"，实际重试一万次都错 |
+
+⭐ **`except` 抓得越窄，"谁的错"记录得越准。** 用 `except Exception` 统一转 502 = 主动放弃这个能力。
+
 ## 6.2 自定义异常 + 全局处理器
 
 ```python
