@@ -12,7 +12,7 @@ from typing import Annotated
 # Query: 用于在上面勾选"这个查询参数要被怎么对待"，FastAPI 读它去约束和写文档
 from fastapi import FastAPI, Query
 
-from app.api.deps import SettingsDep
+from app.api.deps import LlmClientDep, SettingsDep
 from app.schemas import ChatRequest, ChatResponse
 
 # app 就是 uvicorn 要托管的那个对象
@@ -76,3 +76,35 @@ async def chat(request: ChatRequest, config: SettingsDep) -> ChatResponse:
     """
     last = request.messages[-1]
     return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
+
+
+async def fetch_upstream_models(client: LlmClientDep) -> list[str]:
+    """
+    查上游真实可用的模型名列表
+
+    这是本项目第一次由服务端主动访问外部网络：
+        之前的 /v1/models 返回的是硬编码的 KNOWN_MODELS；
+        现在这条路由返回的是真实上游数据，形成对照
+
+    单独成一个函数（而不是写在路由里）：
+        1. 可测试 —— client 是参数，测试时能传假 client，不联网
+        2. 职责清晰 —— 路由只管接请求/返响应，业务逻辑单独放
+
+    ⚠️ 上游返回错误时这里会抛 httpx.HTTPStatusError，目前会变成 500。
+       正确做法是转成 502 Bad Gateway —— 留到 Step 6（错误处理）
+    """
+    resp = await client.get("/models")
+    resp.raise_for_status()
+    payload: dict[str, list[dict[str, object]]] = resp.json()
+    return [str(item["id"]) for item in payload["data"]]
+
+
+@app.get("/v1/upstream/models")
+async def upstream_models(client: LlmClientDep) -> dict[str, object]:
+    """
+    真实调用上游 /models。与 /v1/models（硬编码）对照用。
+
+    client 是【依赖】：框架造好并注入，请求结束后自动关闭
+    """
+    model_ids = await fetch_upstream_models(client)
+    return {"total": len(model_ids), "items": model_ids}
