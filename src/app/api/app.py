@@ -9,6 +9,8 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
 # Annotated：用于给函数签名中参数的 "类型位" 扩容
 from typing import Annotated
 
+import httpx
+
 # Query: 用于在上面勾选"这个查询参数要被怎么对待"，FastAPI 读它去约束和写文档
 # status：是一个装了一堆 HTTP 状态码的模块
 # HTTPException：是一个普通异常类，负责把异常抛给框架，再由框架翻译成 HTTP 响应
@@ -99,8 +101,10 @@ async def fetch_upstream_models(client: LlmClientDep) -> list[str]:
         1. 可测试 —— client 是参数，测试时能传假 client，不联网
         2. 职责清晰 —— 路由只管接请求/返响应，业务逻辑单独放
 
-    ⚠️ 上游返回错误时这里会抛 httpx.HTTPStatusError，目前会变成 500。
-       正确做法是转成 502 Bad Gateway —— 留到 Step 6（错误处理）
+    ⚠️ 上游出错时这里不自己处理：直接让 httpx 的异常往上冒 ——
+       上游【有回应】但状态码是 4xx/5xx → HTTPStatusError；
+       上游【根本没回应】(连不上 / 超时) → RequestError。
+       由调用方 upstream_models 把两者统一翻译成 502 Bad Gateway
     """
     resp = await client.get("/models")
     resp.raise_for_status()
@@ -115,5 +119,22 @@ async def upstream_models(client: LlmClientDep) -> dict[str, object]:
 
     client 是【依赖】：框架造好并注入，请求结束后自动关闭
     """
-    model_ids = await fetch_upstream_models(client)
+    # 更新：上游挂了返回 502（上游错误），不能返回 500（LLM 应用后端（我们）错误）
+    try:
+        model_ids = await fetch_upstream_models(client)
+    except httpx.HTTPStatusError as exc:
+        # 错误类型 1：上游【有回应】但状态码是 4xx / 5xx：
+        #   把上游的号码告诉客户端，但不说细节
+        #   ！注意区分：【上游报给服务器】的 401 和【服务器报给客户端】的 401 意义并不一样
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"上游返回状态码 {exc.response.status_code}",
+        ) from exc
+    except httpx.RequestError as exc:
+        # 错误类型 2：上游【根本没回应】：连不上 / 超时 / DNS 失败
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="无法连接上游模型服务",
+        ) from exc
+
     return {"total": len(model_ids), "items": model_ids}
