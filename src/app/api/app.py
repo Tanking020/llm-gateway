@@ -18,7 +18,7 @@ from app.schemas import ChatRequest, ChatResponse
 # app 就是 uvicorn 要托管的那个对象
 # 命令行里写 app.api.app:app 的读法：包 app -> 子包 api -> 模块 app -> 里面的变量 app
 app = FastAPI(
-    title="llm-service",
+    title="llm-app-engineering",
     description="LLM 应用后端（学习项目，阶段 1）",
     version="0.1.0",
 )
