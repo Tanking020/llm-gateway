@@ -81,6 +81,8 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 ├── .python-version           # 本项目使用的 Python 版本（精确指定，而非范围）
 ├── .gitignore / .gitattributes
 ├── .env.example              # 配置模板（提交）；真实取值放 .env（不提交）
+├── .github/
+│   └── copilot-instructions.md   # AI 协作指令：新会话自动加载的语言风格与工作纪律
 │
 ├── src/app/                  # 应用代码
 │   ├── __init__.py
@@ -184,6 +186,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | [学习过程记录.md](study_notes/学习过程记录.md) | 步骤流水、踩坑记录、关键结论 |
 | [工具与依赖速查.md](study_notes/工具与依赖速查.md) | 第三方包与工程工具速查：定位、安装、常用 API 与命令、易错点 |
 | [工程规范与协作约定.md](工程规范与协作约定.md) | 本项目的工程规范：命名、分层、质量门、安全约定 |
+| [.github/copilot-instructions.md](.github/copilot-instructions.md) | AI 协作指令：任何新会话自动加载的讲解风格、工作纪律与命令规范 |
 
 ---
 
