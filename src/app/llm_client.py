@@ -14,7 +14,10 @@ from app.config import settings
 
 
 def create_llm_client() -> httpx.AsyncClient:
-    """按配置造一个上游 LLM 的 HTTP 客户端。【关闭由调用方负责】"""
+    """
+    按配置造一个上游 LLM 的 HTTP 客户端
+
+    【关闭由调用方负责】：这也是为什么这里用 return 而不是 yield"""
     return httpx.AsyncClient(
         base_url=settings.llm_base_url,
         timeout=settings.request_timeout,
