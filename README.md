@@ -1,4 +1,4 @@
-# LLM Service
+# llm-app-engineering
 
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
@@ -50,6 +50,7 @@ uv sync
 
 # 2. 生成本地配置文件
 cp .env.example .env
+# Windows PowerShell 用：Copy-Item .env.example .env
 
 # 3. 验证环境（可选）
 uv run python -c "from app.config import settings; d = settings.model_dump(); d['llm_api_key'] = '已配置' if d['llm_api_key'] else '未配置'; print(d)"
@@ -85,9 +86,11 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 │   ├── __init__.py
 │   ├── config.py             # 全部可调参数集中在这里，类型安全且带校验
 │   ├── schemas.py            # 对外数据契约：请求 / 响应的形状定义
+│   ├── llm_client.py         # 上游 HTTP 客户端的唯一构造点（create_llm_client）
 │   ├── main.py               # 命令行入口：离线演示 + `ping` 上游连通性检查
 │   └── api/
 │       ├── __init__.py
+│       ├── deps.py           # 依赖注入：get_settings / get_llm_client（yield 依赖）
 │       └── app.py            # FastAPI 应用对象（uvicorn app.api.app:app）
 │
 ├── playground/               # 实验区：一次性验证代码，随时可删，不参与交付
@@ -109,22 +112,23 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 
 ## 质量门
 
-提交前跑这四条，全部通过：
+提交前跑这三条，全部通过：
 
 ```bash
 uv run ruff format .          # 1. 格式化
 uv run ruff check . --fix     # 2. lint（规则集 E/F/I/UP/B）
 uv run mypy .                 # 3. 类型检查（strict + warn_unreachable，全项目含 playground/）
-uv run pytest -q              # 4. 测试（阶段 1 起）
 ```
+
+`uv run pytest -q` 是第 4 条，等 `tests/` 落地后加入（当前 `pytest` 尚未进依赖）。
 
 当前状态：
 
 | 检查 | 结果 |
 |---|---|
 | `ruff check .` | All checks passed! |
-| `ruff format --check .` | 9 files already formatted |
-| `mypy .` | Success: no issues found in 9 source files |
+| `ruff format --check .` | 13 files already formatted |
+| `mypy .` | Success: no issues found in 13 source files |
 
 > 三条命令的**范围一律用 `.`**（全项目，含 `playground/`）。`mypy` 的默认范围由
 > `[tool.mypy] files = ["."]` 保证，所以带不带参数结果一致。
