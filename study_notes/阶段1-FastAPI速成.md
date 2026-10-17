@@ -1530,6 +1530,63 @@ raise HTTPException(
 )
 ```
 
+### 6.1b 本仓库实测：三组"看着对、结果错"的写法（2026-10-17）⭐
+
+**① `HTTPException` 是谁翻译成响应的**（读源码 `fastapi/exception_handlers.py`）：
+
+```python
+# 第 11 行
+async def http_exception_handler(request: Request, exc: HTTPException) -> Response:
+    ...
+    # 第 15 行
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+```
+
+→ 你只负责 `raise`，框架负责翻译。所以 `raise` 之后不需要 `return`。
+
+**② `Literal` 路径参数 vs 手写 `if not in`**（实测）：
+
+```text
+GET /lit/deepseek-flash -> 200 {"model_name":"deepseek-flash"}
+GET /lit/nope            -> 422 {"detail":[{"type":"literal_error",
+                              "msg":"Input should be 'deepseek-flash' or 'deepseek-v4-pro'",
+                              "input":"nope", ...}]}
+GET /lit/123             -> 422（同上）
+```
+
+| 问题 | 说明 |
+|---|---|
+| 状态码语义错 | 422 = "你的**格式**不对"；这里是"格式没问题，**资源不存在**" → 该 404 |
+| **泄露允许清单** | 报错里把全部合法值列了出来。模型名无所谓，换成用户名/邀请码就是**枚举漏洞** |
+| 第二份真相 | `KNOWN_MODELS` 变一次，`Literal` 也要改一次 |
+
+⚠️ 顺带订正一个直觉：**URL 路径参数永远是字符串**（`/v1/models/123` 里的 `123` 也是 `str`），
+所以"写 `str` 会漏掉数字类型的输入"这个担心不成立 —— 真正的漏检风险在"**谁负责判断在不在清单里**"。
+
+**③ `return` 而不是 `raise`**（实测，两种返回注解都测了）：
+
+```text
+有返回注解 -> dict[str, str]：  500 Internal Server Error
+                              （ResponseValidationError: dict_type ...
+                                input: HTTPException(status_code=404, detail='x')）
+没有返回注解：                 200 OK  {"status_code":404,"detail":"x","headers":null}
+```
+
+⭐ **最坏的是第二种：客户端拿到 200，以为成功了。** 这是"工具全绿但语义全错"的又一例
+（同 1.4e 的 `Bearear`、1.4c 的缩进错一个家族）。
+
+**④ 本项目落地**（`src/app/api/app.py` 的 `get_model`）：
+
+```python
+if model_name not in KNOWN_MODELS:
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"模型不存在: {model_name}",
+    )
+```
+
+实测：`/v1/models/deepseek-flash` → `200`；`/v1/models/this-model-does-not-exist` → `404 {"detail":"模型不存在: ..."}`。
+
 ## 6.2 自定义异常 + 全局处理器
 
 ```python
