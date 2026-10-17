@@ -370,7 +370,7 @@ wheels = [
 ]
 
 [[package]]
-name = "llm-service"
+name = "llm-app-engineering"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
