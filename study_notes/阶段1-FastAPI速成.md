@@ -1698,6 +1698,67 @@ D MockTransport 造 503: 502 {"detail":"上游返回状态码 503"}
 
 ⭐ **`except` 抓得越窄，"谁的错"记录得越准。** 用 `except Exception` 统一转 502 = 主动放弃这个能力。
 
+### 6.1d 400 vs 422：两道关卡 + 怎么读 422（6.2b 实战，2026-10-17 实测）⭐
+
+> 场景：`/v1/chat` 的最后一条消息不是 `user`（例如只有一条 `system`）时，应该回什么？
+
+#### ① 两道关卡，各管一件事
+
+| 关卡 | 谁在管 | 拦什么 | 状态码 |
+|---|---|---|---|
+| **契约层** | pydantic（`ChatRequest`） | **形状**：`role` 不在三个值里 / `messages` 空列表 / `temperature` 越界 | **422** |
+| **业务层** | 路由函数里的 `if` | **语义**：形状全对，但这件事不合理 | **400** |
+
+实测反例：`{"messages": [{"role": "system", "content": "你是助手"}]}` —— 字段全合法，
+但**没有人类提问**，回显它等于把"人设"当答案（`[echo] 你是助手`）。→ 改后返回
+`400 {"detail":"最后一条消息必须是 user，当前是 system"}`。
+
+**为什么不用 pydantic 的 `model_validator` 干掉这条检查**：
+
+| 理由 | 说明 |
+|---|---|
+| 职责混乱 | `schemas.py` 应只回答"数据长什么样"，不该回答"这个请求合不合理" |
+| 复用会跟着跑 | 换一个接口复用 `ChatRequest` 时，业务规则不该被一起带走 |
+| 状态码会错 | validator 失败统一变 **422**，而它本质是 400（语义问题） |
+
+⭐ 判据：**形状归 pydantic，语义归路由。**
+
+#### ② 422 有很多种 —— 必须读 `type` 和 `loc`
+
+五种输入全返回 422，但含义完全不同（实测）：
+
+| 输入 | `detail[0].type` | `detail[0].loc` |
+|---|---|---|
+| `{"messages": []}` | **`too_short`** | `["body","messages"]` |
+| `{}` | `missing` | `["body","messages"]` |
+| `{"messages": "hi"}` | `list_type` | `["body","messages"]` |
+| `role: "usr"` | `literal_error` | `["body","messages",0,"role"]` |
+| **请求体不是合法 JSON** | **`json_invalid`** | `["body", 1]` |
+
+⭐ **判据：看 422 先看 `type` + `loc`，再看状态码。** 状态码只说"被拦下了"，`type`/`loc` 才说"在哪一关、因为什么"。
+
+**真实踩坑（同一轮发生）**：用 PowerShell 内联写
+
+```powershell
+curl.exe ... --data "{\"messages\":[]}"     # ❌ 无效验证
+```
+
+服务器收到的字节是 `{\"messages\":[]}`（反斜杠被当字面量），于是返回 **422 `json_invalid`** ——
+**状态码"对了"，但原因完全不对**，等于没验。正确做法是把 JSON 写进临时文件：
+
+```powershell
+[IO.File]::WriteAllText("$env:TEMP\chat_empty.json", '{"messages":[]}', (New-Object System.Text.UTF8Encoding($false)))
+curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: application/json" --data "@$env:TEMP\chat_empty.json"
+# → 422 type=too_short loc=["body","messages"]  ✅ 这才是真的验到了契约层
+```
+
+#### ③ `detail` 回显什么安全
+
+| 回显内容 | 风险 | 结论 |
+|---|---|---|
+| `last.role`（`Literal` 三值之一） | 有界枚举，无法注入 | ✅ 安全 |
+| `last.content`（用户自由文本） | 超长撑爆响应/日志、换行造成日志注入 | ⚠️ 要截断/转义，或只回显长度或 ID |
+
 ## 6.2 自定义异常 + 全局处理器
 
 ```python
