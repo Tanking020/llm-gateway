@@ -103,7 +103,7 @@ Resolved 31 packages | Installed 11 packages
 | 2 | 最小应用与自动文档 | ✅ 已整理 | ✅ 已完成（1.1：`/health` + `/docs` + `/openapi.json` 实测 200） |
 | 3 | 三段参数 | ✅ 已整理 | ✅ 已完成（1.3：4 条路由，15 组请求实测；提交 `19aa9cf` / `94fb0a2`） |
 | 4 | pydantic 契约 | ✅ 已整理 | 🟡 部分（**输入契约已接入**：`POST /v1/chat` 用 `ChatRequest` 自动校验；`response_model` / 输出过滤未做） |
-| 5 | `Depends` 依赖注入 | ✅ 已整理 | ✅ 已完成（1.4a~1.4c：`get_settings` / 覆盖机制 / `yield` 依赖；1.4d 待接进路由） |
+| 5 | `Depends` 依赖注入 | ✅ 已整理 | ✅ 已完成（1.4a~1.4d-1：`get_settings` / 覆盖机制 / `yield` 依赖 / 抽共用工厂；1.4d-2 待接进路由） |
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ⬜ 未开始 |
 | 7 | 中间件与 CORS | ✅ 已整理 | ⬜ 未开始 |
 | 8 | 异步正确姿势 | ✅ 已整理 | 🟡 部分（阶段 0 的 `playground/` 实验已覆盖协程与并发基础） |
@@ -776,7 +776,7 @@ src\app\api\app.py:65: error: "ChatRequest" has no attribute "message"; maybe "m
 | 1 | `GET /v1/models/this-model-does-not-exist` → **200** `{"model_name":"this-model-does-not-exist"}` | 不存在的模型**返回 200**，接口"假装查到了"。应 **404** | **Step 6**（`HTTPException`） |
 | 2 | `POST /v1/chat {"messages":[{"role":"assistant",...}]}` → **200** 把"模型以前说的话"当答案回显 | **不检查最后一条是谁说的**（`system` / `assistant` 也会被回显） | **Step 4 / 6** |
 | 3 | `/v1/models/latest` 返回 `KNOWN_MODELS[0]`（硬编码） | 与 `settings.llm_model` **无关联**：改配置时两处会不一致 | **Step 4**（接真实上游 `/models`） |
-| 4 | `deps.py` 的 `get_llm_client()` 与 `main.py` 的 `create_client()` 的三行构造参数**刻意重复** | 1.4c 出现第 2 个消费者。**先不抽象**（不为"将来可能"提前建抽象），等 1.4d 确认它长期存在再抽共用模块 | **1.4d** |
+| 4 | ~~`deps.py` 的 `get_llm_client()` 与 `main.py` 的 `create_client()` 的三行构造参数刻意重复~~ | ✅ **已解决**（`f53c6dc`）：抽出 `src/app/llm_client.py` 的 `create_llm_client()` 两边共用 | **已完成** |
 | 5 | client 的**生命周期**该跟着请求还是跟着应用（实测每请求新建比共享慢 **2.23 倍**：51.3ms vs 23.0ms / 200 次） | 当前"每请求新建"是**教学选择**（为了看清 `yield` 的 setup/teardown），不是性能最优；共享一个 `AsyncClient` 实测并发 20 请求全 200 安全 | **1.4d** 决定：请求级用 `yield` 依赖，应用级用 `lifespan`（Step 6） |
 
 ⭐ **为什么要显式记"待办"而不是记"已知缺陷"**：缺陷清单会越积越长、没人管；**待办有归属** ——
