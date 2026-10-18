@@ -28,12 +28,20 @@ _STATUS_BY_CODE: dict[str, int] = {
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """把 AppError 的翻译器挂到 app 上（在 app 创建后调用一次）"""
+    """把各类异常的【翻译器】挂到 app 上（在 app 创建后调用一次）"""
 
+    # 装饰器括号里：异常类 -> 登记到【异常表】（之前用路径字符串的登记到【路由表】）
+    # 装饰器规则 = "把下面的函数，登记到某张表里的某一行"。
+    #   括号里的参数 = 这张表的【主键】
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+        """把业务异常 AppError 翻译成统一形状的错误响应（HTTP 状态码由 _STATUS_BY_CODE 决定）"""
+        # 用业务码去查表；查不到就用默认 400 —— 兜底防的是"漏登记"，不是"猜对"
         http_status = _STATUS_BY_CODE.get(exc.code, status.HTTP_400_BAD_REQUEST)
+        # JSONResponse：把 content 序列化成 JSON，并自动设好 Content-Type: application/json
         return JSONResponse(
-            status_code=http_status,
+            status_code=http_status,  # 回给客户端的 HTTP 状态码（由业务码映射而来）
+            # 外层 error 是命名空间：将来加 request_id 等字段时，一眼能分清哪些属于错误信息
+            #   code 给机器判断（稳定不变），message 给人看（可改文案）
             content={"error": {"code": exc.code, "message": exc.message}},
         )
