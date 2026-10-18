@@ -103,7 +103,7 @@ Resolved 31 packages | Installed 11 packages
 | 2 | 最小应用与自动文档 | ✅ 已整理 | ✅ 已完成（1.1：`/health` + `/docs` + `/openapi.json` 实测 200） |
 | 3 | 三段参数 | ✅ 已整理 | ✅ 已完成（1.3：4 条路由，15 组请求实测；提交 `19aa9cf` / `94fb0a2`） |
 | 4 | pydantic 契约 | ✅ 已整理 | 🟡 部分（**输入契约已接入**：`POST /v1/chat` 用 `ChatRequest` 自动校验；输出由**返回注解** `-> ChatResponse` 约束，与 `response_model=` 等价；显式 `response_model` 参数与分页/列表响应模型未做） |
-| 5 | `Depends` 依赖注入 | ✅ 已整理 | ✅ 已完成（1.4a~1.4d-2：`get_settings` / 覆盖机制 / `yield` 依赖 / 抽共用工厂 / 真实调上游） |
+| 5 | `Depends` 依赖注入 | ✅ 已整理 | ✅ 已完成（流水 `1.4`~`1.4l`：`get_settings` / 覆盖机制 / `yield` 依赖 / 依赖缓存 / 嵌套 / 抽共用工厂 / 真实调上游；后又经 6.4 把 client 生命周期从请求级改为应用级） |
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ✅ 已完成（6.1~6.4：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client；配套实测见 §6.1b~§6.1e、§6.3b、§6.4b） |
 | 7 | 中间件与 CORS | ✅ 已整理 | ⬜ 未开始 |
 | 8 | 异步正确姿势 | ✅ 已整理 | 🟡 部分（阶段 0 的 `playground/` 实验已覆盖协程与并发基础） |
