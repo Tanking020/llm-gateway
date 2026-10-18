@@ -66,3 +66,28 @@ class ChatResponse(BaseModel):
     # 本次消耗的 token 数
     # 默认 0 = "没有信息时用 0"
     usage_tokens: int = 0
+
+
+# 接口语义不同时不能复用，要写新的响应模型：
+class ModelItem(BaseModel):
+    """模型清单里的一个模型：只暴露调用方需要的字段"""
+
+    # 字段名要与【上游 JSON 的键名】一致，才能用 model_validate(上游单条) 直接转换
+    id: str = Field(description="模型 id，调用 /v1/chat 时传它")
+
+    # 供应商给的展示名，设成可选（并非所有 OpenAI 兼容服务都返回 name 字段）
+    name: str | None = Field(default=None, description="供应商给的展示名")
+
+    context_window: int | None = Field(default=None, ge=1, description="上下文窗口（token 数）")
+
+
+class ModelListResponse(BaseModel):
+    """模型清单的统一响应形状（后续 /v1/models 与 /v1/upstream/models 共用）"""
+
+    # total 是【过滤后命中的总数】，不是本页条数 —— 分页时这两个数不一样，不要弄混
+    total: int = Field(ge=0, description="命中总数（不是本页条数）")
+
+    # 此处用 list[ModelItem] 而不是 list[dict]的好处:
+    #   文档层：/docs 能展开每个字段（给使用 API 的人看）
+    #   安全层：响应模型是【白名单】：没声明的字段不可能出现在响应里
+    items: list[ModelItem] = Field(description="本页的模型列表")

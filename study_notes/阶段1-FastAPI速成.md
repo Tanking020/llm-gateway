@@ -102,7 +102,7 @@ Resolved 31 packages | Installed 11 packages
 | 1 | HTTP 与 ASGI 地基 | ✅ 已整理 | ✅ 已完成（1.2；新增 §1.4b / §1.4c 两组本仓库实测：并发三种命运、原始报文与状态码） |
 | 2 | 最小应用与自动文档 | ✅ 已整理 | ✅ 已完成（1.1：`/health` + `/docs` + `/openapi.json` 实测 200） |
 | 3 | 三段参数 | ✅ 已整理 | ✅ 已完成（1.3：4 条路由，15 组请求实测；提交 `19aa9cf` / `94fb0a2`） |
-| 4 | pydantic 契约 | ✅ 已整理 | 🟡 部分（**输入契约已接入**：`POST /v1/chat` 用 `ChatRequest` 自动校验；输出由**返回注解** `-> ChatResponse` 约束，与 `response_model=` 等价；显式 `response_model` 参数与分页/列表响应模型未做） |
+| 4 | pydantic 契约 | ✅ 已整理 | ✅ 已完成（输入契约 `ChatRequest`；输出契约：返回注解 + `response_model` 的取舍已实测；`ModelItem` / `ModelListResponse` 落地到 `/v1/upstream/models`，`/docs` 可展开。见 §4.5b） |
 | 5 | `Depends` 依赖注入 | ✅ 已整理 | ✅ 已完成（流水 `1.4`~`1.4l`：`get_settings` / 覆盖机制 / `yield` 依赖 / 依赖缓存 / 嵌套 / 抽共用工厂 / 真实调上游；后又经 6.4 把 client 生命周期从请求级改为应用级） |
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ✅ 已完成（6.1~6.4：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client；配套实测见 §6.1b~§6.1e、§6.3b、§6.4b） |
 | 7 | 中间件与 CORS | ✅ 已整理 | ⬜ 未开始 |
@@ -1039,6 +1039,74 @@ class UserOut(UserBase):
 
 > ⭐ **判据**：**"这个数据会离开我的系统边界吗？"**
 > 会 → 单独定义输出模型；不会 → 可以共用。
+
+### 4.5b 本仓库落地：`response_model` 与返回注解的取舍（4a / 4b，2026-10-18 实测）⭐
+
+#### ① 两种写法，什么时候用哪个
+
+| 写法 | FastAPI 的行为 | 适用 |
+|---|---|---|
+| `async def f() -> Resp` | **自动**把它当 `response_model` | 返回的东西**就是**对外契约（本项目主用） |
+| `@app.get(..., response_model=Resp)` + `-> Internal` | **`response_model` 赢**（文档与过滤都按它） | 内部模型**宽于**对外契约，要剥掉字段 |
+| 两个都写、且相同 | 能跑，但**同一件事写两遍** | ❌ 不要 |
+
+实测（同时存在且不同）：
+
+```text
+/c  response_model=Resp, -> InternalItem   OpenAPI: {"$ref": ".../Resp"}
+返回 WideResp（多一个 debug 字段）+ response_model=Resp
+  -> {"items": [{"id": "x"}]}              debug 被剥掉
+```
+
+#### ② ⚠️ 反直觉：`response_model` 不是"随便削一刀"
+
+它要求返回对象**至少包含契约里的全部必填字段**：多了削掉，**少了 → 500**（实测）：
+
+```text
+返回 InternalItem（无 items 字段）+ response_model=Resp（要 items）
+-> 500 ResponseValidationError: {'type': 'missing', 'loc': ('response', 'items')}
+```
+
+#### ③ 两层校验的分工
+
+| 层 | 在哪 | 作用 | 失败时 |
+|---|---|---|---|
+| 业务层 | `ModelItem.model_validate(item)` | 把不可信的上游 dict 变成类型安全的模型 | 上游缺 `id` → **500**（我方假设崩了，不是客户端的错） |
+| 响应层 | 返回注解 / `response_model` | **白名单**：没声明的字段不可能出去 | 必填字段缺失 → **500** |
+
+⭐ `response_model` 是**最后一道网**，不是第一道。业务函数返回 `list[ModelItem]` 的好处：
+失败点更早、mypy 看得懂、未来 CLI / 缓存也能复用。
+
+#### ④ `list[ModelItem]` 而不是 `list[dict]`（实测对照）
+
+```text
+list[ModelItem] -> {"items": {"$ref": ".../ModelItem"}}         /docs 可展开字段
+list[dict]      -> {"items": {"additionalProperties": true}}     /docs 只显示 [{}]
+```
+
+- **文档层**：`/docs` 能看到 `id` / `name` / `context_window` 的类型与说明
+- **安全层**：响应模型 = 白名单；上游多塞的 `owned_by` / `effort` / `api_capabilities` 全部挡在门外
+
+⚠️ **但 dict 也过不了这道网的反面不成立**：`list[dict]` + `response_model=ModelListResponse` **仍然会过滤**
+（实测 `{"total":1,"items":[{"id":"x","name":"X"}]}`，`secret` 被剥）。区别在于**失败得更晚**，
+且业务函数失去了类型信息。
+
+#### ⑤ 本仓库实测（4b 完成态）
+
+```text
+GET /v1/upstream/models
+200 {"total":2,"items":[
+      {"id":"deepseek-flash","name":"DeepSeek-V4.1-Flash","context_window":1048576},
+      {"id":"deepseek-v4-pro","name":"DeepSeek-V4-Pro","context_window":1048576}]}
+
+OpenAPI 引用: {"$ref": "#/components/schemas/ModelListResponse"}
+ModelItem 字段: ['id', 'name', 'context_window']
+ModelListResponse 必填: ['total', 'items']
+```
+
+⚠️ **坑（本轮真实踩到）**：用 `TestClient(app)` **不加 `with`** 去调这条路由 → **500**，
+堆栈是 `KeyError: 'llm_client'` —— 因为 `lifespan` 没执行，`app.state` 里没有共享 client。
+这与 §6.4b 记的是同一个坑，**第二次踩到**。
 
 ## 4.6 自检
 
