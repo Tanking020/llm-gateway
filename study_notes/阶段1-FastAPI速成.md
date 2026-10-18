@@ -1759,6 +1759,76 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 | `last.role`（`Literal` 三值之一） | 有界枚举，无法注入 | ✅ 安全 |
 | `last.content`（用户自由文本） | 超长撑爆响应/日志、换行造成日志注入 | ⚠️ 要截断/转义，或只回显长度或 ID |
 
+### 6.1e 业务层 vs 接口层：本项目到底哪层是哪个文件（2026-10-18）
+
+> 一句话判据：**接口层懂 HTTP，业务层懂业务。** 问"离了 HTTP 还活得下去吗"就够了。
+
+#### ① 本项目现状
+
+```text
+接口层（懂 HTTP）
+  src/app/api/app.py                       路由 / 状态码 / 响应序列化
+  src/app/api/deps.py                      依赖装配（Depends 是框架机制）
+  src/app/schemas.py                       对外契约（请求/响应形状）
+  src/app/errors.py 的 register_exception_handlers + _STATUS_BY_CODE
+业务层（懂业务规则）
+  ⚠️ 目前没有 —— "最后一条必须是 user" 这条规则暂时住在 app.py 的 if 里
+  将来：src/app/services/chat.py
+基础设施层（懂外部世界）
+  src/app/config.py / src/app/llm_client.py
+  src/app/errors.py 的 AppError（纯业务异常，零 fastapi 依赖）
+```
+
+#### ② `errors.py` 是跨两层的，这是有意的妥协
+
+| 内容 | 属于 | 判据 |
+|---|---|---|
+| `class AppError(Exception)` | **业务层** | 不知道 HTTP，只有 `code` / `message` |
+| `_STATUS_BY_CODE` | **接口层** | 知道 400 / 409 |
+| `register_exception_handlers` | **接口层** | import 了 `FastAPI` / `JSONResponse` |
+
+拆的时机：出现 `services/` 目录或异常种类变多时，拆成
+`src/app/errors.py`（只有 `AppError`）+ `src/app/api/exception_handlers.py`（映射 + 注册）。
+⭐ 判据：**一个文件里同时有 `import fastapi` 和纯业务类，早晚要拆**；现在不拆是因为拆的收益 < 认知成本。
+
+#### ③ 一眼判断文件属于哪层
+
+| 看到什么 | 属于 |
+|---|---|
+| `from fastapi import ...` / `Request` / `JSONResponse` / `@app.get` / `status.HTTP_4xx` / `Depends` | 接口层 |
+| `BaseModel` 定义的**输入/输出形状** | 契约（接口层边界） |
+| `httpx` / `os.environ` / DB 驱动 | 基础设施层 |
+| 纯 `if` + 抛 `AppError`，**不 import fastapi** | 业务层 |
+
+**硬规则：业务层永远不 import `app.api.*` 或 `fastapi`。** 出现即说明控制流反了。
+调用方向单向：`接口层 → 业务层 → 基础设施层`，禁止反向 import。
+
+#### ④ 规则放错层会发生什么
+
+| | 规则在接口层（现状） | 规则在业务层（将来） |
+|---|---|---|
+| 被 CLI 复用 | ❌ 抄一遍 | ✅ import |
+| 测试 | 要造 HTTP 请求 | 直接传 `list[Message]` |
+| 换框架 | 跟着重写 | 不动 |
+| 规则变多 | `app.py` 膨胀 | `app.py` 保持薄 |
+
+⭐ **分层跟着"变化的压力"走，不跟教条走**：只有 4 行、只有 1 个调用方时，抽出去只是搬家。
+
+#### ⑤ 错误响应的形状应当只有一份
+
+现在实际存在**三种**形状：
+
+```text
+400 业务异常   {"error": {"code": "...", "message": "..."}}
+404 HTTPException {"detail": "..."}
+422 校验失败   {"detail": [{...}]}     ← 还是数组
+```
+
+判据：**错误响应的形状应当让客户端只写一份解析代码。** 现在要写三份 → 是缺陷。
+收口方式（留到 6.3c）：给 `HTTPException` 与 `RequestValidationError` 各注册一个处理器，统一成
+`{"error": {"code", "message", ...}}`。**先做 6.3b（500 + 请求 ID）再动手**，否则会改两遍。
+
+
 ## 6.2 自定义异常 + 全局处理器
 
 ```python
