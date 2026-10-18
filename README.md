@@ -2,8 +2,10 @@
 
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
-**当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成，
-阶段 1 · FastAPI 服务开发中。详见[路线图](#路线图)。
+**当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 6 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+错误处理与 `lifespan`：404 / 400 / 502 / 500+请求 ID、统一错误响应、应用级共享 HTTP 客户端）。
+详见[路线图](#路线图)。
 
 ---
 
@@ -72,6 +74,44 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 
 ---
 
+## 接口一览（截至阶段 1 · Step 6）
+
+| 方法 | 路径 | 说明 | 主要状态码 |
+|---|---|---|---|
+| GET | `/health` | 健康检查（部署探活用） | 200 |
+| GET | `/v1/models` | 硬编码的模型清单；支持 `?prefix=` / `?limit=`（1 ~ 100） | 200 / 422 |
+| GET | `/v1/models/latest` | 默认模型 | 200 |
+| GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 |
+| POST | `/v1/chat` | 聊天（业务逻辑仍为 `echo` 占位）；最后一条消息必须是 `user` | 200 / 400 / 422 |
+| GET | `/v1/upstream/models` | **真实调用**上游 `/models`，与硬编码清单对照 | 200 / 502 |
+
+**错误响应形状**（Step 6 起）：
+
+```jsonc
+// 业务错误（400 / 409 …）：错误码给机器判断，message 给人看
+{"error": {"code": "LAST_MESSAGE_NOT_USER", "message": "最后一条消息必须是 user，当前是 system"}}
+
+// 服务内部错误（500）：只回一句人话 + 请求 ID，堆栈只写服务端日志
+{"error": {"code": "INTERNAL_ERROR", "message": "服务内部错误", "request_id": "748f0334b804"}}
+```
+
+> ⚠️ 框架层的 404（路由不存在）与 422（请求形状不合法）目前仍是 FastAPI 默认的 `{"detail": ...}`，
+> 三种形状并存属于**已知待办**（见[路线图](study_notes/学习档案与路线图.md) 待办 #6），计划在 Step 11 统一。
+
+**手工验证**（PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名，必须写 `curl.exe`）：
+
+```powershell
+curl.exe -s -i http://127.0.0.1:8000/v1/models/deepseek-flash          # 200
+curl.exe -s -i http://127.0.0.1:8000/v1/models/does-not-exist          # 404
+
+# 请求体含中文时写进临时文件，避免 PowerShell 转义把 JSON 弄坏
+$body = '{"messages":[{"role":"user","content":"你好"}]}'
+[IO.File]::WriteAllText("$env:TEMP\chat.json", $body, (New-Object System.Text.UTF8Encoding($false)))
+curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: application/json" --data-binary "@$env:TEMP\chat.json"
+```
+
+---
+
 ## 项目结构
 
 ```text
@@ -88,12 +128,13 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 │   ├── __init__.py
 │   ├── config.py             # 全部可调参数集中在这里，类型安全且带校验
 │   ├── schemas.py            # 对外数据契约：请求 / 响应的形状定义
+│   ├── errors.py             # 业务异常 AppError + 错误码→HTTP 状态码映射 + 异常处理器注册
 │   ├── llm_client.py         # 上游 HTTP 客户端的唯一构造点（create_llm_client）
 │   ├── main.py               # 命令行入口：离线演示 + `ping` 上游连通性检查
 │   └── api/
 │       ├── __init__.py
-│       ├── deps.py           # 依赖注入：get_settings / get_llm_client（yield 依赖）
-│       └── app.py            # FastAPI 应用对象（uvicorn app.api.app:app）
+│       ├── deps.py           # 依赖注入：get_settings / get_llm_client（从 app.state 取共享 client）
+│       └── app.py            # FastAPI 应用对象 + lifespan + 路由（uvicorn app.api.app:app）
 │
 ├── playground/               # 实验区：一次性验证代码，随时可删，不参与交付
 │
@@ -129,8 +170,8 @@ uv run mypy .                 # 3. 类型检查（strict + warn_unreachable，�
 | 检查 | 结果 |
 |---|---|
 | `ruff check .` | All checks passed! |
-| `ruff format --check .` | 13 files already formatted |
-| `mypy .` | Success: no issues found in 13 source files |
+| `ruff format --check .` | 14 files already formatted |
+| `mypy .` | Success: no issues found in 14 source files |
 
 > 三条命令的**范围一律用 `.`**（全项目，含 `playground/`）。`mypy` 的默认范围由
 > `[tool.mypy] files = ["."]` 保证，所以带不带参数结果一致。
@@ -152,6 +193,10 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **异步优先（`async`/`await`）** | LLM 应用的时间几乎全花在"等"（等模型返回 1~30 秒、等数据库、等外部 API）。同步写法在等待时占住执行权，并发请求会退化成串行 | 需避免在异步路径里调用阻塞库；CPU 密集任务更适合进程池 |
 | **mypy strict + ruff 双工具** | 二者分工不同：**ruff 管"形状"**（格式、导入顺序、可疑写法），**mypy 管"含义"**（类型是否自相矛盾）。后者需要理解代码语义，是 ruff 做不到的 | 严格模式初期会报较多错，需要写全类型注解 |
 | **上层供应商中立**（`llm_api_key` / `llm_base_url` / `llm_model`） | 走"OpenAI 兼容协议"，但配置项**不以供应商命名** —— 换厂商只改 `.env` 三行，代码零改动（实测：把 `base_url` 指向另一家兼容服务，`/models` 检查命令原样可用） | 需要在代码与供应商 JSON 之间做一层转换；专有能力（如某家私有参数）不能直接用 |
+| **分层：接口层 / 业务层 / 基础设施层** | 判据只有一条：**这段代码离了 HTTP 还活得下去吗**。接口层懂 `Request` / 状态码 / 响应；业务层只认普通 Python 值；基础设施层管 httpx / 配置 / DB。硬规则：**业务层永远不 import `fastapi`**，调用方向单向 | 现阶段还要为"分层而分层"会过度设计 —— 一个 4 行规则、只有一个调用方时抽到 `services/` 只是搬家；出现第二个调用方（CLI / 另一个接口）才是拆分信号 |
+| **业务错误码与 HTTP 状态码解耦** | `AppError` 只带 `code` + `message`，**不带 `status_code`**；映射集中在 `_STATUS_BY_CODE` 一处。同一个 400 可对应多个业务码，客户端按 `code` 分支，不再靠匹配文案 | 多一层映射表；未登记的码会落到默认 400（属于"防崩溃"而非"正确"，需靠 `Literal`/测试兜住） |
+| **HTTP 客户端应用级共享（`lifespan`）** | 每请求新建客户端要重新做 TCP + TLS 握手：实测 200 次请求 **51.3 ms → 23.0 ms（快 2.23 倍）**。用 `lifespan` 在启动时建一次、关闭时释放；创建/销毁归 lifespan，**取用仍走依赖**（保留 `dependency_overrides` 可测接缝） | 单测必须 `with TestClient(app)` 才会触发 lifespan；`app.state` 是全局可变状态，用例间要手工还原 |
+| **错误日志与响应分离** | 500 只回 `request_id` + 一句人话，**堆栈只进服务端日志** —— 既不泄露内部结构，又能靠 ID 精确定位 | 目前日志只有 stderr、无格式化、`logger.info` 会被丢弃；生产需补日志配置与集中收集（已知待办 #7） |
 
 ---
 
@@ -177,12 +222,15 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - `extra="ignore"` 静默吞掉拼错的配置键：改为 `forbid` 后错误暴露在启动时
 - **密钥被自己的报错打印出来**：配置校验失败时 pydantic 默认回显原始值 —— 处理方式（全历史取证、吊销重发、`hide_input_in_errors`）与整改规则见规范 §10.1
 - **一个曾被记错的结论被自己推翻**：行宽规则原先记成"按字符数"，后用**判定性实验**证伪并纠正为"按显示宽度（汉字占 2 列）"—— 错误来源是实验时把中文经管道喂进工具导致编码损坏，见[工具与依赖速查](study_notes/工具与依赖速查.md) §5
+- **状态码"对了"不等于验证通过**：PowerShell 内联拼 JSON 导致服务器收到伪 JSON，422 是拿到了，但 `type=json_invalid`（解析关被拦）而非 `too_short`（契约关被拦）—— 判据改成"先看 `type`+`loc`，再看状态码"
+- **`app.state, client = x`（逗号）与 `app.state.client = x`（点号）是两种语义**：前者是解包赋值，对 `AsyncClient` 直接 `TypeError`；若右边可迭代更阴 —— 整个 `state` 对象会被静默替换
+- **同名重绑定会让"注册"失效**：模块里出现两个 `app = FastAPI(...)` 时，异常处理器注册在旧对象上，uvicorn 却用新对象 → 所有业务异常静默回落成 500
 
 | 文档 | 内容 |
 |---|---|
 | [学习档案与路线图.md](study_notes/学习档案与路线图.md) | 目标、能力缺口分析、阶段规划 |
 | [阶段0-工程基础.md](study_notes/阶段0-工程基础.md) | uv / Git / 项目结构 / pydantic / 类型注解 / 异步 / 测试 / lint / Docker |
-| [阶段1-FastAPI速成.md](study_notes/阶段1-FastAPI速成.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 中间件 → SSE 流式 → 数据库 → 测试 → 部署 |
+| [阶段1-FastAPI速成.md](study_notes/阶段1-FastAPI速成.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 测试 → 部署 |
 | [学习过程记录.md](study_notes/学习过程记录.md) | 步骤流水、踩坑记录、关键结论 |
 | [工具与依赖速查.md](study_notes/工具与依赖速查.md) | 第三方包与工程工具速查：定位、安装、常用 API 与命令、易错点 |
 | [工程规范与协作约定.md](工程规范与协作约定.md) | 本项目的工程规范：命名、分层、质量门、安全约定 |
