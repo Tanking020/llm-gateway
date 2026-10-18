@@ -2019,6 +2019,56 @@ async def health(request: Request) -> dict[str, object]:
 > lifespan 让它**在服务真正启动时**加载一次，**测试时可以绕过**（甚至不触发）。
 > 对 LLM 应用尤其关键 —— 加载 embedding 模型可能要好几十秒。
 
+### 6.4b 本项目落地：把 HTTP client 改成应用级共享（2026-10-18 实测）⭐
+
+#### ① 改了什么
+
+| | 改前（`yield` 依赖） | 改后（`lifespan` + `app.state`） |
+|---|---|---|
+| 谁创建 | 每个请求进来时 | 进程启动时**一次** |
+| 谁关闭 | 框架在请求结束时 | 进程关闭时**一次** |
+| 连接池 | 每次新建 → 重新 TCP + TLS 握手 | **复用** |
+| 实测 200 次请求 | 51.3 ms | 23.0 ms（**快 2.23 倍**） |
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async with create_llm_client() as client:   # 退出时自动 aclose()
+        app.state.llm_client = client           # 点号！挂到 app 上
+        yield
+```
+
+```python
+def get_llm_client(request: Request) -> httpx.AsyncClient:
+    client: httpx.AsyncClient = request.app.state.llm_client
+    return client
+```
+
+#### ② 实测：生命周期真的按预期走
+
+```text
+异常处理器: ['HTTPException', 'RequestValidationError', 'WebSocketRequestValidationError', 'AppError', 'Exception']
+startup 后 is_closed: False
+请求1: 200 {"total":2,...}
+两次请求用的是同一个 client: True
+运行中 is_closed: False
+shutdown 后 is_closed: True          ← async with 自动 aclose
+```
+
+#### ③ 三个"工具抓不到、运行时必炸"的坑（本轮真实发生）
+
+| 坑 | 症状 | 实测/原因 |
+|---|---|---|
+| **`app.state,llm_client = client`（逗号）** | 启动直接失败 | 实测 `TypeError: cannot unpack non-iterable AsyncClient object`。若右边可迭代更阴：`app.state, x = [1,2]` → **`app.state` 被换成 `1`**（整个 state 对象被覆盖），无任何报错 |
+| **两个 `app = FastAPI(...)`** | 所有业务错误变 500 | 第二个覆盖模块级 `app`；`register_exception_handlers(app)` 注册在**旧的**上 → uvicorn 用新的 → 处理器全丢。判据：**一个模块只允许出现一次 `app = FastAPI(...)`** |
+| **单测不用 `with TestClient(app)`** | `app.state` 里没有 `llm_client` → 500 | lifespan 只在上下文管理器里执行（2026-10-17 已实测）。**用过 `with` 之后再不用，会拿到已关闭的 client**（`is_closed=True`），更隐蔽 |
+
+#### ④ `AsyncIterator[None]` 而不是 `dict`
+
+`yield` 后面不写值 → 注解 `AsyncIterator[None]`；若 `yield {"k": v}`，注解写成 `AsyncIterator[dict[str, object]]`，
+且那个 dict **并入每个请求的 `request.state`**（不是 `app.state`，2026-10-17 实测）。
+
+
 ## 6.5 自检
 
 > 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 6 错误处理与 lifespan）。
