@@ -6,6 +6,12 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
     本文件是【常驻服务】的应用对象，两者生命周期与职责都不同
 """
 
+# 异步迭代器的类型，lifespan 的返回注解要用
+from collections.abc import AsyncIterator
+
+# 把"异步生成器函数"变成 lifespan（可用的上下文管理器）
+from contextlib import asynccontextmanager
+
 # Annotated：用于给函数签名中参数的 "类型位" 扩容
 from typing import Annotated
 
@@ -18,7 +24,26 @@ from fastapi import FastAPI, HTTPException, Query, status
 
 from app.api.deps import LlmClientDep, SettingsDep
 from app.errors import AppError, register_exception_handlers
+from app.llm_client import create_llm_client
 from app.schemas import ChatRequest, ChatResponse
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """
+    应用启动时建共享 client，关闭时关掉它（整个进程各一次，不是每请求）
+
+    为什么用 async with 包住 yield：
+        退出 async with 时会自动 await client.aclose()（httpx 的 __aexit__）
+        写成 yield 之后的普通语句，异常时那行会被跳过 → 连接池泄漏
+    """
+    # 启动段：整个进程只跑一次
+    async with create_llm_client() as client:
+        # 点号！把 client 挂到 app.state 的 llm_client 属性上（逗号是解包赋值，会炸）
+        app.state.llm_client = client
+        yield  # 服务运行期间停在这里；关闭时从这行继续
+    # 关闭段：退出 async with 自动 aclose()
+
 
 # app 就是 uvicorn 要托管的那个对象
 # 命令行里写 app.api.app:app 的读法：包 app -> 子包 api -> 模块 app -> 里面的变量 app
@@ -26,7 +51,9 @@ app = FastAPI(
     title="llm-app-engineering",
     description="LLM 应用后端（学习项目，阶段 1）",
     version="0.1.0",
+    lifespan=lifespan,
 )
+
 
 register_exception_handlers(app)
 
@@ -131,7 +158,8 @@ async def upstream_models(client: LlmClientDep) -> dict[str, object]:
     """
     真实调用上游 /models。与 /v1/models（硬编码）对照用。
 
-    client 是【依赖】：框架造好并注入，请求结束后自动关闭
+    client 是【依赖】：从 app.state 取出由 lifespan 创建的【应用级共享】客户端，
+    请求结束不会被关闭（连接池要复用），进程关闭时由 lifespan 统一释放
     """
     # 更新：上游挂了返回 502（上游错误），不能返回 500（LLM 应用后端（我们）错误）
     try:
