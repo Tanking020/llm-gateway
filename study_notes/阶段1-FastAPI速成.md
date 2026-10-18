@@ -1891,6 +1891,64 @@ async def all_errors(request: Request, exc: Exception) -> JSONResponse:
 return JSONResponse(status_code=500, content={"error": "internal_error", "request_id": rid})
 ```
 
+## 6.3b 500 兜底 + 请求 ID：日志到底去哪儿（2026-10-18 实测）⭐⭐
+
+#### ① 三张网，从近到远
+
+```text
+raise AppError          → _app_error_handler        （业务异常，400/409…，detail 可控）
+raise 任意 Exception    → _unhandled_error_handler  （500 + request_id，堆栈只进日志）
+处理器自己也炸          → uvicorn 原生 500（空 body，无 content-type）  ← 实测
+```
+
+⭐ 查找顺序是 `type(exc).__mro__` **从子到父**，所以 `HTTPException` 永远先命中它自己的内置处理器，
+不会被 `Exception` 兜底吃掉（实测：`HTTPException(418)` → `418 {"detail":"我是茶壶"}`）。
+
+#### ② 日志的实际落点（实测原文）
+
+```text
+INFO:     Uvicorn running on http://127.0.0.1:8015 (Press CTRL+C to quit)
+未处理异常 request_id=2294deddc8e1 path=/__boom        ← 我们的 logger.exception（无格式）
+Traceback (most recent call last):
+  ...
+KeyError: 'datas'
+INFO:     127.0.0.1:54243 - "GET /__boom HTTP/1.1" 500 Internal Server Error   ← access log
+ERROR:    Exception in ASGI application                 ← uvicorn 再打一遍
+Traceback (most recent call last):
+  ...
+KeyError: 'datas'
+```
+
+六条实测事实：
+
+| # | 事实 |
+|---|---|
+| 1 | 目的地 = **启动 uvicorn 那个终端的 stderr**；**不写文件**、关窗口即消失 |
+| 2 | 我们的日志**没有时间戳/级别/模块名** —— root logger 无 handler、级别 WARNING，落到 `lastResort` |
+| 3 | **两段 traceback 不是重复**：`starlette/middleware/errors.py:186` 生成响应后又 `raise exc`，uvicorn 接住再打一次 |
+| 4 | **`logger.info(...)` 现在完全不出现**（级别不够）—— 静默丢弃 |
+| 5 | `INFO: 127.0.0.1 - "GET ..."` 是 uvicorn **access log**，与应用日志是两条通道 |
+| 6 | PowerShell 把 stderr 标成红字 `NativeCommandError`，那不是额外错误 |
+
+#### ③ `request_id` 的真正价值
+
+```text
+用户：我报错了，ID 是 748f0334b804
+你：  Select-String -Path "$env:TEMP\app.log" -Pattern "748f0334b804" -Context 0,30
+```
+
+**用户给一个不含内部信息的随机串，你定位到唯一那条日志。** 单机够用；
+多机/微服务要补三样：日志集中收集（Loki/ELK）、`trace_id`（W3C `traceparent`，跨服务）、
+结构化日志（JSON + 固定字段）。
+
+#### ④ 兜底处理器的边界
+
+| 原则 | 原因（实测） |
+|---|---|
+| 里面**只做**三件事：记日志、拼 JSON、返回 | 它自己抛异常时，客户端拿到**空 body、无 content-type** 的 500（没有更外层的网了） |
+| 绝不回显 `str(exc)` / 堆栈 | 500 泄露内部结构（§6.3） |
+| 日志必须带 `request_id` | 否则只有时间，无法与用户报的 ID 对上 |
+
 ## 6.4 `lifespan`：启动与关闭 ⭐
 
 **⚠️ 旧写法已废弃**：

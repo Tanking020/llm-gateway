@@ -8,6 +8,12 @@
     不需要知道该回 400 还是 409 —— 这个映射集中一处，改规则只改这里
 """
 
+# logging: 标准库【日志】模块。用它而不是 print —— 能带级别、时间、模块名，且可配置输出到文件
+import logging
+
+# uuid: 生成随机 ID，无需中心分配，适合做请求 ID
+import uuid
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
@@ -25,6 +31,10 @@ class AppError(Exception):
 _STATUS_BY_CODE: dict[str, int] = {
     "LAST_MESSAGE_NOT_USER": status.HTTP_400_BAD_REQUEST,
 }
+
+# 以模块名为 logger 名，日志里能一眼看出是哪一行代码打的
+# 它不会自己输出，要等有人给 root logger 配 handler（uvicorn 默认已配好，输出到终端）
+logger = logging.getLogger(__name__)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -44,4 +54,24 @@ def register_exception_handlers(app: FastAPI) -> None:
             # 外层 error 是命名空间：将来加 request_id 等字段时，一眼能分清哪些属于错误信息
             #   code 给机器判断（稳定不变），message 给人看（可改文案）
             content={"error": {"code": exc.code, "message": exc.message}},
+        )
+
+    # 注册"兜底"翻译器：任何没被更具体处理器接住的异常都落到这里
+    @app.exception_handler(Exception)
+    async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        """兜底：未预期异常 -> 500 + 统一的错误形状 + request_id（堆栈只写日志）"""
+        # 设置为 12 位十六进制，够用好念
+        request_id = uuid.uuid4().hex[:12]
+        # logger.exception 会自动附带当前异常的完整 traceback（logger.error 不会）
+        logger.exception("未处理异常 request_id=%s path=%s", request_id, request.url.path)
+        # 回给客户端一句人话 + ID: 绝不回显 str(exc) 或堆栈
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,  # 500 = 我方服务器出错
+            content={
+                "error": {
+                    "code": "INTERNAL_ERROR",  # 稳定业务码：客户端只需认这一个
+                    "message": "服务内部错误",  # 给人看，不泄露任何内部细节
+                    "request_id": request_id,  # 用户报错时提供它，我方据此搜日志
+                }
+            },
         )
