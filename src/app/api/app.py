@@ -25,7 +25,7 @@ from fastapi import FastAPI, HTTPException, Query, status
 from app.api.deps import LlmClientDep, SettingsDep
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, ModelItem, ModelListResponse
 
 
 @asynccontextmanager
@@ -130,9 +130,12 @@ async def chat(request: ChatRequest, config: SettingsDep) -> ChatResponse:
     return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
 
 
-async def fetch_upstream_models(client: LlmClientDep) -> list[str]:
+async def fetch_upstream_models(client: LlmClientDep) -> list[ModelItem]:
     """
     查上游真实可用的模型名列表
+
+    上游返回 10 个键，我们只用 3 个 —— 用 model_validate 把原始 dict 转成
+    ModelItem: 多余的键被忽略（白名单），缺 id 会在这一行直接报错
 
     这是本项目第一次由服务端主动访问外部网络：
         之前的 /v1/models 返回的是硬编码的 KNOWN_MODELS；
@@ -149,12 +152,19 @@ async def fetch_upstream_models(client: LlmClientDep) -> list[str]:
     """
     resp = await client.get("/models")
     resp.raise_for_status()
+    # json() 返回的是【未校验的原始数据】，声明成全 object 只是为了让 mypy 允许我们继续处理
+    #   ⚠️ 这个注解防不住上游改结构：payload["data"] 若被改名会 KeyError → 500（不是 422 / 502）
     payload: dict[str, list[dict[str, object]]] = resp.json()
-    return [str(item["id"]) for item in payload["data"]]
+    # model_validate 是 Pydantic 的类方法，作用：
+    #   把一个字典（或 JSON）校验并转换成 Pydantic 模型实例
+    #   通过这个转换把不可信的原始数据变成经过校验、类型安全的 Python 对象
+    return [ModelItem.model_validate(item) for item in payload["data"]]
 
 
+# FastAPI 构建路由时会检查：有显式 response_model 就用它，没有就用【返回注解】
+# 两者相同时只需写返回注解 —— 这里故意不写 response_model=，避免同一件事写两遍
 @app.get("/v1/upstream/models")
-async def upstream_models(client: LlmClientDep) -> dict[str, object]:
+async def upstream_models(client: LlmClientDep) -> ModelListResponse:
     """
     真实调用上游 /models。与 /v1/models（硬编码）对照用。
 
@@ -163,7 +173,7 @@ async def upstream_models(client: LlmClientDep) -> dict[str, object]:
     """
     # 更新：上游挂了返回 502（上游错误），不能返回 500（LLM 应用后端（我们）错误）
     try:
-        model_ids = await fetch_upstream_models(client)
+        models = await fetch_upstream_models(client)
     except httpx.HTTPStatusError as exc:
         # 错误类型 1：上游【有回应】但状态码是 4xx/5xx → 能读 exc.response.status_code
         #   ⚠️【上游报给服务器】的 401 与【服务器报给客户端】的 401 意义不同，所以不能透传
@@ -178,4 +188,6 @@ async def upstream_models(client: LlmClientDep) -> dict[str, object]:
             detail="无法连接上游模型服务",
         ) from exc
 
-    return {"total": len(model_ids), "items": model_ids}
+    # total 由【我们】算：过滤后的条数，不是上游返回的条数
+    #   现在还没加过滤，所以暂时等于 len(上游列表)；加了 prefix 过滤后两者就不相等了
+    return ModelListResponse(total=len(models), items=models)
