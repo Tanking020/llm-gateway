@@ -17,6 +17,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, status
 
 from app.api.deps import LlmClientDep, SettingsDep
+from app.errors import AppError, register_exception_handlers
 from app.schemas import ChatRequest, ChatResponse
 
 # app 就是 uvicorn 要托管的那个对象
@@ -26,6 +27,8 @@ app = FastAPI(
     description="LLM 应用后端（学习项目，阶段 1）",
     version="0.1.0",
 )
+
+register_exception_handlers(app)
 
 
 # @ 开头的是 Python 【装饰器】（Decorator）语法
@@ -87,12 +90,15 @@ async def chat(request: ChatRequest, config: SettingsDep) -> ChatResponse:
     """
     last = request.messages[-1]
     # 语义检查：形状合法 ≠ 能回答。最后一条不是 user，就没有【要回答的问题】
-    # 这种语义错（业务规则）不进 schemas.py (后者只描述数据形状，避免职责混乱和保证模型可换接口复用)
-    # 规则：形状归 pydantic，语义归路由
+    #   这种语义错（业务规则）不进 schemas.py
+    #   规则：形状归 pydantic，语义归路由
+    #
+    # ⚠️ 这条规则【对当前这个问答接口正确】，但【不是绝对正确】，有些场景允许以 assistant 收尾
+    #   我们的接口约定优先使用严格版，后续有支持续写的需求可以放开
     if last.role != "user":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"最后一条消息必须是 user，当前是 {last.role}",
+        raise AppError(
+            code="LAST_MESSAGE_NOT_USER",
+            message=f"最后一条消息必须是 user，当前是 {last.role}",
         )
     return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
 
