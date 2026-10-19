@@ -19,6 +19,8 @@ import uuid
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.constants import HEADER_REQUEST_ID
+
 
 class AppError(Exception):
     """业务规则不允许：携带 【稳定错误码】 + 【给人看的说明】"""
@@ -79,5 +81,5 @@ def register_exception_handlers(app: FastAPI) -> None:
             },
             # 正常响应由中间件补头，异常响应由处理器补头（因为两者创建 Response 的地方不同）
             # 这句正是对异常响应手动加头
-            headers={"X-Request-ID": request_id},
+            headers={HEADER_REQUEST_ID: request_id},
         )

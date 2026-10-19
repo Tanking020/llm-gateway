@@ -29,6 +29,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 
 from app.api.deps import LlmClientDep, SettingsDep
+from app.constants import HEADER_REQUEST_ID
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
 from app.schemas import ChatRequest, ChatResponse, ModelItem, ModelListResponse
@@ -79,7 +80,7 @@ async def add_request_id(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
     """给每个请求分配 request_id：优先沿用上游传来的，没有就新生成，并且记录耗时"""
-    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    request_id = request.headers.get(HEADER_REQUEST_ID) or uuid.uuid4().hex[:12]
     # 存进 request.state —— 这一次请求的"口袋"，异常处理器里也能读到
     request.state.request_id = request_id
     # 先声明为 None: 里层抛异常时 response 永远不会被赋值，
@@ -106,7 +107,7 @@ async def add_request_id(
     assert response is not None
 
     # 回写响应头：客户端/前端报错时可以把它贴给我方，我方据此搜日志
-    response.headers["X-Request-ID"] = request_id
+    response.headers[HEADER_REQUEST_ID] = request_id
     return response
 
 

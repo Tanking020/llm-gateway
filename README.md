@@ -154,6 +154,7 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 │   ├── __init__.py
 │   ├── config.py             # 全部可调参数集中在这里，类型安全且带校验
 │   ├── schemas.py            # 对外数据契约：请求 / 响应的形状定义
+│   ├── constants.py          # 必须跨模块一致的常量（HTTP 头名等，只写一处）
 │   ├── errors.py             # 业务异常 AppError + 错误码→HTTP 状态码映射 + 异常处理器注册
 │   ├── llm_client.py         # 上游 HTTP 客户端的唯一构造点（create_llm_client）
 │   ├── main.py               # 命令行入口：离线演示 + `ping` 上游连通性检查
