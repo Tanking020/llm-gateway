@@ -109,7 +109,7 @@ Resolved 31 packages | Installed 11 packages
 | 4 | pydantic 契约 | ✅ 已整理 | ✅ 已完成（输入契约 `ChatRequest`；输出契约：返回注解 + `response_model` 的取舍已实测；`ModelItem` / `ModelListResponse` 落地到 `/v1/upstream/models`，`/docs` 可展开。见 §4.5b） |
 | 5 | `Depends` 依赖注入 | ✅ 已整理 | ✅ 已完成（流水 `1.4`~`1.4l`：`get_settings` / 覆盖机制 / `yield` 依赖 / 依赖缓存 / 嵌套 / 抽共用工厂 / 真实调上游；后又经 6.4 把 client 生命周期从请求级改为应用级） |
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ✅ 已完成（6.1~6.4：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client；配套实测见 §6.1b~§6.1e、§6.3b、§6.4b） |
-| 7 | 中间件与 CORS | ✅ 已整理 | ⬜ 未开始 |
+| 7 | 中间件与 CORS | ✅ 已整理 | 🟡 部分（**7a 已完成**：请求 ID + 耗时中间件，含 500 头体 ID 一致；CORS 未做） |
 | 8 | 异步正确姿势 | ✅ 已整理 | 🟡 部分（阶段 0 的 `playground/` 实验已覆盖协程与并发基础） |
 | 9 | **SSE 流式** | ✅ 已整理 ⭐ | ⬜ 未开始（**本阶段重点**） |
 | 10 | 数据库 | ✅ 已整理 | ⬜ 未开始 |
@@ -2227,7 +2227,11 @@ flowchart TB
 ```
 
 > 🧒 **人话**：中间件像**洋葱的层**。请求从外往里穿，响应从里往外穿。
-> **注册顺序 = 最外层到最内层**（后注册的反而离路由更近，见 7.3 的坑）。
+> ⚠️ **顺序（2026-10-19 实测订正）**：**最后注册的在最外层**。源码依据：`add_middleware` 用
+> `user_middleware.insert(0, ...)` 插到列表头部（`starlette/applications.py:107`），而
+> `build_middleware_stack` 用 `for cls in reversed(middleware): app = cls(app)`（同文件 81~82 行）包起来 ——
+> 列表头部 = 最外层。实测：先注册 A、后注册 B → 进入顺序 **B → A → 路由**，退出顺序 **A → B**。
+> （本条此前写反成"注册在前的先进入"，已订正。）
 
 **中间件 vs 依赖**：
 
@@ -2268,20 +2272,138 @@ async def add_request_id(request: Request, call_next):
 
 ```python
 @app.middleware("http")
-async def m1(request, call_next):
-    print("A"); ...                      # 注册在前的先进入（最外层）
+async def a(request, call_next):          # 先注册 → 【内层】
+    print("A 进入"); r = await call_next(request); print("A 退出"); return r
 
 @app.middleware("http")
-async def m2(request, call_next):
-    print("B"); ...
+async def b(request, call_next):          # 后注册 → 【外层】
+    print("B 进入"); r = await call_next(request); print("B 退出"); return r
 ```
+
+**实测输出（2026-10-19）**：
 
 ```text
-请求方向：A → B → 路由
-响应方向：路由 → B → A
+B 进入        ← 后注册的先进入（最外层）
+A 进入
+>>> 路由
+A 退出
+B 退出
 ```
 
-> ⭐ **记住**：中间件是**栈**，不是队列。想"最外层"就**先**注册。
+> ⭐ **记住**：中间件是**栈**，**后注册的在最外层**（像穿衣服，最后穿的外套在最外面）。
+> 源码：`user_middleware.insert(0, ...)` + `for cls in reversed(middleware)`。
+> ⚠️ 本条此前写反（"注册在前的先进入"），2026-10-19 实测订正。
+
+### 7.3b `call_next(request)` 到底做了什么（2026-10-19 读源码 + 实测）
+
+```python
+response = await call_next(request)
+```
+
+| 片段 | 含义 |
+|---|---|
+| `call_next` | **框架给你的**函数（`BaseHTTPMiddleware` 内部闭包，`starlette/middleware/base.py:112`） |
+| `call_next(request)` | "把请求继续往里传" → 内层中间件 → 最终到路由 |
+| `await` | 因为内层可能 `async`、可能等 IO |
+| `-> Response` | 返回内层产出的响应对象 |
+
+**它内部做的四步**：
+
+```python
+task_group.start_soon(coro)                       # ① 后台启动内层 app（路由在跑）
+message = await recv_stream.receive()             # ② 等第一条消息
+assert message["type"] == "http.response.start"   # ③ 这条 = 状态码 + 响应头就绪
+return _StreamingResponse(                        # ④ 用它拼响应
+    status_code=message["status"],
+    content=body_stream(),                        #    body 是【还没被读的流】
+)
+```
+
+**两条实测后果**：
+
+```text
+outer 后半段 status=200 type=_StreamingResponse          ← 不是普通 Response
+GET /stream -> 200 1.9ms request_id=...                  ← 真实耗时 ~150ms，只等到"头就绪"
+```
+
+| 能做 | 不能做 |
+|---|---|
+| ✅ 改 `response.headers`（头已就绪） | ❌ 读 `response.body` / `body_iterator` —— 读一次就把流抽干，SSE 失效 |
+
+**里层报错时**：`call_next` **把异常原样抛出**（源码 `raise app_exc from app_exc.__cause__`），
+不会返回 500 响应 —— 500 是**更外层** `ServerErrorMiddleware` 调你的 `Exception` 处理器生成的，
+**不会再回到中间件**。所以 `finally` 里的 `response` 可能从未被赋值 → 必须先 `response: Response | None = None`，
+否则 `UnboundLocalError` 会盖掉真正的异常（实测）。
+
+### 7.2b 本仓库落地：request_id + 耗时中间件（7a，2026-10-19 实测）
+
+#### ① 代码骨架
+
+```python
+logger = logging.getLogger(__name__)
+
+
+@app.middleware("http")
+async def add_request_id(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """给每个请求分配 request_id：优先沿用上游传来的，没有就新生成，并且记录耗时"""
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id            # 异常处理器里也能读到
+    response: Response | None = None                 # ⚠️ 必须先给 None
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    finally:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.warning(
+            "%s %s -> %s %.1fms request_id=%s",
+            request.method, request.url.path,
+            getattr(response, "status_code", "ERR"),   # 异常路径上没有 response
+            duration_ms, request_id,
+        )
+    assert response is not None                      # 正常路径才走得到这里
+    response.headers["X-Request-ID"] = request_id
+    return response
+```
+
+`errors.py` 里配合两处：`request_id = getattr(request.state, "request_id", "") or uuid...`，
+以及 500 响应加 `headers={"X-Request-ID": request_id}`（异常路径上中间件拿不到响应对象）。
+
+#### ② ⭐ 验证中间件必须"四看"，只看响应会得到假通过
+
+| 看什么 | 通过标准 |
+|---|---|
+| 响应头 | `x-request-id` 存在；**带 `-H "X-Request-ID: xxx"` 时应原样返回 `xxx`** |
+| 响应体 | 500 时 `request_id` 与响应头**完全相同** |
+| **服务端日志** | **每个请求**都有一行 `METHOD path -> status Xms request_id=...`（包括失败的） |
+| **traceback 内容** | 是**原始异常**（`KeyError`），不是 `UnboundLocalError` 之类 |
+
+本轮实测：前两条都过了，后两条才是真问题所在。
+
+#### ③ 本轮两个"工具全绿但语义错"的 bug
+
+| bug | 症状 | 根因 |
+|---|---|---|
+| `"X-Request_ID"`（下划线） | 客户端传 `X-Request-ID: my-trace-001`，响应却是新生成的 ID | HTTP 头名用**连字符**；两个名字不同 → 读不到 → 走 `or` 分支。与 `Bearear` 同一家族：**字符串字面量拼写，静态工具不查** |
+| `finally` 里访问未赋值的 `response` | 500 的响应**看起来全对**，但**日志 0 条**，且 traceback 是 `UnboundLocalError` 盖掉了 `KeyError` | 里层抛异常 → `response = ...` 未执行 → `getattr(response, ...)` 先炸。**修法：`response: Response \| None = None`** |
+
+#### ④ 实测日志（修好后）
+
+```text
+GET /health -> 200 0.8ms request_id=eac8d766b423
+GET /v1/upstream/models -> 200 157.7ms request_id=c68615732f4e      ← 真实调上游，明显更慢
+GET /__boom -> ERR 1.1ms request_id=9af3ecfbb812                    ← 失败请求也记录；ERR = 没有响应对象
+未处理异常 request_id=9af3ecfbb812 path=/__boom
+KeyError: 'datas'                                                   ← 原始异常没被掩盖
+GET /v1/models/nope -> 404 1.0ms request_id=3fe2d034cd80            ← 4xx 也走中间件
+```
+
+⭐ 两个细节值得记：
+- **`ERR` 而不是 `500`**：异常路径上 `response` 是 `None`，中间件**根本不知道**最终会变成 500 ——
+  500 是更外层生成的。想要真实状态码，就得在中间件里 `except` 后自己记一个 500，代价是拿不到处理器改过的响应头。
+- **`/v1/upstream/models` 157.7ms vs `/health` 0.8ms**：耗时日志立刻暴露"这个接口在等外部世界"，
+  这就是访问日志最直接的用处。
 
 **坑 2：中间件会破坏流式响应** ⚠️⚠️
 
@@ -4271,7 +4393,9 @@ uv add --dev pytest pytest-asyncio httpx2
 | 日志 | 以为 `logger.info` 会输出 | 默认 root 级别 `WARNING` → **静默丢弃**；错误日志也只有 stderr，无格式、不落盘 |
 | 中间件 | 中间件里读取整个响应体 | ⚠️ **SSE 流式失效**（被缓冲成一次返回） |
 | 中间件 | 忘了 `await call_next(request)` | 请求卡住 |
-| 中间件 | 注册顺序理解反了 | 执行顺序与预期相反 |
+| 中间件 | 注册顺序理解反了 | **后注册的在最外层**（2026-10-19 实测订正；原以为"先注册的在最外层"） |
+| 中间件 | `finally` 里直接访问 `response` | 里层抛异常时它从未赋值 → `UnboundLocalError` 盖掉真异常；先 `response: Response \| None = None` |
+| 中间件 | 在中间件里 `await call_next` 之后读 `response.body` | 读一次就把 `_StreamingResponse` 抽干 → **SSE 退化成一次性返回** |
 | CORS | `allow_origins=["*"]` + `allow_credentials=True` | 浏览器**直接拒绝** |
 | CORS | 线上忘加生产域名 | 本地正常、线上跨域失败 |
 | CORS | 用 curl 测通就以为浏览器能通 | CORS 是浏览器限制，curl 不检查 |

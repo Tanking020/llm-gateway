@@ -111,6 +111,19 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 > ⚠️ 框架层的 404（路由不存在）与 422（请求形状不合法）目前仍是 FastAPI 默认的 `{"detail": ...}`，
 > 三种形状并存属于**已知待办**（见[路线图](study_notes/学习档案与路线图.md) 待办 #6），计划在 Step 11 统一。
 
+**请求追踪**（Step 7a 起）：每个响应都带 `X-Request-ID` 头。
+
+```text
+# 客户端可自带 ID，服务端会原样沿用（跨服务串联用）
+curl.exe -i http://127.0.0.1:8000/health -H "X-Request-ID: my-trace-001"
+#   -> x-request-id: my-trace-001
+
+# 不带就自动生成；500 时响应头与响应体里的 request_id 完全相同
+# 服务端每个请求都有一行访问日志：
+#   GET /v1/upstream/models -> 200 157.7ms request_id=c68615732f4e
+#   GET /__boom -> ERR 1.1ms request_id=9af3ecfbb812      （ERR = 异常路径上还没有响应对象）
+```
+
 **手工验证**（PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名，必须写 `curl.exe`）：
 
 ```powershell
@@ -211,6 +224,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **HTTP 客户端应用级共享（`lifespan`）** | 每请求新建客户端要重新做 TCP + TLS 握手：实测 200 次请求 **51.3 ms → 23.0 ms（快 2.23 倍）**。用 `lifespan` 在启动时建一次、关闭时释放；创建/销毁归 lifespan，**取用仍走依赖**（保留 `dependency_overrides` 可测接缝） | 单测必须 `with TestClient(app)` 才会触发 lifespan；`app.state` 是全局可变状态，用例间要手工还原 |
 | **错误日志与响应分离** | 500 只回 `request_id` + 一句人话，**堆栈只进服务端日志** —— 既不泄露内部结构，又能靠 ID 精确定位 | 目前日志只有 stderr、无格式化、`logger.info` 会被丢弃；生产需补日志配置与集中收集（已知待办 #7） |
 | **响应契约：返回注解优先，`response_model` 用于收窄** | 两者相同时只写返回注解（FastAPI 自动采用）；只有"内部模型宽于对外契约"时才显式写 `response_model=`。响应模型是**白名单**：没声明的字段不可能输出 | 返回对象缺必填字段会 `ResponseValidationError` → 500（错在我方）；响应类型写 `list[dict]` 会让 `/docs` 失去结构，且过滤晚一步 |
+| **中间件做"每个请求都要做的事"** | 请求 ID、耗时、CORS 这类逻辑写在中间件里一处生效；用 `request.state` 把 ID 传给路由与异常处理器，500 也能返回同一个 ID | 中间件拿不到路由参数；**绝不能读 `response.body`**（会把流式响应抽干）；异常路径上拿不到响应对象，500 的响应头要由处理器补 |
 
 ---
 

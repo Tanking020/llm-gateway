@@ -6,8 +6,14 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
     本文件是【常驻服务】的应用对象，两者生命周期与职责都不同
 """
 
-# 异步迭代器的类型，lifespan 的返回注解要用
-from collections.abc import AsyncIterator
+# logging：标准库日志模块，用来记"每个请求做了什么、花了多久"
+import logging
+import time
+import uuid
+
+# AsyncIterator 是异步迭代器，lifespan 的返回注解要用
+# Awaitable 类型表示可以被 await 的东西，Callable 类型代表可以被调用的东西
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 # 把"异步生成器函数"变成 lifespan（可用的上下文管理器）
 from contextlib import asynccontextmanager
@@ -20,7 +26,7 @@ import httpx
 # Query: 用于在上面勾选"这个查询参数要被怎么对待"，FastAPI 读它去约束和写文档
 # status：是一个装了一堆 HTTP 状态码的模块
 # HTTPException：是一个普通异常类，负责把异常抛给框架，再由框架翻译成 HTTP 响应
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 
 from app.api.deps import LlmClientDep, SettingsDep
 from app.errors import AppError, register_exception_handlers
@@ -45,6 +51,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 关闭段：退出 async with 自动 aclose()
 
 
+logger = logging.getLogger(__name__)
+
+
 # app 就是 uvicorn 要托管的那个对象
 # 命令行里写 app.api.app:app 的读法：包 app -> 子包 api -> 模块 app -> 里面的变量 app
 app = FastAPI(
@@ -56,6 +65,49 @@ app = FastAPI(
 
 
 register_exception_handlers(app)
+
+
+# 中间件：包在【所有路由】外面的一层管道，每个请求都会经过
+#   请求方向：中间件前半段 -> 路由
+#   响应方向：路由 -> 中间件后半段
+# 注册顺序 = 后注册的在最外层（多个中间件时才有区别，目前是第一个中间件）
+#
+# 这里装饰器厂挂的 "http" 不是路径，是【中间件类型】
+# 意思是"这个中间件处理 HTTP 请求"
+@app.middleware("http")
+async def add_request_id(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """给每个请求分配 request_id：优先沿用上游传来的，没有就新生成，并且记录耗时"""
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    # 存进 request.state —— 这一次请求的"口袋"，异常处理器里也能读到
+    request.state.request_id = request_id
+    # 先声明为 None: 里层抛异常时 response 永远不会被赋值，
+    #   不先给值的话，finally 里访问它会抛 UnboundLocalError，把真正的异常盖掉
+    response: Response | None = None
+    start = time.perf_counter()
+    try:
+        # 把请求交给里面内层继续处理；等状态码和响应头就绪后，把响应对象取回来
+        response = await call_next(request)
+    finally:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.warning(
+            "%s %s -> %s %.1fms request_id=%s",
+            request.method,
+            request.url.path,
+            # getattr 是 Python 内置函数，作用是根据名字获取对象的属性
+            # 异常路径上没有 response 时，用 ERR 占位
+            getattr(response, "status_code", "ERR"),
+            duration_ms,
+            request_id,
+        )
+
+    # 走到这里说明没有异常（异常路径根本到不了这行）:断言同时帮 mypy 收窄类型
+    assert response is not None
+
+    # 回写响应头：客户端/前端报错时可以把它贴给我方，我方据此搜日志
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 # @ 开头的是 Python 【装饰器】（Decorator）语法
