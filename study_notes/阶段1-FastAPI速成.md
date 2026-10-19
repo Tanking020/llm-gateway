@@ -111,7 +111,7 @@ Resolved 31 packages | Installed 11 packages
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ✅ 已完成（6.1~6.4：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client；配套实测见 §6.1b~§6.1e、§6.3b、§6.4b） |
 | 7 | 中间件与 CORS | ✅ 已整理 | ✅ 已完成（7a 请求 ID + 耗时中间件 / 7b CORS；含常量抽离与日志级别配置） |
 | 8 | 异步正确姿势 | ✅ 已整理 | ✅ 已完成（`playground/blocking_demo.py`：1 慢 + 5 快并发，实测阻塞写法把快请求从 13ms 拖到 325ms，**差 25 倍**；另测线程池 40 上限是排队、GIL 下线程池对 CPU 密集无效 0.96x） |
-| 9 | **SSE 流式** | ✅ 已整理 ⭐ | ⬜ 未开始（**本阶段重点**） |
+| 9 | **SSE 流式** | ✅ 已整理 ⭐ | 🟡 进行中（**9a 已完成**：`GET /v1/chat/stream` 假数据逐字输出，实测 TTFB 0.014s / total 1.85s、`transfer-encoding: chunked`、10 帧合法；接真实上游 `stream=true` 留到 9b） |
 | 10 | 数据库 | ✅ 已整理 | ⬜ 未开始 |
 | 11 | 配置/日志/安全 | ✅ 已整理 | 🟡 部分（配置已由阶段 0 的 `config.py` 解决；**日志已有基础**：`logging` + `request_id` + 堆栈只进 stderr（§6.3b），格式化 / 集中收集 / 密钥检查未做） |
 | 12 | 测试 | ✅ 已整理 | ⬜ 未开始 |
@@ -3002,6 +3002,97 @@ data: [DONE]
 > 默认 `ensure_ascii=True` 会把中文转成 `\u4f60\u597d`（能用但浪费带宽、难调试）。
 > 但注意：**如果帧里有换行符，会破坏 SSE 格式**！所以要么 `ensure_ascii=True`，
 > 要么把内容里的 `\n` 转义掉 —— 用 JSON 序列化天然会把 `\n` 转成 `\\n`，所以安全。
+
+### 9.3b 本仓库落地 + 三条硬证据（9a，2026-10-19 实测）
+
+#### ① 落地代码要点
+
+`src/app/api/app.py` 的 `GET /v1/chat/stream`（假数据版，真模型留到 9b）。
+
+#### ② 证据 1：响应头 —— 关键是 `transfer-encoding: chunked`
+
+```text
+content-type: text/event-stream; charset=utf-8
+cache-control: no-cache
+x-accel-buffering: no
+transfer-encoding: chunked            ← 没有 Content-Length 才能"边发边传"
+vary: Origin
+x-request-id: 7f11cbbd8f36
+```
+
+⭐ **`chunked` 是流式的必要条件**：有 `Content-Length` 就意味着"服务器已经知道总长度"，
+也就不需要边算边发了。`StreamingResponse` 因为长度未知，自动用 chunked。
+
+#### ③ 证据 2：`curl -w` 量首字节 vs 总耗时（**最客观的判据**）
+
+```powershell
+curl.exe -s -o NUL -w "ttfb=%{time_starttransfer}s total=%{time_total}s`n" http://127.0.0.1:8000/v1/chat/stream
+```
+
+实测：
+
+```text
+ttfb=0.014s  total=1.850s
+```
+
+| 指标 | 含义 | 实测 |
+|---|---|---|
+| `time_starttransfer`（TTFB） | 从发出请求到**收到第一个字节** | **0.014s** |
+| `time_total` | 直到**连接关闭** | **1.850s** |
+
+⭐ **判据：TTFB ≪ total 就是真流式**。若两者接近 → 被缓冲了（查 `X-Accel-Buffering`、
+中间件有没有读 `response.body`）。
+
+**对照组**（同一份响应，用非流式读法 `await client.get(...)`）：
+
+```text
+await c.get 返回耗时: 1.01s | 长度 84 字节   ← 一次性拿到全部
+```
+
+同一份数据，两种读法的"首字节时间"差 **70 倍**。
+
+#### ④ 证据 3：逐帧到达的时间戳（证明"边算边发"）
+
+```text
+[0.02s] data: chunk0
+[0.23s] data: chunk1
+[0.43s] data: chunk2
+[0.63s] data: chunk3
+[0.83s] data: chunk4
+[1.04s] data: [DONE]
+```
+
+#### ⑤ 流开始后抛异常，客户端**实际**看到什么（实测）
+
+生成器 `yield "data: first\n\n"` 之后立刻 `raise RuntimeError(...)`：
+
+```text
+status=200                                   ← 状态码已经发出去了，改不了
+got=data: first                              ← 已经收到一帧
+exc=RemoteProtocolError:
+    peer closed connection without sending complete message body (incomplete chunked ...)
+```
+
+⭐ **三条推论**：
+
+| # | 推论 |
+|---|---|
+| 1 | 客户端拿到的是 **200**，前端**看不出这是错误** |
+| 2 | 它看到的是一个**协议层异常**（chunked 没传完），而不是你精心设计的 `{"error": ...}` |
+| 3 | 所以 **§9.4 的"把错误编码进流里"不是最佳实践，是唯一做法** |
+
+#### ⑥ `TestClient` 会"假装没流式"
+
+用 `TestClient` 打这条路由，实测：
+
+```text
+transfer-encoding: None          ← 没有 chunked（内存里直接给了完整 body）
+是否为合法 SSE 帧: True
+帧数: 10   首帧 'data: {"delta": "你"}'   末帧 'data: [DONE]'
+```
+
+⭐ **`TestClient` 只能验证"帧格式对不对"，证明不了"是不是真的分批发"**。
+要证明后者，必须用 **真实 uvicorn + `curl -w`**（或真实 HTTP 客户端）。
 
 ## 9.4 ⚠️⚠️ 一旦开始流式，你就失去了"改状态码"的权利
 
