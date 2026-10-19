@@ -292,6 +292,7 @@ async def chat_stream_demo() -> StreamingResponse:
             yield f"data: {payload}\n\n"
             await asyncio.sleep(0.2)
         # [DONE] 是 OpenAI 的约定（不是 SSE 协议要求）：跟主流对齐省事
+        # 它表示"生成结束"。前端收到就停
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
