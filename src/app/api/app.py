@@ -6,6 +6,9 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
     本文件是【常驻服务】的应用对象，两者生命周期与职责都不同
 """
 
+import asyncio
+import json
+
 # logging：标准库日志模块，用来记"每个请求做了什么、花了多久"
 import logging
 import time
@@ -28,6 +31,7 @@ import httpx
 # HTTPException：是一个普通异常类，负责把异常抛给框架，再由框架翻译成 HTTP 响应
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.api.deps import LlmClientDep, SettingsDep
 from app.constants import HEADER_REQUEST_ID
@@ -271,3 +275,31 @@ async def upstream_models(client: LlmClientDep) -> ModelListResponse:
     # total 由【我们】算：过滤后的条数，不是上游返回的条数
     #   现在还没加过滤，所以暂时等于 len(上游列表)；加了 prefix 过滤后两者就不相等了
     return ModelListResponse(total=len(models), items=models)
+
+
+@app.get("/v1/chat/stream")
+async def chat_stream_demo() -> StreamingResponse:
+    """假数据流式接口：把固定句子逐字吐出，用来验证【边发边算】的管子通不通"""
+
+    # 异步生成器：每次 yield 一帧，StreamingResponse 收到就立刻发出去
+    async def event_source() -> AsyncIterator[str]:
+        for ch in "你好，我是流式输出":
+            # SSE 一帧 = "data: <内容>" + 【一个空行】，只写一个 \n 浏览器不触发事件
+            # ensure_ascii=False: 中文不转 \uXXXX，日志和抓包时能直接看懂
+            payload = json.dumps({"delta": ch}, ensure_ascii=False)
+            yield f"data: {payload}\n\n"
+            await asyncio.sleep(0.2)
+        # [DONE] 是 OpenAI 的约定（不是 SSE 协议要求）：跟主流对齐省事
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        # media_type 必须是 text/event-stream，浏览器 EventSource 和前端库才认
+        media_type="text/event-stream",
+        headers={
+            # 禁止中间层缓存这次响应
+            "Cache-Control": "no-cache",
+            # 给 nginx 看的：别缓冲，否则流式会被攒成一次性（部署时必踩）
+            "X-Accel-Buffering": "no",
+        },
+    )

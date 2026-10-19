@@ -84,6 +84,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 | GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 |
 | POST | `/v1/chat` | 聊天（业务逻辑仍为 `echo` 占位）；最后一条消息必须是 `user` | 200 / 400 / 422 |
 | GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse` | 200 / 502 |
+| GET | `/v1/chat/stream` | **SSE 流式**（假数据逐字输出，真模型待接）；`text/event-stream` + chunked | 200 |
 
 **成功响应形状**（Step 4 起，`schemas.py` 定义，可在 `/docs` 展开）：
 
