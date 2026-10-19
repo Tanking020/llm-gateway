@@ -277,6 +277,7 @@ async def upstream_models(client: LlmClientDep) -> ModelListResponse:
     return ModelListResponse(total=len(models), items=models)
 
 
+# 【格式】用 TestClient(快、免费)，【时序】必须起真服务 uvicorn + url
 @app.get("/v1/chat/stream")
 async def chat_stream_demo() -> StreamingResponse:
     """假数据流式接口：把固定句子逐字吐出，用来验证【边发边算】的管子通不通"""
