@@ -3139,6 +3139,106 @@ ttfb=0.032588 total=0.640263      ← 总时长 ≈ 4 × 0.15
 > **`\n\n` 决定"帧在哪结束"（数据边界）；`await` 决定"下一帧什么时候到"（时间轴）。
 > 假数据自己造不出延迟，所以要 `sleep` 替身；真上游自带延迟，所以 `sleep` 要删掉。**
 
+### 9.2d ⭐ 分工：异步生成器 vs `StreamingResponse`（谁干了哪一半）
+
+学习者问：**"流式输出不都是异步生成器干完了吗？`StreamingResponse` 干了啥？"**
+
+答案：**生成器一行网络代码都没有，它只管"产出"，一根字节都发不出去。**
+
+#### ① 硬证据：同一个 `event_source` 用在三个完全不同的地方
+
+📎 实测（同一个生成器函数，三次都跑通）：
+
+| 用法 | 怎么用 | 结果 |
+|---|---|---|
+| ① 交给 `StreamingResponse` | `StreamingResponse(event_source(), ...)` | 变成 **HTTP 流**：`'data: {...你}\n\ndata: {...好}\n\ndata: [DONE]\n\n'` |
+| ② 自己 `async for` 收集 | `[f async for f in event_source()]` | 变成**普通 list**（3 个字符串） |
+| ③ 直接 `print` | `async for f in event_source(): print(f)` | 变成**终端文字**（一行一行打出来） |
+
+⭐ **同一个生成器，既可以是 HTTP 流、也可以是 list、也可以是终端输出** —— 所以它**完全不知道 HTTP 存在**。
+
+| 职责 | 谁负责 | 具体做什么 |
+|---|---|---|
+| **产出什么内容** | 你的异步生成器 | 拼 `data: ...\n\n`，决定帧、决定 `[DONE]` |
+| **发到网络上** | `StreamingResponse` | 写 socket：状态码、头、每个 chunk、结束信号 |
+| **多久产一帧** | 你的 `await`（或上游） | 生产者速度 |
+
+#### ② `StreamingResponse` 的完整工作清单（📎 抓 ASGI 消息实测）
+
+用假 `send` 把它发出的每一条消息记下来：
+
+```text
+① 它自动发出的 http.response.start：
+   status = 200
+   headers =
+     cache-control                  no-cache
+     x-accel-buffering              no
+     content-type                   text/event-stream; charset=utf-8     ← 自动补了 charset
+
+② 它逐帧发出的 http.response.body：
+   1) body=b'data: 0\n\n'       more_body=True
+   2) body=b'data: 1\n\n'       more_body=True
+   3) body=b''                  more_body=False      ← 流结束信号
+```
+
+⭐ 注意 **`more_body=False`** 是它**自己补的**，你的生成器从没产出过这个东西。
+没有这一条，客户端会一直"等后续数据"。
+
+所以 `StreamingResponse` 干了 5 件事：
+
+| # | 干什么 | 不写它会怎样 |
+|---|---|---|
+| 1 | 发 `http.response.start`（状态码 + 头） | 客户端拿不到响应头 |
+| 2 | 自动补 `content-type: text/event-stream; charset=utf-8` | 浏览器不认这是 SSE，`EventSource` 直接报错 |
+| 3 | `async for chunk in body_iterator` **驱动生成器** | 生成器永不执行（📎 实测：造出对象等 0.5 秒，函数体一行都没跑） |
+| 4 | 每帧 `send(..., more_body=True)`，`str` 自动 `.encode("utf-8")` | 你得自己编码、自己 `send` |
+| 5 | 补最后一条 `more_body=False` | 客户端卡住等连接关闭 |
+| 6 | （额外）监听 `http.disconnect`，客户端断开就取消任务 | 用户走了你还在烧 token |
+
+#### ③ 把它拆掉会怎样？📎 手写裸 ASGI 实测
+
+不用 `StreamingResponse`，直接当 ASGI app 写（端口 8095）：
+
+```python
+async def app(scope, receive, send):
+    if scope["type"] != "http":
+        return
+    # ① 自己发状态码 + 头
+    await send({"type": "http.response.start", "status": 200, "headers": [
+        (b"content-type", b"text/event-stream; charset=utf-8"),
+        (b"cache-control", b"no-cache"),
+    ]})
+    # ② 自己驱动生成器（这就是 StreamingResponse 里那句 async for）
+    async for frame in event_source():
+        await send({"type": "http.response.body", "body": frame.encode(), "more_body": True})
+    # ③ 自己发结束信号
+    await send({"type": "http.response.body", "body": b"", "more_body": False})
+```
+
+📎 实测结果 —— **真的能流**：
+
+```text
+content-type: text/event-stream; charset=utf-8
+cache-control: no-cache
+transfer-encoding: chunked              ← uvicorn 看到 more_body=True 自动加的
+
+ttfb=0.011686 total=0.415572            ← 确实逐帧
+
+data: {"delta": "你"}
+
+data: {"delta": "好"}
+
+data: [DONE]
+```
+
+⭐ **结论**：`StreamingResponse` 不是魔法，它就是**上面这段样板的封装**。
+你少写的每一行，都是它在替你写 —— 而且它还额外管了"客户端断开"这件你没写的事。
+
+#### ④ 一句话判据
+
+> **生成器只管"产出"，`StreamingResponse` 管"上网"。
+> 生成器不碰 socket，`StreamingResponse` 不碰内容 —— 一个好管子，一个负责往里灌水。**
+
 ## 9.3 实现：`StreamingResponse` + 异步生成器
 
 ```python
@@ -3377,6 +3477,72 @@ await send({"type": "http.response.body", "body": b"", "more_body": False})   # 
 
 ⭐ 所以 `event_source()` **必须在请求处理函数体内被调用**（9a 就是这么写的）—— 每个请求
 新建一个生成器对象。若写成模块级 `SHARED = event_source()`，第二个用户就没有输出了。
+
+#### 第 6 层：`for` 循环**外**的 `yield` 也是"推进点"（📎 逐次唤醒实测）
+
+学习者问：**"第二个 `yield` 没包在 `for` 里，岂不是只会暂停不会推进？"**
+
+这是把"**循环**"当成了"**推进机制**"。真正的推进机制是**外部的 `__anext__` 调用**，
+`for` 只是恰好调用它的语法糖。循环外的 `yield` 一样被推进，只是**只推进一次**。
+
+📎 实测（每行都带日志，看它被唤醒了几次）：
+
+```python
+async def source():
+    print("  [1] 进入函数体")
+    for i in range(3):
+        print(f"  [2] for 内部：准备 yield {i}")
+        yield f"帧{i}"
+        print(f"  [3] 被唤醒：从 'yield 帧{i}' 的下一行继续（for 下一轮）")
+    print("  [4] for 循环结束，走到 yield 'DONE' 这一行")
+    yield "DONE"
+    print("  [5] 被唤醒：从 'yield DONE' 的下一行继续 → 函数体结束")
+    print("  [6] 函数即将 return")
+```
+
+输出：
+
+```text
+=== 造出生成器对象后，什么都没发生 ===
+
+--- 第 1 次 __anext__() ---
+  [1] 进入函数体
+  [2] for 内部：准备 yield 0
+  >>> 拿到 '帧0'
+
+--- 第 2 次 __anext__() ---
+  [3] 被唤醒：从 'yield 帧0' 的下一行继续（for 下一轮）
+  [2] for 内部：准备 yield 1
+  >>> 拿到 '帧1'
+
+--- 第 3 次 __anext__() ---
+  [3] 被唤醒：从 'yield 帧1' 的下一行继续（for 下一轮）
+  [2] for 内部：准备 yield 2
+  >>> 拿到 '帧2'
+
+--- 第 4 次 __anext__() ---
+  [3] 被唤醒：从 'yield 帧2' 的下一行继续（for 下一轮）
+  [4] for 循环结束，走到 yield 'DONE' 这一行      ← 循环外的 yield 也被推进到了
+  >>> 拿到 'DONE'
+
+--- 第 5 次 __anext__() ---
+  [5] 被唤醒：从 'yield DONE' 的下一行继续 → 函数体结束
+  [6] 函数即将 return
+  -> StopAsyncIteration（再也要不出东西了）
+```
+
+⭐ **判据**：`yield` 被推进几次，**与它在不在循环里毫无关系**。
+循环让语句**被重复执行**，于是里面的 `yield` 有机会被唤醒多次；循环**外**的 `yield`
+只会被执行到**一次**，所以只产出**一帧**，之后函数走到末尾 → `StopAsyncIteration`。
+
+| 位置 | 产出几帧 | 为什么 |
+|---|---|---|
+| `for` 内部 | 每循环一次 1 帧 | 循环让它被反复执行 |
+| `for` 外部（只写一次） | **恰好 1 帧** | 只执行一次 |
+| `while True` 内部 | 无限帧（要有 `break`） | 无限重复 |
+
+> ⚠️ 注意：`StopAsyncIteration` 不是错误 —— 它是"正常结束"的信号，
+> `StreamingResponse` 收到它就补上 `more_body=False` 收尾。
 
 #### 一句话判据
 
