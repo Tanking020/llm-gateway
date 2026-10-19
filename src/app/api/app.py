@@ -286,8 +286,9 @@ async def chat_stream_demo() -> StreamingResponse:
     async def event_source() -> AsyncIterator[str]:
         for ch in "你好，我是流式输出":
             # SSE 一帧 = "data: <内容>" + 【一个空行】，只写一个 \n 浏览器不触发事件
+            # json.dumps: Python 对象序列化为 JSON 字符串（不是 str(dict)，那会得到单引号）
             # ensure_ascii=False: 中文不转 \uXXXX，日志和抓包时能直接看懂
-            payload = json.dumps({"delta": ch}, ensure_ascii=False) # Python 对象序列化为 JSON 字符串
+            payload = json.dumps({"delta": ch}, ensure_ascii=False)
             yield f"data: {payload}\n\n"
             await asyncio.sleep(0.2)
         # [DONE] 是 OpenAI 的约定（不是 SSE 协议要求）：跟主流对齐省事
