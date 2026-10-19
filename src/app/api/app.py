@@ -52,6 +52,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 关闭段：退出 async with 自动 aclose()
 
 
+# 日志配置：默认 root 级别是 WARNING 且没有 handler, info 会被静默丢弃
+#   format 四段：时间 | 级别（左对齐 7 位）| 模块名 | 消息
+# ⚠️ basicConfig 只在 root 还没有 handler 时生效；Step 11 会换成 dictConfig(force=True) 做正式配置
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s | %(message)s"
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,9 +98,11 @@ async def add_request_id(
     try:
         # 把请求交给里面内层继续处理；等状态码和响应头就绪后，把响应对象取回来
         response = await call_next(request)
+    # 这里用 finally 确保成功和失败两条路径都写日志，而不是失败才写
     finally:
         duration_ms = (time.perf_counter() - start) * 1000
-        logger.warning(
+        # 访问日志属于 INFO（正常发生的事）：请求失败也是这一行，失败详情由异常处理器的 ERROR 记
+        logger.info(
             "%s %s -> %s %.1fms request_id=%s",
             request.method,
             request.url.path,
