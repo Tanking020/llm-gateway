@@ -3,8 +3,10 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 6 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
-错误处理与 `lifespan`：404 / 400 / 502 / 500+请求 ID、统一错误响应、应用级共享 HTTP 客户端）。
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9a 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → **SSE 流式响应**）。
+已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、应用级共享 HTTP 客户端、
+以及一个假数据版的逐帧 SSE 接口（实测 TTFB 0.014s / total 1.85s，真模型接上游属下一步 9b）。
 详见[路线图](#路线图)。
 
 ---
@@ -74,7 +76,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 
 ---
 
-## 接口一览（截至阶段 1 · Step 6，含 Step 4 的响应契约）
+## 接口一览（截至阶段 1 · Step 9，含 Step 4 的响应契约与 Step 9 的 SSE）
 
 | 方法 | 路径 | 说明 | 主要状态码 |
 |---|---|---|---|
@@ -111,6 +113,43 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 
 > ⚠️ 框架层的 404（路由不存在）与 422（请求形状不合法）目前仍是 FastAPI 默认的 `{"detail": ...}`，
 > 三种形状并存属于**已知待办**（见[路线图](study_notes/学习档案与路线图.md) 待办 #6），计划在 Step 11 统一。
+>
+> 流式接口的 `/docs` 目前把 `200` 标成 `application/json`（返回注解是 `Response` 子类时 FastAPI 会置空
+> `response_model`），实际响应是 `text/event-stream` —— 见待办 #11。
+
+**SSE 流式响应**（Step 9a 起，假数据版；真模型接上游属 9b）：
+
+一帧 = `data: <内容>` + **一个空行**（`\n\n`）。实测响应：
+
+```text
+HTTP/1.1 200 OK
+cache-control: no-cache
+x-accel-buffering: no
+content-type: text/event-stream; charset=utf-8
+transfer-encoding: chunked
+
+data: {"delta": "你"}
+
+data: {"delta": "好"}
+
+……
+
+data: [DONE]
+```
+
+```powershell
+# ⭐ 判"是否真流式"只看这两个数的比值（本例 ttfb 0.014s / total 1.850s = 1:130）
+curl.exe -s -o NUL -w "ttfb=%{time_starttransfer}s total=%{time_total}s`n" http://127.0.0.1:8000/v1/chat/stream
+
+# 逐帧看内容（-N = 关掉 curl 自己的输出缓冲，否则看不到"逐字")
+curl.exe -N -s http://127.0.0.1:8000/v1/chat/stream
+
+# 只看响应头，丢弃 body
+curl.exe -s -D - -o NUL http://127.0.0.1:8000/v1/chat/stream
+```
+
+> ⚠️ `TestClient` 里的 `transfer-encoding` 是 `None` —— 它能验证**帧格式**，证明不了"分批发送"。
+> 时序必须用真 uvicorn + 真 HTTP 客户端。
 
 **请求追踪**（Step 7a 起）：每个响应都带 `X-Request-ID` 头。
 
@@ -227,6 +266,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **错误日志与响应分离** | 500 只回 `request_id` + 一句人话，**堆栈只进服务端日志** —— 既不泄露内部结构，又能靠 ID 精确定位 | 目前日志只有 stderr、无格式化、`logger.info` 会被丢弃；生产需补日志配置与集中收集（已知待办 #7） |
 | **响应契约：返回注解优先，`response_model` 用于收窄** | 两者相同时只写返回注解（FastAPI 自动采用）；只有"内部模型宽于对外契约"时才显式写 `response_model=`。响应模型是**白名单**：没声明的字段不可能输出 | 返回对象缺必填字段会 `ResponseValidationError` → 500（错在我方）；响应类型写 `list[dict]` 会让 `/docs` 失去结构，且过滤晚一步 |
 | **中间件做"每个请求都要做的事"** | 请求 ID、耗时、CORS 这类逻辑写在中间件里一处生效；用 `request.state` 把 ID 传给路由与异常处理器，500 也能返回同一个 ID | 中间件拿不到路由参数；**绝不能读 `response.body`**（会把流式响应抽干）；异常路径上拿不到响应对象，500 的响应头要由处理器补 |
+| **流式 = 异步生成器 + `StreamingResponse`** | 二者分工是硬的：生成器只**产出**字符串（不碰 socket），`StreamingResponse` 负责 `http.response.start`、逐帧 `send(more_body=True)`、最后补 `more_body=False`、并监听 `http.disconnect`。驱动生成器的那句 `async for` 在 `starlette/responses.py:253`，不在本项目代码里（📎 打印调用栈实测） | 一旦开始流式就**不能再改状态码**（头已发出）；中途出错只能"把错误编码进流里"；`TestClient` 无法验证分批，时序必须用真服务 |
 
 ---
 
@@ -256,12 +296,15 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **`app.state, client = x`（逗号）与 `app.state.client = x`（点号）是两种语义**：前者是解包赋值，对 `AsyncClient` 直接 `TypeError`；若右边可迭代更阴 —— 整个 `state` 对象会被静默替换
 - **同名重绑定会让"注册"失效**：模块里出现两个 `app = FastAPI(...)` 时，异常处理器注册在旧对象上，uvicorn 却用新对象 → 所有业务异常静默回落成 500
 - **`response_model` 不是"随便削一刀"**：返回对象*多了*字段会被削掉，*缺了*必填字段则是 500 `ResponseValidationError` —— 因为错在"我方响应不符合自己声明的契约"
+- **"一帧"是数据边界，不是时间单位**：实测同一句话可切 10 帧（1.861s）/ 2 帧（0.383s）/ 201 帧（0.002s）—— 帧数与总耗时无关。`\n\n` 管"帧在哪结束"，`await` 管"下一帧何时到"；假数据的 `sleep(0.2)` 只是"上游延迟"的替身演员
+- **SSE 少写一个换行不报错，但整条流失效**：三帧各带 `\n\n` 解析出 3 个事件；全部只写一个 `\n` 只解析出 **1 个**事件（内容是最后的 `[DONE]`），前端表现为"一个字都没收到"—— 症状与原因完全不像的 bug
+- **"我的代码里找不到 `async for`"是正常的**：驱动 `event_source` 的那句在 `starlette/responses.py:253`（`async for chunk in self.body_iterator`）。打印调用栈可直接看到 `responses.py:279 in wrap → responses.py:253 in stream_response → event_source`。生成器只产出、不碰网络；`StreamingResponse` 只上网、不碰内容
 
 | 文档 | 内容 |
 |---|---|
 | [学习档案与路线图.md](study_notes/学习档案与路线图.md) | 目标、能力缺口分析、阶段规划 |
 | [阶段0-工程基础.md](study_notes/阶段0-工程基础.md) | uv / Git / 项目结构 / pydantic / 类型注解 / 异步 / 测试 / lint / Docker |
-| [阶段1-FastAPI速成.md](study_notes/阶段1-FastAPI速成.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 测试 → 部署（Step 1~6 后有「前半程回顾」章节，复习入口） |
+| [阶段1-FastAPI速成.md](study_notes/阶段1-FastAPI速成.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 测试 → 部署（Step 1~6 后有「前半程回顾」章节；Step 9 的 §9.2b~9.2d / §9.3a 是流式的分层讲解，复习入口） |
 | [学习过程记录.md](study_notes/学习过程记录.md) | 步骤流水、踩坑记录、关键结论 |
 | [工具与依赖速查.md](study_notes/工具与依赖速查.md) | 第三方包与工程工具速查：定位、安装、常用 API 与命令、易错点 |
 | [工程规范与协作约定.md](工程规范与协作约定.md) | 本项目的工程规范：命名、分层、质量门、安全约定 |

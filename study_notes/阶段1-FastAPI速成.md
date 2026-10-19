@@ -3234,6 +3234,39 @@ data: [DONE]
 ⭐ **结论**：`StreamingResponse` 不是魔法，它就是**上面这段样板的封装**。
 你少写的每一行，都是它在替你写 —— 而且它还额外管了"客户端断开"这件你没写的事。
 
+#### ③b ⭐ 学习者追问："我的 `app.py` 里没有 `async for` 也没有 `next()`，到底谁在推进？"
+
+**对，你的文件里没有 —— 它在 starlette 的源码里。**
+
+📎 **铁证**：在 `event_source` 第一行打印调用栈，起真 uvicorn（端口 8094）打一次请求，
+服务端打出的真实栈（截尾部，前面还有 uvicorn → anyio 一长串）：
+
+```text
+  anyio/_core/_tasks.py:327  in _run_coro
+      -> retval = await self._coro
+  starlette/responses.py:279  in wrap
+      -> await func()
+  starlette/responses.py:253  in stream_response
+      -> async for chunk in self.body_iterator:          ← ★ 就是这一句
+  who_pulls.py:14  in event_source
+      -> for fr in traceback.extract_stack():
+```
+
+| 栈帧 | 说明 |
+|---|---|
+| 最后一行 | **你的 `event_source`**（被唤醒的那一刻） |
+| 倒数第二行 | **`starlette/responses.py:253`**：`async for chunk in self.body_iterator:` |
+| `self.body_iterator` 是什么 | 就是 `event_source()` 返回的那个生成器对象 —— `StreamingResponse.__init__` 里 `self.body_iterator = content`（`responses.py:237`） |
+
+⭐ **所以那个 `async for` 客观存在，只是写在别人的文件里**。你 `app.py` 里能看到的
+`for ch in "你好，我是流式输出"` 遍历的是**字符串**，跟"推进生成器"没有关系。
+
+**一句话**：`StreamingResponse(event_source(), ...)` 这一句 = "把生成器交出去"，
+交出去之后由框架遍历；你只写"产出函数"，框架写"遍历循环"。
+
+> 🧒 **人话**：`event_source` 是一根**水龙头**，拧它的是框架。
+> 你只负责"拧开后有水流出来"，拧的动作在 `starlette/responses.py:253`。
+
 #### ④ 一句话判据
 
 > **生成器只管"产出"，`StreamingResponse` 管"上网"。
