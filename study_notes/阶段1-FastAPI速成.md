@@ -2405,6 +2405,37 @@ GET /v1/models/nope -> 404 1.0ms request_id=3fe2d034cd80            ← 4xx 也�
 - **`/v1/upstream/models` 157.7ms vs `/health` 0.8ms**：耗时日志立刻暴露"这个接口在等外部世界"，
   这就是访问日志最直接的用处。
 
+#### ⑤ 头名抽成常量：`src/app/constants.py`（2026-10-19）
+
+`X-Request-ID` 被 **3 处**使用（`app.py` 读请求头、`app.py` 写响应头、`errors.py` 给 500 补头）。
+写死在多处 = 改一处漏一处，而且**拼错了没人报**。
+
+```python
+# src/app/constants.py
+HEADER_REQUEST_ID = "X-Request-ID"
+```
+
+```python
+# app.py / errors.py
+from app.constants import HEADER_REQUEST_ID
+```
+
+**为什么放 `src/app/` 而不是 `src/app/api/`**：`errors.py` 在 `app/` 层也要用它。
+放进 `api/` 就会让 `app/errors.py` **反向 import `app.api`** —— 违反"接口层 → 业务层"的单向依赖。
+
+**实测：哪些差异有语义**
+
+```text
+发 X-Request-ID : 读 x-request-id / X-Request-ID 都拿得到   ← 大小写【不敏感】
+发 x-request-id : 同上
+发 X-Request_ID : 只有 X-Request_ID 拿得到                 ← 下划线是【另一个头】
+```
+
+⭐ **结论：大小写不重要，`-` 与 `_` 才重要。**
+
+⚠️ **常量防不住什么**：它只防"多处不一致"，防不住"常量本身一开始就写错"。
+第一次定义时仍要对着 RFC / 文档核验 —— 所以 `constants.py` 里那句话写了"必须是连字符不是下划线"。
+
 **坑 2：中间件会破坏流式响应** ⚠️⚠️
 
 如果在中间件里**读取了整个响应体**（比如为了记日志）：
