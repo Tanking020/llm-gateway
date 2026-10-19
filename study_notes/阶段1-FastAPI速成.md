@@ -109,7 +109,7 @@ Resolved 31 packages | Installed 11 packages
 | 4 | pydantic 契约 | ✅ 已整理 | ✅ 已完成（输入契约 `ChatRequest`；输出契约：返回注解 + `response_model` 的取舍已实测；`ModelItem` / `ModelListResponse` 落地到 `/v1/upstream/models`，`/docs` 可展开。见 §4.5b） |
 | 5 | `Depends` 依赖注入 | ✅ 已整理 | ✅ 已完成（流水 `1.4`~`1.4l`：`get_settings` / 覆盖机制 / `yield` 依赖 / 依赖缓存 / 嵌套 / 抽共用工厂 / 真实调上游；后又经 6.4 把 client 生命周期从请求级改为应用级） |
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ✅ 已完成（6.1~6.4：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client；配套实测见 §6.1b~§6.1e、§6.3b、§6.4b） |
-| 7 | 中间件与 CORS | ✅ 已整理 | 🟡 部分（**7a 已完成**：请求 ID + 耗时中间件，含 500 头体 ID 一致；CORS 未做） |
+| 7 | 中间件与 CORS | ✅ 已整理 | ✅ 已完成（7a 请求 ID + 耗时中间件 / 7b CORS；含常量抽离与日志级别配置） |
 | 8 | 异步正确姿势 | ✅ 已整理 | 🟡 部分（阶段 0 的 `playground/` 实验已覆盖协程与并发基础） |
 | 9 | **SSE 流式** | ✅ 已整理 ⭐ | ⬜ 未开始（**本阶段重点**） |
 | 10 | 数据库 | ✅ 已整理 | ⬜ 未开始 |
@@ -2596,8 +2596,83 @@ Access-Control-Request-Method: POST
 > 所以**每个请求前都会有一个 `OPTIONS` 预检**。预检失败的话，真正的请求根本不会发出。
 >
 > ⚠️ **两个高频错误**：
-> 1. `allow_origins=["*"]` 同时 `allow_credentials=True` → 浏览器**直接拒绝**（规范不允许）
+> 1. `allow_origins=["*"]` 同时 `allow_credentials=True` → **见下方 7.4b 的实测订正**
 > 2. 线上忘了把生产域名加进 `allow_origins` → 本地好的，线上"跨域问题"
+
+### 7.4b 本仓库落地 + 三条实测订正（7b，2026-10-19）
+
+#### ① 落地配置
+
+```python
+ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,   # 白名单，不用 "*"
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],   # 只列实际用到的方法
+    allow_headers=["*"],
+)
+```
+
+#### ② 四条验证（`curl` 模拟浏览器）
+
+| # | 请求 | 实测结果 | 说明 |
+|---|---|---|---|
+| ① | `GET /health` + `Origin: http://localhost:5173` | `200` + `ACAO: http://localhost:5173` + `ACAC: true` + `Vary: Origin` | 白名单命中 |
+| ② | 同上，`Origin: http://evil.example.com` | **`200 {"status":"ok"}`**，但 **没有 ACAO** | ⭐ 服务器照发数据，**拦人的是浏览器** |
+| ③ | `OPTIONS /v1/chat` + `Access-Control-Request-Method: POST` + `Request-Headers` | `200` `OK` + `allow-methods: GET, POST` + `allow-headers: content-type,authorization` + `max-age: 600` | 预检成功 |
+| ④ | `OPTIONS /nope`（**不存在的路径**） | **`200 OK`** | 中间件在**路由之前**就答掉了 |
+
+**额外一条**（我补测）：预检请求非法方法
+
+```text
+OPTIONS /v1/chat + Access-Control-Request-Method: DELETE
+-> 400 "Disallowed CORS method"
+```
+
+⭐ 这条说明：**预检失败是 400，不是 403/405** —— 浏览器看到 400 就直接放弃发真正的请求。
+
+#### ③ ⚠️ 订正：`allow_origins=["*"]` + `allow_credentials=True` 不会被浏览器拒绝
+
+旧说法（本节上方那句）**实测不成立**（Starlette 1.8.0）：
+
+```text
+allow_origins=["*"] + credentials=True
+  简单请求 ACAO: http://anything.com  | ACAC: true
+  预检     ACAO: http://anything.com  | ACAC: true
+```
+
+源码依据（`cors.py:163`）：`allow_all_origins and allow_credentials` 为真时，它**回显具体 Origin**
+而不是返回 `*` —— 因为规范不允许 `*` 配凭证，Starlette 选择"回显"来满足规范。
+
+**真正的风险不是"被拒绝"，而是"悄悄全放开"**：
+
+| 你以为 | 实际 |
+|---|---|
+| "我限制了凭证跨域" | **任何网站**都能带用户 Cookie 调你的接口 |
+| | **报错你能发现，安全漏洞发现不了** |
+
+⭐ 所以 `allow_origins` 必须写白名单 —— 理由不是"否则会报错"，而是"**否则会静默放开**"。
+
+#### ④ 为什么 ACAO 要"回显"而不是写死
+
+浏览器要求：**`Access-Control-Allow-Origin` 的值必须等于当前页面来源**（或 `*`）。
+服务器不知道页面来源，只能 **照抄请求里的 `Origin`**：
+
+```python
+headers["Access-Control-Allow-Origin"] = origin   # allow_explicit_origin()
+```
+
+配套的 `Vary: Origin` 是给 CDN / 反向代理看的：**同一个 URL 的响应随 Origin 变，别缓存串了**。
+
+#### ⑤ 一个容易被忽略的细节
+
+请求**没带 `Origin`** 时（curl、服务端互调、同源请求），中间件**压根不加任何 CORS 头**
+（源码 `if origin is not None:` 才 `headers.update(self.simple_headers)`）。
+
+⭐ 推论：**CORS 头只在"浏览器跨域"这一种场景下存在**，所以它不能用来做"鉴权"或"来源校验" ——
+任何人用 curl 加个假 Origin 都能拿到那张"回执"。
 
 ## 7.5 自检
 

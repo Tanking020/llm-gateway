@@ -27,6 +27,7 @@ import httpx
 # status：是一个装了一堆 HTTP 状态码的模块
 # HTTPException：是一个普通异常类，负责把异常抛给框架，再由框架翻译成 HTTP 响应
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.deps import LlmClientDep, SettingsDep
 from app.constants import HEADER_REQUEST_ID
@@ -67,6 +68,25 @@ app = FastAPI(
     description="LLM 应用后端（学习项目，阶段 1）",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+
+# 允许跨域的前端来源（浏览器里的"源" = 协议 + 域名 + 端口，三者全同才算同源）
+# ⚠️ 必须写完整 origin，末尾不带斜杠；"http://localhost:5173/" 与 "http://localhost:5173" 不算同一个
+# ⚠️ 这里故意【不写 "*"】：配 allow_credentials=True 时写 "*" 等于对任何网站开放凭证访问
+ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+# CORS 中间件：给响应补 Access-Control-Allow-* 头，并直接答复浏览器的预检 OPTIONS
+# 它注册在【路由之前】，所以预检请求即使打的是不存在的路径也会直接被它答掉
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,  # 只有这些来源的响应才带 CORS 头
+    allow_credentials=True,  # 允许浏览器带 Cookie / Authorization
+    allow_methods=["GET", "POST"],  # 只放行实际用到的方法（不要写 "*"）
+    # 请求头全部放行（含 Content-Type / Authorization），若后续进生产环境要考虑收紧
+    # 注意：允许所有请求头 ≠ 后端会处理所有请求头，只是不拦截而已
+    allow_headers=["*"],
 )
 
 
