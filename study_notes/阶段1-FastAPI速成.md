@@ -3003,6 +3003,190 @@ data: [DONE]
 > 但注意：**如果帧里有换行符，会破坏 SSE 格式**！所以要么 `ensure_ascii=True`，
 > 要么把内容里的 `\n` 转义掉 —— 用 JSON 序列化天然会把 `\n` 转成 `\\n`，所以安全。
 
+### 9.3a 彻底搞懂「异步生成器」（2026-10-19 补，六组实测）
+
+> 起因：学习者反馈"异步生成器还是没看懂"。根因是**跳过了普通生成器这一层**，直接从
+> `async def` + `yield` 开始。正确顺序是：**普通函数 → 生成器 → 异步生成器 → 谁在拉它**。
+
+#### 第 0 层：一张表说清四个概念
+
+| 写法 | 调用后得到什么 | 函数体何时执行 | 能 `await` 吗 |
+|---|---|---|---|
+| `def f()` | 返回值 | 立刻执行完 | ❌ |
+| `def f(): ... yield x` | **生成器对象** | **不执行**，等被 `next()` | ❌ |
+| `async def f()` | **协程对象** | **不执行**，等被 `await` | ✅ |
+| `async def f(): ... yield x` | **异步生成器对象** | **不执行**，等被 `__anext__()` | ✅ |
+
+⭐ 一句话：**`async def` 决定"能不能 await"，`yield` 决定"能不能暂停交出一段"**。两个一叠加就是异步生成器。
+
+#### 第 1 层：生成器 = 能暂停的函数（`yield` vs `return`）
+
+📎 实测（普通函数 vs 只差一个 `yield` 的生成器）：
+
+```text
+=== 普通函数 ===
+  准备调用 normal()
+  [normal 函数体开始执行]     ← 调用时立刻执行
+    正在处理 A / B / C
+  [normal 函数体执行完毕]
+  调用返回了: ['A', 'B', 'C'] （类型: list）
+
+=== 生成器函数 ===
+  准备调用 generator()
+  调用返回了: <generator object generator at 0x...> （类型: generator）
+  >>> 没有任何 [函数体…] 输出！函数体根本没跑
+  现在开始一帧一帧地取（手动 next）:
+  [generator 函数体开始执行]
+    即将交出去 A
+  next(g) -> A                ← 才跑了第一段就停住
+    即将交出去 B
+  next(g) -> B
+    即将交出去 C
+  next(g) -> C
+  [generator 函数体执行完毕]
+  第 4 次 next(g) -> StopIteration（生成器结束了）
+```
+
+| | `return x` | `yield x` |
+|---|---|---|
+| 函数结束了吗 | **结束**，帧销毁 | **没结束**，冻在原地 |
+| 局部变量 | 随帧销毁 | **还在**（下次从这里继续） |
+| 能再来一次吗 | 再调用一次即可 | `next()` 从 `yield` 下一行继续 |
+| 调用几次 | 1 次 1 个结果 | 1 次调用 → N 个结果 |
+
+📎 **"冻结"的硬证据**（`inspect.getgeneratorstate` + `gi_frame.f_locals`）：
+
+```text
+=== 刚创建 ===
+  状态: GEN_CREATED
+  局部变量快照: 还没有 frame        ← 连栈帧都没建
+
+=== 第一次 next ===
+    进入循环体, i=0
+  拿到: 0
+  状态: GEN_SUSPENDED              ← 停住了，不是死了
+  局部变量: {'n': 3, 'i': 0}       ← 变量还在！
+
+=== 第二次 next ===
+    从 yield 恢复, 现在 i=0 → 即将 i+=1     ← 从 yield 的下一行继续
+    进入循环体, i=1
+  拿到: 1
+  局部变量: {'n': 3, 'i': 1}
+
+=== 第四次 next ===
+  [循环结束，函数即将正常返回]
+  StopIteration
+  状态: GEN_CLOSED
+  frame 还在吗: None               ← 彻底销毁
+```
+
+⭐ **状态机只有三态**：`GEN_CREATED`（造好没跑）→ `GEN_SUSPENDED`（冻在 yield）⇄ → `GEN_CLOSED`（走完/出错）。
+
+⭐ **`for` 循环就是 `next()` 的语法糖**：`for x in g` ≈ 反复 `next(g)` 直到 `StopIteration` 被吞掉。
+
+#### 第 2 层：为什么 9a 必须用「异步」生成器
+
+📎 实测两条 `SyntaxError`：
+
+```text
+def bad():
+    await asyncio.sleep(1)      → SyntaxError: 'await' outside async function (第 2 行)
+
+def half():
+    yield 1
+    await asyncio.sleep(1)      → SyntaxError: 'await' outside async function (第 3 行)
+```
+
+推导链（**只有一条路走得通**）：
+
+1. 9a 里必须 `await asyncio.sleep(0.2)`（否则瞬间发完，测不出流式；真实场景是 `await` 上游 chunk）
+2. `await` 只能出现在 `async def` 里 → 外层必须 `async def`
+3. 但同时要**每算出一段就交出去** → 必须 `yield`
+4. `async def` + `yield` = **异步生成器**（唯一解）
+
+📎 异步生成器对象与普通生成器的接口对照：
+
+```text
+类型: async_generator
+有 __aiter__ / __anext__: True True     ← 异步世界用这一对
+有 __iter__ / __next__ 吗: False False  ← 这两样都没有，所以不能 for，只能 async for
+```
+
+`async for` ≈ 反复 `await g.__anext__()`，直到 `StopAsyncIteration`。
+
+#### 第 3 层：谁在拉？（"管子"的真相）
+
+生成器**自己不会跑**，必须有人反复问它要下一帧。这个人就是 `StreamingResponse`。
+📎 源码 `starlette/responses.py:253-258`：
+
+```python
+await send({"type": "http.response.start", ...})      # 先发状态码 + 头
+async for chunk in self.body_iterator:                # ← 就是这里在"拉"
+    if not isinstance(chunk, bytes | memoryview):
+        chunk = chunk.encode(self.charset)            # str → utf-8 字节
+    await send({"type": "http.response.body", "body": chunk, "more_body": True})
+await send({"type": "http.response.body", "body": b"", "more_body": False})   # 收尾
+```
+
+⭐ **拉模式（pull）**：不是生成器"推"，是框架**一帧一帧地要**。
+
+```text
+客户端                Starlette                    你的 event_source()
+  |                       |                                |
+  |---- GET /v1/chat/stream --->                          |
+  |                       |-- 造出生成器对象（此刻 0 行代码执行）->|
+  |<-- 200 + 头（chunked）--|                                |
+  |                       |-- await __anext__() ----------->|
+  |                       |                                | 算第 1 帧 → yield
+  |                       |<------------ "data: 你\n\n" ----|
+  |<==== 立刻写 socket ==== |                                |
+  |                       |-- await __anext__() ----------->| 从 yield 下一行继续
+  |                       |                                | await sleep(0.2) ...
+  |                       |<------------ "data: 好\n\n" ----|
+  |<==== 立刻写 socket ==== |                                |
+  |         ……            |            ……                  |
+  |                       |<------------ StopAsyncIteration |
+  |<---- more_body=False -|                                |
+```
+
+⭐ **这就是"边算边发"的全部机制**：每 `yield` 一次，`await send` 一次。算得慢 → 发得慢 → 用户看到字一个一个蹦。
+
+#### 第 4 层：不写生成器会怎样（📎 用一个假 `send` 抓内部消息）
+
+| 传给 `StreamingResponse` 的东西 | 实测 `http.response.body` 次数 | 内容 |
+|---|---|---|
+| `"你好ABC"`（str） | **6 次** | `b'\xe4\xbd\xa0'`、`b'\xe5\xa5\xbd'`、`b'A'`、`b'B'`、`b'C'`、`b''` |
+| `["a", "b"]`（list） | 3 次 | `b'a'`、`b'b'`、`b''` |
+| 异步生成器 | 3 次 | `b'data: 1\n\n'`、`b'data: 2\n\n'`、`b''` |
+
+⚠️ **传 str 不报错，只是"按字符发"**（`starlette/responses.py:239` 会走
+`iterate_in_threadpool`）—— 又一个"工具全绿但行为荒唐"的例子。而且 str 早就整串在内存里，
+**根本没有"边算边发"**，只是把发送切碎了而已。
+
+#### 第 5 层：生成器是一次性的（📎 别放模块级！）
+
+```text
+第一次遍历: [0, 1, 2]
+同一个对象再遍历: []          ← 空的！
+对比：每次重新调用 agen() → 每次都 [0, 1, 2]
+```
+
+⚠️ 实测"模块级复用"的后果：
+
+```text
+请求 1 拿到: [0, 1, 2]
+请求 2 拿到: []              ← 用户看到空回答
+```
+
+⭐ 所以 `event_source()` **必须在请求处理函数体内被调用**（9a 就是这么写的）—— 每个请求
+新建一个生成器对象。若写成模块级 `SHARED = event_source()`，第二个用户就没有输出了。
+
+#### 一句话判据
+
+> **`yield` = "交出并冻结"，`async for` = "反复唤醒它"；
+> `StreamingResponse` 是那个不停唤醒它、每拿到一段就立刻写 socket 的消费者。
+> 流式不是"生成器在推"，而是"框架在一帧一帧地拉"。**
+
 ### 9.3b 本仓库落地 + 三条硬证据（9a，2026-10-19 实测）
 
 #### ① 落地代码要点
