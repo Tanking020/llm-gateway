@@ -62,8 +62,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
         """兜底：未预期异常 -> 500 + 统一的错误形状 + request_id（堆栈只写日志）"""
-        # 设置为 12 位十六进制，够用好念
-        request_id = uuid.uuid4().hex[:12]
+        # 优先用中间件分配的 request_id（这样响应头、日志、响应体里的 ID 是同一个）
+        #   只有中间件没跑到时才自己生成（兜底）
+        request_id = getattr(request.state, "request_id", "") or uuid.uuid4().hex[:12]
         # logger.exception 会自动附带当前异常的完整 traceback（logger.error 不会）
         logger.exception("未处理异常 request_id=%s path=%s", request_id, request.url.path)
         # 回给客户端一句人话 + ID: 绝不回显 str(exc) 或堆栈
@@ -76,4 +77,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                     "request_id": request_id,  # 用户报错时提供它，我方据此搜日志
                 }
             },
+            # 正常响应由中间件补头，异常响应由处理器补头（因为两者创建 Response 的地方不同）
+            # 这句正是对异常响应手动加头
+            headers={"X-Request-ID": request_id},
         )
