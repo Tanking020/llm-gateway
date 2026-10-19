@@ -55,10 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # 日志配置：默认 root 级别是 WARNING 且没有 handler, info 会被静默丢弃
 #   format 四段：时间 | 级别（左对齐 7 位）| 模块名 | 消息
 # ⚠️ basicConfig 只在 root 还没有 handler 时生效；Step 11 会换成 dictConfig(force=True) 做正式配置
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-7s %(name)s | %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s | %(message)s")
 
 logger = logging.getLogger(__name__)
 

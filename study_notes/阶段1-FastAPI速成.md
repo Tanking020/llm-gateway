@@ -2510,6 +2510,23 @@ log.info(msg)
 而不是靠日志级别。若要区分，最合理的是让 **502（上游故障）** 在翻译处额外打一条 WARNING ——
 因为它属于"没坏但要注意"，而是 5xx 里唯一**不是我们 bug** 的。
 
+#### ⑨ `basicConfig(level=INFO)` 的副作用：第三方库也跟着开口（2026-10-19 实测）
+
+`basicConfig` 调的是 **root** 级别，而 root 是所有 logger 的祖先 —— 所以**所有库**的 INFO 也会显示。
+实测本仓库的日志里多出这类行：
+
+```text
+2026-10-19 16:46:50,976 INFO    httpx | HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+```
+
+| 影响 | 判断 |
+|---|---|
+| 每次调上游都多一行 httpx 日志 | 🟡 其实是**有用**的（能看到"发了什么请求"），但会变吵 |
+| 生产环境日志量增加 | ⚠️ Step 11 用 `dictConfig` 给 `httpx` 单独设 `WARNING` 即可 |
+| 会不会泄露密钥 | 实测**不会**：httpx 的 INFO 只打 `method url "status"`；httpcore 的 DEBUG trace 打的是 `Request` repr（method/url），**不含 headers** |
+
+⭐ 判据：**改 root 级别 = 改全世界的嗓门**。要精细控制就得 `dictConfig` 按 logger 逐个设级别。
+
 **坑 2：中间件会破坏流式响应** ⚠️⚠️
 
 如果在中间件里**读取了整个响应体**（比如为了记日志）：
