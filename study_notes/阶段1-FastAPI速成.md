@@ -4112,6 +4112,99 @@ chunk = json.loads(raw)      # 类型：Any（mypy 眼里什么都放过）
 > **三层 chunk：字节（HTTP）→ 字符串（SSE 行）→ dict（补全片段）。
 > 单帧字段（`usage` / `finish_reason` / `role`）必须先处理；类型会变的字段（`content`）只能真值判断。**
 
+## 9.8d 帧的五种类型与产生顺序（2026-10-21 实测）
+
+> 起因：学习者问「帧应该有分类吧？不同帧的区别是什么？一次生成按什么顺序产生？」
+> 结论：**上游只有 4 类帧 + 1 个结束标记；我方输出 5 类（多了自造的 THINKING）**。
+
+### ① 一帧 = 一个 dict，按「里面装了什么」分类
+
+分类判据只有 4 个问题，按此顺序问下去：
+
+```text
+拿到一帧 chunk
+  ├─ choices 是空列表？           → ① 纯用量帧（PURE_USAGE，OpenAI 风格）
+  └─ choices 有内容 → 看 delta / finish_reason
+       ├─ delta.role 有值？        → ② 首帧（ROLE）  ← 只有 1 个
+       ├─ finish_reason 有值？     → ④ 结束帧（FINISH）
+       ├─ delta.content 有值？     → ③ 内容帧（CONTENT）
+       └─ delta.reasoning_content 有值？ → ③' 思维链帧（REASONING）
+（最后还有 1 个 data: [DONE]，它不是 JSON，是纯文本标记）
+```
+
+### ② 上游五类的对照表（📎 实测，问「从1数到3」共 64 帧）
+
+| # | 类型 | `delta` 里装什么 | 数量 | 作用 | 我方是否转发 |
+|---|---|---|---|---|---|
+| ① | **ROLE 首帧** | `{"role":"assistant","content":null,"reasoning_content":""}` | **1** | 声明"接下来是 assistant 在回答" | ❌ 丢弃 |
+| ② | **REASONING 思维链帧** | `{"content":null,"reasoning_content":"We"}` | **56** | 模型内部推理过程 | ❌ 丢弃（产品只显示回答） |
+| ③ | **CONTENT 内容帧** | `{"content":"1","reasoning_content":null}` | **5** | 真正的回答文字 | ✅ 转发为 `{"delta": ...}` |
+| ④ | **FINISH 结束帧** | `{"content":"","reasoning_content":null}` + **`finish_reason:"stop"`** + **`usage`** | **1** | 说明为何结束 + 本次用量 | ✅ 转发为 2 帧 |
+| ⑤ | **`[DONE]`** | 不是 JSON，就是字符串 `[DONE]` | **1** | OpenAI 约定的收尾标记 | ✅ 由我方重发一次 |
+
+⭐ 注意 ④ **一帧里装了两件事**（`finish_reason` + `usage`），所以转发时会被拆成 2 帧。
+
+### ③ 📎 上游真实顺序（压缩连续重复）
+
+```text
+ROLE × 1
+REASONING × 56
+CONTENT × 5
+FINISH(stop)+USAGE × 1
+DONE × 1
+
+首 3 帧: ['ROLE', 'REASONING', 'REASONING']
+末 3 帧: ['CONTENT', 'FINISH(stop)+USAGE', 'DONE']
+```
+
+⭐ **顺序是固定的**：ROLE 打头 → 推理 → 内容 → 结束 → DONE。
+⚠️ 但 **REASONING 与 CONTENT 不保证"先全推理再全内容"** —— 模型可能交替产出（本机这次是分段的）。
+
+### ④ 📎 我方输出的 5 类（问「从1数到3」共 9 帧）
+
+```text
+第 1 帧 @  189.4ms  THINKING       {"status": "thinking"}          ← 我方新增，不等上游
+第 2 帧 @  686.0ms  DELTA          {"delta": "1"}
+第 3 帧 @  686.2ms  DELTA          {"delta": " "}
+第 4 帧 @  686.7ms  DELTA          {"delta": "2"}
+第 5 帧 @  686.8ms  DELTA          {"delta": " "}
+第 6 帧 @  708.9ms  DELTA          {"delta": "3"}
+第 7 帧 @  709.1ms  FINISH_REASON  {"finish_reason": "stop"}
+第 8 帧 @  713.9ms  USAGE          {"usage": {...}}
+第 9 帧 @  716.0ms  DONE           data: [DONE]
+
+顺序: THINKING → DELTA×5 → FINISH_REASON → USAGE → DONE
+```
+
+### ⑤ 上游分类 → 我方分类的映射
+
+| 上游帧 | 我方动作 | 我方帧 |
+|---|---|---|
+| ROLE | `if not text: continue` | （不发） |
+| REASONING ×56 | `if not text: continue` | （不发） |
+| CONTENT | 重组为 `{"delta": text}` | **DELTA** |
+| FINISH 的 `finish_reason` | 单独发一次 | **FINISH_REASON** |
+| FINISH 的 `usage` | 单独发一次 + 记日志 | **USAGE** |
+| `[DONE]` | `break`/`seen_done` 跳过，**由我方统一发** | **DONE** |
+| — | 我方自造，在请求上游之前 | **THINKING** |
+
+⭐ **这解释了为什么 64 帧上游只变成 9 帧我方输出**：56 帧思维链 + 1 帧 ROLE 被丢弃，
+1 帧 FINISH 被拆成 2 帧，再加 1 帧自造的 THINKING。
+
+### ⑥ 为什么"顺序"必须搞清（写代码的直接后果）
+
+| 顺序事实 | 代码后果 |
+|---|---|
+| ROLE 在最前，且 `content` 是 `null` | 首帧必被 `if not text` 跳过（正常） |
+| `finish_reason` / `usage` **只在最后 1 帧** | 处理必须放在 `content` 判断**之前**，否则被 `continue` 吃掉 |
+| FINISH 帧的 `content` 是**空字符串 `""`** | 用 `if not text` 会连 `finish_reason`/`usage` 一起丢 → 这就是 9b-2 的 bug |
+| `[DONE]` 是最后一行、不是 JSON | 必须先判断 `raw.strip() == "[DONE]"` 再 `json.loads`，否则 `JSONDecodeError` |
+
+### ⑦ 一句话记忆
+
+> **五类帧：ROLE（首帧，丢）→ REASONING（思维链，丢）→ CONTENT（回答，转 DELTA）→ FINISH（拆成 FINISH_REASON + USAGE）→ DONE（我方重发）。
+> 顺序固定，但「结束信息只在最后一帧」这一条决定了代码里的处理次序。**
+
 ## 9.9 自检
 
 > 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 9 SSE 流式）。
