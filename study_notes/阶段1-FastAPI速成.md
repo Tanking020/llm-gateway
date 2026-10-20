@@ -3848,6 +3848,73 @@ while (true) {
 > ⭐ **建议先手写一遍**：你会真正理解"帧格式、缓冲、断连"这三件事。
 > 之后再上库，你才知道它帮你做了什么 —— 这和阶段 2"先原生 API 再用 LangChain"是同一条原则。
 
+## 9.8b 上游真实 SSE 帧长什么样（9b-1 取证，2026-10-20 实测）
+
+> 实测环境：DeepSeek 官方接口 `/chat/completions`，`model=deepseek-flash`，`stream=true`，
+> 提问「从1数到5，只输出数字，用空格隔开」。共收到 **68 条非空行**（67 个 `data:` 帧 + 1 个 `[DONE]`）。
+
+### ① 响应头和 9a 一模一样
+
+```text
+content-type         = text/event-stream; charset=utf-8
+transfer-encoding    = chunked
+content-length       = None
+```
+
+⭐ 说明"流式"这层协议**上游和我们用的是同一套**，差别只在**帧里装什么**。
+
+### ② 67 个帧分成 5 类
+
+| 类 | 数量 | 长什么样 | 含义 |
+|---|---|---|---|
+| **首帧** | 1 | `{"delta":{"role":"assistant","content":null,"reasoning_content":""}}` | 表明"我是 assistant 在回答"，还没内容 |
+| **思维链帧** | **56** | `{"delta":{"content":null,"reasoning_content":"We"}}` | DeepSeek 的**推理过程**（`reasoning_content`） |
+| **内容帧** | **9** | `{"delta":{"content":"1","reasoning_content":null}}` | 真正的回答文字（"1 2 3 4 5" 共 9 个 token） |
+| **结束帧** | 1 | `{"delta":{"content":""},"finish_reason":"stop"}` + `"usage":{...}` | 说明"说完了" + **token 用量** |
+| `[DONE]` | 1 | `data: [DONE]` | OpenAI 约定的收尾标记 |
+
+⭐ **最大发现**：**56 / 67 的帧是思维链，不是回答**。所以"帧多"不等于"字数多"（呼应 §9.2c）。
+
+### ③ 字段逐个解释
+
+| 字段 | 实测值 | 含义 |
+|---|---|---|
+| `id` | `31381edc-…` | 这次生成的唯一编号。**67 帧全是同一个 id** —— 所以它能用来归组"同一次回答" |
+| `object` | `chat.completion.chunk` | 固定字符串："聊天补全的一个**片段**"。`chunk` = 块 |
+| `created` | `1792473349` | Unix 时间戳（秒） |
+| `model` | `deepseek-flash` | 实际回答的模型（上游可能改写你传的名字） |
+| `system_fingerprint` | `e72d3c…` | 上游内部版本指纹。用于排查"同样的请求为何结果变了" |
+| `choices` | 数组 | 候选答案列表。我们没请求多个，所以只有 1 个（`index: 0`） |
+| `choices[0].delta` | 对象 | **本帧新增的内容**（delta = 增量，不是全量） |
+| `delta.role` | `"assistant"` | **只在首帧出现** |
+| `delta.content` | `"1"` / `null` / `""` | 回答文字。`null` = 这帧没文字 |
+| `delta.reasoning_content` | `"We"` / `null` | **思维链**（DeepSeek 特有能力，非所有模型都有） |
+| `logprobs` | `null` | 词概率，我们没请求 |
+| `finish_reason` | `null` / `"stop"` | **只有结束帧有值**。`stop` = 模型自己说完；另有 `length`（超长被截断）、`content_filter`（被过滤） |
+| `usage` | 对象 | **只有结束帧出现**：`prompt_tokens=44 / completion_tokens=66 / total_tokens=110`，其中 `reasoning_tokens=56` |
+
+### ④ 三个真实存在的坑
+
+| 坑 | 实测证据 | 后果 / 正确写法 |
+|---|---|---|
+| **`content` 有三种取值：`null` / `""` / 字符串** | 首帧是 `null`；结束帧是 `""`；内容帧是 `"1"` | `delta["content"]` 直接取会 `KeyError`（有的帧没有该键）；写 `if delta.get("content"):` 用**真值判断**可一次覆盖三种 |
+| **`content` 与 `reasoning_content` 互斥** | 56 帧只有 reasoning、9 帧只有 content，**没有一帧同时有** | 别用一个字段判断"有没有内容" |
+| **`usage` 只在最后一帧** | 67 帧里只有第 67 帧带 `usage` | 想记 token 必须**留到结束帧**再读；只转发 `content` 会把它丢掉 |
+
+### ⑤ 和 9a 的对照：9b-2 要做的"翻译"
+
+| 上游给的 | 9a 现在发的 | 9b-2 必须决定 |
+|---|---|---|
+| `choices[0].delta.content = "1"` | `{"delta": "你"}` | ✅ 直接映射 |
+| `choices[0].delta.reasoning_content = "We"` | **没有对应** | ❓ **转不转给前端**（56 帧！） |
+| `finish_reason = "stop"` | **没有对应** | ❓ 转不转 |
+| `usage = {prompt_tokens: 44, …}` | **没有对应** | ❓ 转不转（这是**计费**依据） |
+| 其余（`id`/`object`/`created`/`model`/`system_fingerprint`/`logprobs`） | **不转发** | ✅ 白名单剔除（同 Step 4b「上游 10 键 → 3 字段」的道理） |
+
+⭐ **核心认知**：9a 你是"造帧的人"，9b 你是"**翻译官**"。
+上游帧是**协议规定**的（字段多、为多种用途服务），我们对外只需要**一小部分** ——
+所以 `StreamingResponse` 里不是"把上游字节原样倒出去"，而是**一帧一帧解析 → 重新组装 → 再 yield**。
+
 ## 9.9 自检
 
 > 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 9 SSE 流式）。
