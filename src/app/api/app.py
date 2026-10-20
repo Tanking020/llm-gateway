@@ -276,7 +276,8 @@ async def upstream_models(client: LlmClientDep) -> ModelListResponse:
     return ModelListResponse(total=len(models), items=models)
 
 
-# 【时序验证】流式必须起真服务、用 curl -w 看 ttfb/total；TestClient 证明不了分批发送
+# 【时序验证】流式必须起真服务；但 curl -w 的 ttfb 量的是"响应头"不是"首帧"
+#   （2026-10-20 实测订正）要证明"内容在流"，必须用带时间戳的客户端量首个数据帧
 @app.post("/v1/chat/stream")
 async def chat_stream(
     # 客户端请求体：与 /v1/chat 复用同一份契约
