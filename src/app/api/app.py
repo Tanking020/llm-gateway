@@ -292,6 +292,11 @@ async def chat_stream(
     # 推进它的是 StreamingResponse 里的 async for（starlette/responses.py:253），不是本文件
     async def event_source() -> AsyncIterator[str]:
         """异步生成器：每 yield 一次 = 一帧 SSE，框架收一帧发一帧"""
+        # 连上就先发一帧状态，前端可以立刻显示"模型思考中"
+        #    这一帧在【请求上游之前】发出，所以几乎立刻到达客户端
+        #    实测不加它时：首个内容帧 845.8ms（占总耗时 93%）
+        yield f"data: {json.dumps({'status': 'thinking'}, ensure_ascii=False)}\n\n"
+
         # 上游请求体的字段名由 OpenAI 兼容协议规定
         body: dict[str, object] = {
             "model": request.model or config.llm_model,
@@ -314,6 +319,7 @@ async def chat_stream(
             # ⚠️ 已知缺陷：此时响应头 200 已发出，客户端会看到"200 + 半截流"（待修）
             resp.raise_for_status()
 
+            seen_done = False
             # aiter_lines(): 按换行切行并且去掉行尾 \n，且【一行到就交一行】
             #   实测它会把 SSE 的空行也作为 '' 返回，所以下面必须过滤
             async for line in resp.aiter_lines():
@@ -323,21 +329,75 @@ async def chat_stream(
 
                 # 去掉 "data: " 前缀，剩下才是 JSON 文本
                 raw = line[len("data: ") :]
-                # 上游自己的收尾标记：这里先 break，由我们在最后统一发（避免发两遍）
+                # 上游自己的收尾标记：
                 if raw.strip() == "[DONE]":
-                    break
+                    seen_done = True
+                    # 如果 中途 break 会导致 body 未被读完，那 httpx 将会销毁连接
+                    continue  # 不 break: 让连接能回收，下次请求复用已有连接，省去重新握手成本
+                if seen_done:
+                    continue  # [DONE] 之后的帧一律忽略
 
                 # 解析这一帧（json.loads 返回 Any：JSON 结构在运行期才知道，静态类型帮不上）
                 chunk = json.loads(raw)
+
+                # usage（本次请求消耗资源量的统计信息）可能出现在两种位置，先单独处理：
+                #   a) 和结束原因挤在同一帧
+                #   b) 单独一帧且 choices 为空列表
+                # 所以不能假设"每帧都有 choices"，先取值再判断
+                usage = chunk.get("usage")
+                choices = chunk.get("choices") or []  # .get() 的默认值只能处理键不存在的情况
+                if not choices:
+                    # 这种帧只可能是"纯用量帧"，没有内容也没有结束原因
+                    if usage:
+                        logger.info(
+                            "流式用量(纯用量帧): prompt=%s completion=%s total=%s",
+                            usage.get("prompt_tokens"),
+                            usage.get("completion_tokens"),
+                            usage.get("total_tokens"),
+                        )
+                        yield f"data: {json.dumps({'usage': usage}, ensure_ascii=False)}\n\n"
+                    continue
+
                 # 回答文字藏在 choices[0].delta.content
                 # 逐层拆：列表取第 0 个 → 那个 dict → 再取 delta 键，得到"本帧新增"的字段
-                delta = chunk["choices"][0]["delta"]
+                choice = choices[0]
+                # 注意：choice[0] 是"本帧数组第一个元素"，不等于"index 为 0 的候选"
+                # 当前两者相同，只处理 index=0 这一个候选：我们不传 n，DeepSeek 也只支持 n=1
+                # 但是万一将来上游返回多个候选（每帧只含一个、index 交替），
+                # 不加这行会把两路文字搅成乱码（如 "答另案一A段"），而不是"只丢一路"
+                if choice.get("index", 0) != 0:  # index = 0 防御性编程
+                    continue
+                delta = choice["delta"]
 
-                # content 可能是 None / "" / 字符串三种取值，用真值判断一次覆盖
+                # 结束原因：只在最后一帧有值（"stop" = 模型自己说完 / "length" = 被截断）
+                #   必须放在下面 content 的判断【之前】，否则会被 continue 跳过
+                finish_reason = choice.get("finish_reason")
+                if finish_reason:
+                    logger.info("流式结束: reason=%s", finish_reason)
+                    payload = json.dumps({"finish_reason": finish_reason}, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+
+                # 用量：也是"可能出现在任意帧"的字段，同样要在 content 判断之前处理
+                if usage:
+                    # 写进服务端日志 = 记账：转发给前端 = 让用户看到花了多少
+                    details = usage.get("completion_tokens_details") or {}
+                    logger.info(
+                        "流式用量: prompt=%s completion=%s total=%s reasoning=%s "
+                        "cache_hit=%s cache_miss=%s",
+                        usage.get("prompt_tokens"),
+                        usage.get("completion_tokens"),
+                        usage.get("total_tokens"),
+                        details.get("reasoning_tokens"),
+                        usage.get("prompt_cache_hit_tokens"),
+                        usage.get("prompt_cache_miss_tokens"),
+                    )
+                    yield f"data: {json.dumps({'usage': usage}, ensure_ascii=False)}\n\n"
+
+                # 内容帧：content 可能是 None / "" / 字符串三种取值，用真值判断一次覆盖
                 text = delta.get("content")
                 if not text:
                     # 首帧（role）、思维链帧（reasoning_content）、空内容帧都走这条路
-                    # ⚠️ 这里也顺带丢弃了结束帧的 finish_reason 与 usage（后续单独处理）
+                    # 注意：finish_reason 与 usage 已在上面处理过，这里 continue 不会漏掉它们
                     continue
 
                 # 重组成【我们自己】的帧格式再交出去（白名单：上游 7 个顶层键只留 1 个信息）

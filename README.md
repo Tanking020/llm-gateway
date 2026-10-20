@@ -3,10 +3,11 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9a 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
-错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → **SSE 流式响应**）。
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9b-3 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应）。
 已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、应用级共享 HTTP 客户端、
-以及一个假数据版的逐帧 SSE 接口（实测 TTFB 0.014s / total 1.85s，真模型接上游属下一步 9b）。
+以及一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
+实测首帧 60ms / 总 906ms）。
 详见[路线图](#路线图)。
 
 ---
@@ -117,7 +118,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 > 流式接口的 `/docs` 目前把 `200` 标成 `application/json`（返回注解是 `Response` 子类时 FastAPI 会置空
 > `response_model`），实际响应是 `text/event-stream` —— 见待办 #11。
 
-**SSE 流式响应**（Step 9b-2 起：真调上游 `stream=true`，只转发回答文字）：
+**SSE 流式响应**（Step 9b-3 起：真调上游 `stream=true`，含状态帧与用量记账）：
 
 请求体与 `POST /v1/chat` 共用同一份契约（`ChatRequest`）。一帧 = `data: <内容>` + **一个空行**（`\n\n`）。实测响应：
 
@@ -128,6 +129,8 @@ x-accel-buffering: no
 content-type: text/event-stream; charset=utf-8
 transfer-encoding: chunked
 
+data: {"status": "thinking"}          ← 连上立刻发（实测 60ms），不等上游
+
 data: {"delta": "1"}
 
 data: {"delta": " "}
@@ -136,8 +139,23 @@ data: {"delta": "2"}
 
 ……
 
+data: {"finish_reason": "stop"}       ← 为什么结束（"stop" 说完 / "length" 被截断）
+
+data: {"usage": {"prompt_tokens": 44, "completion_tokens": 63, "total_tokens": 107,
+                 "completion_tokens_details": {"reasoning_tokens": 57},
+                 "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 44}}
+
 data: [DONE]
 ```
+
+**四类帧的分工**：
+
+| 帧 | 何时发 | 谁用 |
+|---|---|---|
+| `{"status": "thinking"}` | 请求开始，**在请求上游之前** | 前端显示"思考中"，避免空白期 |
+| `{"delta": "..."}` | 上游每吐一个 token | 正文逐字显示 |
+| `{"finish_reason": "..."}` | 上游最后一帧 | 区分正常结束 `/` 被截断 |
+| `{"usage": {...}}` | 上游最后一帧 | 成本计量（含思维链 token） |
 
 ```powershell
 # 请求体写进临时文件（含中文，避免 PowerShell 转义把 JSON 弄坏）
@@ -156,21 +174,25 @@ Remove-Item "$env:TEMP\chat_stream.json"
 ```
 
 > 🔴 **时序不能用 `curl -w` 的 `ttfb/total` 判**：`time_starttransfer` 量的是**响应头到达**，
-> 而流式接口的头是路由立刻发出的（实测 8.9ms），内容要等上游（实测首个内容帧 845.8ms / 总 905.7ms）。
-> 要证明"内容在流"，必须用**带时间戳的客户端**（httpx `iter_text()` + `perf_counter`）量首个数据帧时刻。
-> 详见[阶段1 笔记](study_notes/阶段1-FastAPI速成.md) §9.3b ③。
+> 而流式接口的头是路由立刻发出的（实测 8.9ms）。要证明"内容在流"，必须用**带时间戳的客户端**
+> （httpx `iter_text()` + `perf_counter`）量首个数据帧时刻。详见[阶段1 笔记](study_notes/阶段1-FastAPI速成.md) §9.3b ③。
 >
 > ⚠️ `TestClient` 里的 `transfer-encoding` 是 `None` —— 它能验证**帧格式**，证明不了"分批发送"。
 > 时序必须用真 uvicorn + 真 HTTP 客户端。
+
+**首帧延迟的前后对比**（📎 同一接口实测）：
+
+| 版本 | 首个 body 帧 | 总耗时 | 占比 |
+|---|---|---|---|
+| 9b-2（无状态帧） | 845.8ms | 905.7ms | **93%** |
+| **9b-3（加 `thinking` 帧）** | **60.0ms** | 906ms | **6.6%** |
 
 **流式的已知限制**（下一步要补）：
 
 | 限制 | 表现 | 归属 |
 |---|---|---|
 | 上游报错时状态码改不了 | 客户端看到 `200` + 断连（头早已发出） | 9b-4：在开始流**之前**判断上游状态 |
-| 首个内容帧要等思维链生成完 | 实测占 93%（845.8 / 905.7ms） | 9b-3：先发 `{"status":"thinking"}` 心跳帧 |
-| `usage` / `finish_reason` 未转发 | 无法做成本计量 | 9b-3 |
-| 客户端断开未处理 | 用户走了仍在烧 token | 9b-5 |
+| 客户端断开未处理 | 用户走了仍在烧 token | 9b-4 |
 
 **请求追踪**（Step 7a 起）：每个响应都带 `X-Request-ID` 头。
 
