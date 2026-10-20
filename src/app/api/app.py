@@ -286,7 +286,7 @@ async def chat_stream(
     client: LlmClientDep,
     config: SettingsDep,
 ) -> StreamingResponse:
-    """真模型流式：逐帧解析上游，只转发回答文字（思维链按产品要求丢弃）"""
+    """真模型流式：逐帧解析上游，转发回答文字 + 结束原因 + token 用量（思维链按产品要求丢弃）"""
 
     # 内层异步生成器：真正"一段一段往外吐"的地方
     # 推进它的是 StreamingResponse 里的 async for（starlette/responses.py:253），不是本文件
@@ -332,7 +332,7 @@ async def chat_stream(
                 # 上游自己的收尾标记：
                 if raw.strip() == "[DONE]":
                     seen_done = True
-                    # 如果 中途 break 会导致 body 未被读完，那 httpx 将会销毁连接
+                    # 如果中途 break 会导致 body 未被读完，那 httpx 将会销毁连接
                     continue  # 不 break: 让连接能回收，下次请求复用已有连接，省去重新握手成本
                 if seen_done:
                     continue  # [DONE] 之后的帧一律忽略
@@ -347,13 +347,19 @@ async def chat_stream(
                 usage = chunk.get("usage")
                 choices = chunk.get("choices") or []  # .get() 的默认值只能处理键不存在的情况
                 if not choices:
-                    # 这种帧只可能是"纯用量帧"，没有内容也没有结束原因
+                    # 这种帧只可能是"纯用量帧"（OpenAI 开 stream_options.include_usage 时会出现）
+                    # 它没有内容也没有结束原因，所以处理完就可以跳过
                     if usage:
+                        details = usage.get("completion_tokens_details") or {}
                         logger.info(
-                            "流式用量(纯用量帧): prompt=%s completion=%s total=%s",
+                            "流式用量(纯用量帧): prompt=%s completion=%s total=%s reasoning=%s "
+                            "cache_hit=%s cache_miss=%s",
                             usage.get("prompt_tokens"),
                             usage.get("completion_tokens"),
                             usage.get("total_tokens"),
+                            details.get("reasoning_tokens"),
+                            usage.get("prompt_cache_hit_tokens"),
+                            usage.get("prompt_cache_miss_tokens"),
                         )
                         yield f"data: {json.dumps({'usage': usage}, ensure_ascii=False)}\n\n"
                     continue
@@ -361,7 +367,7 @@ async def chat_stream(
                 # 回答文字藏在 choices[0].delta.content
                 # 逐层拆：列表取第 0 个 → 那个 dict → 再取 delta 键，得到"本帧新增"的字段
                 choice = choices[0]
-                # 注意：choice[0] 是"本帧数组第一个元素"，不等于"index 为 0 的候选"
+                # 注意：choices[0] 是"本帧数组第一个元素"，不等于"index 为 0 的候选"
                 # 当前两者相同，只处理 index=0 这一个候选：我们不传 n，DeepSeek 也只支持 n=1
                 # 但是万一将来上游返回多个候选（每帧只含一个、index 交替），
                 # 不加这行会把两路文字搅成乱码（如 "答另案一A段"），而不是"只丢一路"
@@ -377,7 +383,9 @@ async def chat_stream(
                     payload = json.dumps({"finish_reason": finish_reason}, ensure_ascii=False)
                     yield f"data: {payload}\n\n"
 
-                # 用量：也是"可能出现在任意帧"的字段，同样要在 content 判断之前处理
+                # 用量：实测 DeepSeek 把它和 finish_reason 挤在最后一帧；
+                #   OpenAI 则是单独一帧（choices 为空，已在上面处理）。
+                #   两种位置都要覆盖，所以这里再判断一次，且必须在 content 判断之前
                 if usage:
                     # 写进服务端日志 = 记账：转发给前端 = 让用户看到花了多少
                     details = usage.get("completion_tokens_details") or {}

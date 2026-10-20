@@ -148,14 +148,29 @@ data: {"usage": {"prompt_tokens": 44, "completion_tokens": 63, "total_tokens": 1
 data: [DONE]
 ```
 
-**四类帧的分工**：
+**五类帧的分工**（我方对外只发这 5 类）：
 
 | 帧 | 何时发 | 谁用 |
 |---|---|---|
 | `{"status": "thinking"}` | 请求开始，**在请求上游之前** | 前端显示"思考中"，避免空白期 |
 | `{"delta": "..."}` | 上游每吐一个 token | 正文逐字显示 |
-| `{"finish_reason": "..."}` | 上游最后一帧 | 区分正常结束 `/` 被截断 |
+| `{"finish_reason": "..."}` | 上游最后一帧 | 区分正常结束 / 被截断（`length`） |
 | `{"usage": {...}}` | 上游最后一帧 | 成本计量（含思维链 token） |
+| `[DONE]` | 我方在流末尾**统一发一次** | 前端据此关闭连接 |
+
+**上游 5 类 → 我方 5 类的映射**（📎 实测问「从1数到3」：上游 64 帧 → 我方 9 帧）：
+
+| 上游帧 | 数量 | 我方动作 | 我方帧 |
+|---|---|---|---|
+| `ROLE`（首帧，`delta.role=assistant`） | 1 | 丢弃（`content` 是 `null`） | — |
+| `REASONING`（`reasoning_content` 有值） | **56** | 丢弃（产品只显示回答） | — |
+| `CONTENT`（`content` 有值） | 5 | 重组为 `{"delta": text}` | `DELTA` |
+| `FINISH`（`finish_reason` + `usage` **同帧**） | 1 | **拆成 2 帧** | `FINISH_REASON` + `USAGE` |
+| `[DONE]` | 1 | 只用来跳过，**由我方重发** | `DONE` |
+| —（我方自造） | — | 在请求上游之前发出 | `THINKING` |
+
+> ⭐ 算一遍：64 − 57（丢弃 ROLE + 思维链）+ 1（THINKING）+ 1（FINISH 拆成 2 帧）= **9** ✅
+> 帧的分类与顺序详见[阶段1 笔记](study_notes/阶段1-FastAPI速成.md) §9.8d。
 
 ```powershell
 # 请求体写进临时文件（含中文，避免 PowerShell 转义把 JSON 弄坏）
