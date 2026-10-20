@@ -373,7 +373,8 @@ async def chat_stream(
                 # 不加这行会把两路文字搅成乱码（如 "答另案一A段"），而不是"只丢一路"
                 if choice.get("index", 0) != 0:  # index = 0 防御性编程
                     continue
-                delta = choice["delta"]
+                # DeepSeek 每帧都有 delta，但换上游可能变，这里同样是防御性编程
+                delta = choice.get("delta") or {}
 
                 # 结束原因：只在最后一帧有值（"stop" = 模型自己说完 / "length" = 被截断）
                 #   必须放在下面 content 的判断【之前】，否则会被 continue 跳过
