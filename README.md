@@ -86,7 +86,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 | GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 |
 | POST | `/v1/chat` | 聊天（业务逻辑仍为 `echo` 占位）；最后一条消息必须是 `user` | 200 / 400 / 422 |
 | GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse` | 200 / 502 |
-| GET | `/v1/chat/stream` | **SSE 流式**（假数据逐字输出，真模型待接）；`text/event-stream` + chunked | 200 |
+| POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；`text/event-stream` + chunked | 200 / 422 |
 
 **成功响应形状**（Step 4 起，`schemas.py` 定义，可在 `/docs` 展开）：
 
@@ -117,9 +117,9 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 > 流式接口的 `/docs` 目前把 `200` 标成 `application/json`（返回注解是 `Response` 子类时 FastAPI 会置空
 > `response_model`），实际响应是 `text/event-stream` —— 见待办 #11。
 
-**SSE 流式响应**（Step 9a 起，假数据版；真模型接上游属 9b）：
+**SSE 流式响应**（Step 9b-2 起：真调上游 `stream=true`，只转发回答文字）：
 
-一帧 = `data: <内容>` + **一个空行**（`\n\n`）。实测响应：
+请求体与 `POST /v1/chat` 共用同一份契约（`ChatRequest`）。一帧 = `data: <内容>` + **一个空行**（`\n\n`）。实测响应：
 
 ```text
 HTTP/1.1 200 OK
@@ -128,9 +128,11 @@ x-accel-buffering: no
 content-type: text/event-stream; charset=utf-8
 transfer-encoding: chunked
 
-data: {"delta": "你"}
+data: {"delta": "1"}
 
-data: {"delta": "好"}
+data: {"delta": " "}
+
+data: {"delta": "2"}
 
 ……
 
@@ -138,18 +140,37 @@ data: [DONE]
 ```
 
 ```powershell
-# ⭐ 判"是否真流式"只看这两个数的比值（本例 ttfb 0.014s / total 1.850s = 1:130）
-curl.exe -s -o NUL -w "ttfb=%{time_starttransfer}s total=%{time_total}s`n" http://127.0.0.1:8000/v1/chat/stream
+# 请求体写进临时文件（含中文，避免 PowerShell 转义把 JSON 弄坏）
+$body = '{"messages":[{"role":"user","content":"从1数到5，只输出数字，用空格隔开"}]}'
+[IO.File]::WriteAllText("$env:TEMP\chat_stream.json", $body, (New-Object System.Text.UTF8Encoding($false)))
 
-# 逐帧看内容（-N = 关掉 curl 自己的输出缓冲，否则看不到"逐字")
-curl.exe -N -s http://127.0.0.1:8000/v1/chat/stream
+# 逐帧看内容（-N = 关掉 curl 自己的输出缓冲，否则看不到"逐字"）
+curl.exe -N -s -X POST http://127.0.0.1:8000/v1/chat/stream `
+  -H "Content-Type: application/json" --data-binary "@$env:TEMP\chat_stream.json"
 
 # 只看响应头，丢弃 body
-curl.exe -s -D - -o NUL http://127.0.0.1:8000/v1/chat/stream
+curl.exe -s -D - -o NUL -X POST http://127.0.0.1:8000/v1/chat/stream `
+  -H "Content-Type: application/json" --data-binary "@$env:TEMP\chat_stream.json"
+
+Remove-Item "$env:TEMP\chat_stream.json"
 ```
 
+> 🔴 **时序不能用 `curl -w` 的 `ttfb/total` 判**：`time_starttransfer` 量的是**响应头到达**，
+> 而流式接口的头是路由立刻发出的（实测 8.9ms），内容要等上游（实测首个内容帧 845.8ms / 总 905.7ms）。
+> 要证明"内容在流"，必须用**带时间戳的客户端**（httpx `iter_text()` + `perf_counter`）量首个数据帧时刻。
+> 详见[阶段1 笔记](study_notes/阶段1-FastAPI速成.md) §9.3b ③。
+>
 > ⚠️ `TestClient` 里的 `transfer-encoding` 是 `None` —— 它能验证**帧格式**，证明不了"分批发送"。
 > 时序必须用真 uvicorn + 真 HTTP 客户端。
+
+**流式的已知限制**（下一步要补）：
+
+| 限制 | 表现 | 归属 |
+|---|---|---|
+| 上游报错时状态码改不了 | 客户端看到 `200` + 断连（头早已发出） | 9b-4：在开始流**之前**判断上游状态 |
+| 首个内容帧要等思维链生成完 | 实测占 93%（845.8 / 905.7ms） | 9b-3：先发 `{"status":"thinking"}` 心跳帧 |
+| `usage` / `finish_reason` 未转发 | 无法做成本计量 | 9b-3 |
+| 客户端断开未处理 | 用户走了仍在烧 token | 9b-5 |
 
 **请求追踪**（Step 7a 起）：每个响应都带 `X-Request-ID` 头。
 
