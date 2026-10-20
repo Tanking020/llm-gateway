@@ -111,7 +111,7 @@ Resolved 31 packages | Installed 11 packages
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ✅ 已完成（6.1~6.4：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client；配套实测见 §6.1b~§6.1e、§6.3b、§6.4b） |
 | 7 | 中间件与 CORS | ✅ 已整理 | ✅ 已完成（7a 请求 ID + 耗时中间件 / 7b CORS；含常量抽离与日志级别配置） |
 | 8 | 异步正确姿势 | ✅ 已整理 | ✅ 已完成（`playground/blocking_demo.py`：1 慢 + 5 快并发，实测阻塞写法把快请求从 13ms 拖到 325ms，**差 25 倍**；另测线程池 40 上限是排队、GIL 下线程池对 CPU 密集无效 0.96x） |
-| 9 | **SSE 流式** | ✅ 已整理 ⭐ | 🟡 进行中（**9a 已完成**：`GET /v1/chat/stream` 假数据逐字输出，实测 TTFB 0.014s / total 1.85s、`transfer-encoding: chunked`、10 帧合法；接真实上游 `stream=true` 留到 9b） |
+| 9 | **SSE 流式** | ✅ 已整理 ⭐ | 🟡 进行中（**9a ✅** 假数据逐字 `GET /v1/chat/stream`，实测 TTFB 0.014s / total 1.85s、`chunked`、10 帧合法；**9b-1 ✅** 上游真实帧结构取证；**9b-2 ✅** 已改 `POST` + 真调上游 `stream=true`、只转发 `content`，实测 20 帧到达、首个内容帧 845.8ms；剩 9b-3~5：心跳 / `usage` / 流内错误 / 客户端断开） |
 | 10 | 数据库 | ✅ 已整理 | ⬜ 未开始 |
 | 11 | 配置/日志/安全 | ✅ 已整理 | 🟡 部分（配置已由阶段 0 的 `config.py` 解决；**日志已有基础**：`logging` + `request_id` + 堆栈只进 stderr（§6.3b），格式化 / 集中收集 / 密钥检查未做） |
 | 12 | 测试 | ✅ 已整理 | ⬜ 未开始 |
@@ -3589,6 +3589,10 @@ async def source():
 
 `src/app/api/app.py` 的 `GET /v1/chat/stream`（假数据版，真模型留到 9b）。
 
+> ⚠️ **2026-10-20 更新**：9b-2 已把它改成 **`POST /v1/chat/stream`**（真调上游 `stream=true`），
+> 假数据版本已删除，只保留在 git 历史（提交 `5086569`）中。本节 ②~⑥ 的实测数据**仍然成立**
+> —— 它们测的是"SSE 管道"本身（格式 / 时序 / 代理缓冲），与上游无关。
+
 #### ② 证据 1：响应头 —— 关键是 `transfer-encoding: chunked`
 
 ```text
@@ -3622,6 +3626,22 @@ ttfb=0.014s  total=1.850s
 
 ⭐ **判据：TTFB ≪ total 就是真流式**。若两者接近 → 被缓冲了（查 `X-Accel-Buffering`、
 中间件有没有读 `response.body`）。
+
+> 🔴 **2026-10-20 订正（9b-2 实测）**：上面这条判据**只在"响应头之后立刻有第一帧"时成立**。
+> `curl -w` 的 `time_starttransfer` 量的是**响应头到达**，不是"首个数据帧到达"。
+>
+> 📎 控制实验（端口 8002，路由立刻返回 `StreamingResponse`，但生成器先 `sleep(2)` 才 yield 第一帧）：
+>
+> ```text
+> curl -w:   ttfb=0.0198s  total=2.0231s      ← 比值 1:102，按旧判据"完美流式"
+> 逐帧时间戳: 响应头 61ms、第 1 帧 2067ms      ← 真实首帧占总耗时 97%
+> ```
+>
+> 9a 当时结论对，是因为假数据第一帧紧跟着头就发了（`yield` 在 `sleep` 之前）；
+> **9b 之后头由路由立刻发出、内容要等上游，两者彻底脱钩** —— 实测 `/v1/chat/stream`：
+> `ttfb=0.0089s / total=0.9057s`，但**首个内容帧在 845.8ms**（占 93%）。
+>
+> ⭐ **新判据：用带时间戳的客户端量"首个数据帧时刻 / 总耗时"，`curl -w` 的 ttfb 不再可用。**
 
 **对照组**（同一份响应，用非流式读法 `await client.get(...)`）：
 

@@ -6,7 +6,6 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
     本文件是【常驻服务】的应用对象，两者生命周期与职责都不同
 """
 
-import asyncio
 import json
 
 # logging：标准库日志模块，用来记"每个请求做了什么、花了多久"
@@ -277,32 +276,80 @@ async def upstream_models(client: LlmClientDep) -> ModelListResponse:
     return ModelListResponse(total=len(models), items=models)
 
 
-# 【格式】用 TestClient(快、免费)，【时序】必须起真服务 uvicorn + url
-@app.get("/v1/chat/stream")
-async def chat_stream_demo() -> StreamingResponse:
-    """假数据流式接口：把固定句子逐字吐出，用来验证【边发边算】的管子通不通"""
+# 【时序验证】流式必须起真服务、用 curl -w 看 ttfb/total；TestClient 证明不了分批发送
+@app.post("/v1/chat/stream")
+async def chat_stream(
+    # 客户端请求体：与 /v1/chat 复用同一份契约
+    # （messages / model / temperature / max_tokens 四个字段都已在那里校验过）
+    request: ChatRequest,
+    client: LlmClientDep,
+    config: SettingsDep,
+) -> StreamingResponse:
+    """真模型流式：逐帧解析上游，只转发回答文字（思维链按产品要求丢弃）"""
 
-    # 异步生成器：每次 yield 一帧，StreamingResponse 收到就立刻发出去
+    # 内层异步生成器：真正"一段一段往外吐"的地方
+    # 推进它的是 StreamingResponse 里的 async for（starlette/responses.py:253），不是本文件
     async def event_source() -> AsyncIterator[str]:
-        for ch in "你好，我是流式输出":
-            # SSE 一帧 = "data: <内容>" + 【一个空行】，只写一个 \n 浏览器不触发事件
-            # json.dumps: Python 对象序列化为 JSON 字符串（不是 str(dict)，那会得到单引号）
-            # ensure_ascii=False: 中文不转 \uXXXX，日志和抓包时能直接看懂
-            payload = json.dumps({"delta": ch}, ensure_ascii=False)
-            yield f"data: {payload}\n\n"
-            await asyncio.sleep(0.2)
-        # [DONE] 是 OpenAI 的约定（不是 SSE 协议要求）：跟主流对齐省事
-        # 它表示"生成结束"。前端收到就停
+        """异步生成器：每 yield 一次 = 一帧 SSE，框架收一帧发一帧"""
+        # 上游请求体的字段名由 OpenAI 兼容协议规定
+        body: dict[str, object] = {
+            "model": request.model or config.llm_model,
+            # Message 是 pydantic 模型，必须先 model_dump() 转成纯 dict 才能序列化
+            "messages": [m.model_dump() for m in request.messages],
+            "temperature": request.temperature,
+            # 这个开关是"逐块发"的开关：不开就是等全部生成完一次性返回
+            "stream": True,
+        }
+        # max_tokens 为 None 时不放进请求体（部分上游不接受 null）
+        if request.max_tokens is not None:
+            body["max_tokens"] = request.max_tokens
+
+        # client.stream(): 发请求但【不读 body】，返回的对象可逐行读
+        # async with: 退出代码块时自动关闭连接（不关会泄漏连接池）
+        async with client.stream("POST", "/chat/completions", json=body) as resp:
+            # 上游 4xx/5xx 在这里抛 httpx.HTTPStatusError
+            # ⚠️ 已知缺陷：此时响应头 200 已发出，客户端会看到"200 + 半截流"（待修）
+            resp.raise_for_status()
+
+            # aiter_lines(): 按换行切行并且去掉行尾 \n，且【一行到就交一行】
+            async for line in resp.aiter_lines():
+                # 空行（帧分隔符）、注释行、event: 等其它字段一律跳过
+                if not line.startswith("data: "):
+                    continue
+
+                # 去掉 "data: " 前缀，剩下才是 JSON 文本
+                raw = line[len("data: ") :]
+                # 上游自己的收尾标记：这里先 break，由我们在最后统一发（避免发两遍）
+                if raw.strip() == "[DONE]":
+                    break
+
+                # 解析这一帧（json.loads 返回 Any：JSON 结构在运行期才知道，静态类型帮不上）
+                chunk = json.loads(raw)
+                # 回答文字藏在 choices[0].delta.content（9b-1 实测确认的路径）
+                delta = chunk["choices"][0]["delta"]
+
+                # content 可能是 None / "" / 字符串三种取值，用真值判断一次覆盖
+                text = delta.get("content")
+                if not text:
+                    # 首帧（role）、思维链帧（reasoning_content）、空内容帧都走这条路
+                    # ⚠️ 这里也顺带丢弃了结束帧的 finish_reason 与 usage（后续单独处理）
+                    continue
+
+                # 重组成【我们自己】的帧格式再交出去（白名单：上游 7 个顶层键只留 1 个信息）
+                yield f"data: {json.dumps({'delta': text}, ensure_ascii=False)}\n\n"
+
+        # 无论上游怎么结束，收尾标记都由我们发，且只发一次
         yield "data: [DONE]\n\n"
 
+    # 返回流式响应：这里只负责上网，不负责产出
     return StreamingResponse(
         event_source(),
-        # media_type 必须是 text/event-stream，浏览器 EventSource 和前端库才认
+        # 必须是 text/event-stream，浏览器 EventSource 和前端库才认
         media_type="text/event-stream",
         headers={
             # 禁止中间层缓存这次响应
             "Cache-Control": "no-cache",
-            # 给 nginx 看的：别缓冲，否则流式会被攒成一次性（部署时必踩）
+            # 给 nginx 看的：别缓冲，否则流式会被攒成一次性（部署时要注意）
             "X-Accel-Buffering": "no",
         },
     )
