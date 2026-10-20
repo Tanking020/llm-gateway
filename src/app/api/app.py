@@ -301,7 +301,9 @@ async def chat_stream(
             # 这个开关是"逐块发"的开关：不开就是等全部生成完一次性返回
             "stream": True,
         }
-        # max_tokens 为 None 时不放进请求体（部分上游不接受 null）
+        # max_tokens 为 None 时【不放进请求体】（而不是放一个 null）
+        #   实测 DeepSeek 接受显式 null（返回 200），但省略更保险：
+        #   有些 OpenAI 兼容实现会拒绝 null；而且"这个键不存在"在语义上就是"不限制"
         if request.max_tokens is not None:
             body["max_tokens"] = request.max_tokens
 
@@ -313,6 +315,7 @@ async def chat_stream(
             resp.raise_for_status()
 
             # aiter_lines(): 按换行切行并且去掉行尾 \n，且【一行到就交一行】
+            #   实测它会把 SSE 的空行也作为 '' 返回，所以下面必须过滤
             async for line in resp.aiter_lines():
                 # 空行（帧分隔符）、注释行、event: 等其它字段一律跳过
                 if not line.startswith("data: "):
@@ -326,7 +329,8 @@ async def chat_stream(
 
                 # 解析这一帧（json.loads 返回 Any：JSON 结构在运行期才知道，静态类型帮不上）
                 chunk = json.loads(raw)
-                # 回答文字藏在 choices[0].delta.content（9b-1 实测确认的路径）
+                # 回答文字藏在 choices[0].delta.content
+                # 逐层拆：列表取第 0 个 → 那个 dict → 再取 delta 键，得到"本帧新增"的字段
                 delta = chunk["choices"][0]["delta"]
 
                 # content 可能是 None / "" / 字符串三种取值，用真值判断一次覆盖
@@ -348,7 +352,7 @@ async def chat_stream(
         # 必须是 text/event-stream，浏览器 EventSource 和前端库才认
         media_type="text/event-stream",
         headers={
-            # 禁止中间层缓存这次响应
+            # 禁止中间层缓存这次响应（否则可能拿到别人的答案）
             "Cache-Control": "no-cache",
             # 给 nginx 看的：别缓冲，否则流式会被攒成一次性（部署时要注意）
             "X-Accel-Buffering": "no",
