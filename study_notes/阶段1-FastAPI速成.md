@@ -3935,6 +3935,122 @@ content-length       = None
 上游帧是**协议规定**的（字段多、为多种用途服务），我们对外只需要**一小部分** ——
 所以 `StreamingResponse` 里不是"把上游字节原样倒出去"，而是**一帧一帧解析 → 重新组装 → 再 yield**。
 
+## 9.8c 上游响应的「三层结构」与字段类型（2026-10-20 实测）
+
+> 起因：学习者问「上游返回的信息形状是什么，`chunk` 的类型是什么，`usage` 里都是什么」。
+> 结论：**叫 "chunk" 的东西有三个层次，混起来就会写出错代码。**
+
+### ① 三个层次的 "chunk"（名字一样，东西完全不同）
+
+| 层 | 名字 | 类型 | 谁产生 | 在哪看到 |
+|---|---|---|---|---|
+| 第 1 层 | **HTTP chunk** | `bytes` | TCP 分块传输 | `transfer-encoding: chunked`；`resp.aiter_raw()` / `aiter_bytes()` |
+| 第 2 层 | **SSE 行** | `str` | 上游按 SSE 格式写的文本 | `resp.aiter_lines()` 给你的每一条 |
+| 第 3 层 | **补全片段对象** | `dict`（Go SDK 里叫 `ChatCompletionChunk`） | 我们自己 `json.loads(第 2 层)` | `chunk["choices"][0]["delta"]` |
+
+📎 实测（本项目真实上游）三层各自长什么样：
+
+```text
+第 1 层（字节，gzip 解压后）: b'data: {"id":"31381edc-...}\n\n'
+第 2 层（字符串）            : 'data: {"id":"31381edc-...}'        ← aiter_lines 已去掉行尾 \n
+第 3 层（dict）              : {'id': '31381edc-...', 'object': 'chat.completion.chunk', ...}
+```
+
+⭐ **判据：`chunk` 这个词在每一层的类型都不同** —— 看代码时先确认"这里的 chunk 是哪一层"。
+我们的代码里 `chunk = json.loads(raw)` 拿到的是**第 3 层**，所以 `chunk["choices"]` 是 dict 下标，不是字节切分。
+
+### ② 第 3 层的完整形状 + 每个字段的**类型**（📎 逐字段实测）
+
+```text
+id                                    str        = '31381edc-87fb-49ca-93ed-640d1965ff13'
+object                                str        = 'chat.completion.chunk'
+created                               int        = 1792473349
+model                                 str        = 'deepseek-flash'
+system_fingerprint                    str        = 'e72d3c7f663d3e1383b00b3884cb4501'
+choices                               list       长度 1，元素是 dict
+choices[0].index                      int        = 0
+choices[0].delta                      dict      继续下钻
+choices[0].delta.role                 str        = 'assistant'
+choices[0].delta.content              NoneType   = None            ← 这一帧没有文字
+choices[0].delta.reasoning_content    str        = ''              ← 空串，不是 None！
+choices[0].logprobs                   NoneType   = None
+choices[0].finish_reason              NoneType   = None
+```
+
+⭐ 注意两个"反直觉"：
+
+| 现象 | 后果 |
+|---|---|
+| `delta.content` 的类型**每帧都在变**（`None` / `str`） | 不能写 `if content != ""`（漏掉 `None`）；要用真值判断 `if not text` |
+| `reasoning_content` 在首帧是 **`''` 而不是 `None`** | 同一个概念在同一帧里用了两种"没有"的表示 → 只能靠真值判断统一处理 |
+
+### ③ 哪些字段"不是每帧都有"（📎 67 帧统计）
+
+| 字段 | 出现帧数 | 说明 |
+|---|---|---|
+| `id` / `object` / `created` / `model` / `system_fingerprint` | **67 / 67** | 每帧都有（可用来归组"同一次回答"） |
+| `choices` | **67 / 67** | 每帧都有 —— ⚠️ 但有 `[]` 空列表的情况（换上游时才出现） |
+| **`usage`** | **1 / 67** | ⭐ **只在最后一帧** |
+| `delta.content` | 67 / 67（值常为 `None`） | 键在，值不一定有 |
+| `delta.reasoning_content` | 67 / 67 | 同上 |
+| `delta.role` | **1 / 67** | 只在首帧 |
+| `finish_reason` | **1 / 67**（其余 66 帧是 `None`） | 值分布：`None` × 66，`"stop"` × 1 |
+
+⭐ **判据：`usage` / `finish_reason` / `role` 都是"单帧字段"** —— 处理它们必须放在"内容判断"之前，
+否则会被 `if not text: continue` 吃掉（我们 9b-2 就这样丢过一次）。
+
+### ④ `usage` 的 8 个字段（📎 逐字段实测）
+
+```text
+usage.prompt_tokens                                  int  = 44
+usage.completion_tokens                              int  = 66
+usage.total_tokens                                   int  = 110
+usage.prompt_tokens_details                          dict
+usage.prompt_tokens_details.cached_tokens            int  = 0
+usage.completion_tokens_details                      dict
+usage.completion_tokens_details.reasoning_tokens     int  = 56
+usage.prompt_cache_hit_tokens                        int  = 0
+usage.prompt_cache_miss_tokens                       int  = 44
+```
+
+| 字段 | 含义 | 用来干什么 |
+|---|---|---|
+| `prompt_tokens` | 这次**输入**消耗的 token（`messages` 全部内容） | 输入成本 |
+| `completion_tokens` | **输出**消耗的 token | 输出成本 |
+| `total_tokens` | 两者之和（实测 44 + 66 = 110 ✅） | 总成本 |
+| `prompt_tokens_details.cached_tokens` | 输入里命中缓存的部分（OpenAI 风格字段） | 缓存效果（DeepSeek 恒为 0，用下面两个） |
+| **`completion_tokens_details.reasoning_tokens`** | ⭐ **思维链**消耗的 token（56 / 66 = 85%！） | 判断"钱是不是花在思考上" |
+| **`prompt_cache_hit_tokens`** | ⭐ 前缀缓存**命中**的输入 token | 缓存命中率 = hit / (hit + miss) |
+| **`prompt_cache_miss_tokens`** | 前缀缓存**未命中**的输入 token | 同上 |
+
+⭐ 两个关键发现：
+
+1. **`reasoning_tokens` 会占大头**（实测 56 / 66 = 85%）→ 输出成本主要花在思维链上，不是回答本身
+2. **`prompt_cache_hit_tokens` 是可观测指标** → 固定 system prompt 前缀后能到 85%（详见[学习过程记录](学习过程记录.md) 专题 6）
+
+⚠️ `usage` 在**流式**下默认可能不返回（OpenAI 需要显式开 `stream_options.include_usage`）；
+**DeepSeek 实测默认就带**，且是和 `finish_reason` **同一帧**。不同上游行为不同 → 必须两种位置都处理。
+
+### ⑤ 为什么 `chunk` 的类型是 `dict[str, Any]` 是个**风险点**
+
+```python
+chunk = json.loads(raw)      # 类型：Any（mypy 眼里什么都放过）
+```
+
+| 后果 | 实测案例 |
+|---|---|
+| 键名写错 → 不报错，运行时 `KeyError` | `chunk["choice"]`（少个 s）→ `KeyError: 'choice'` |
+| **值**的键名写错 → 连运行时不报错，只是静默走错分支 | `{'usgae': usage}` → 前端收不到 `usage`，日志一切正常 |
+
+⭐ **改善方向（阶段 2/3 可做）**：用 pydantic 定义 `Chunk` 模型 + `model_validate`，
+把 `Any` 变成有类型的对象 —— 键名写错会在解析处立刻报错，而不是流出到前端。
+这就是 Step 4b 学过的「`list[dict]` vs `list[Model]`」在流式场景的再次应用。
+
+### ⑥ 一句话记忆
+
+> **三层 chunk：字节（HTTP）→ 字符串（SSE 行）→ dict（补全片段）。
+> 单帧字段（`usage` / `finish_reason` / `role`）必须先处理；类型会变的字段（`content`）只能真值判断。**
+
 ## 9.9 自检
 
 > 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 9 SSE 流式）。
