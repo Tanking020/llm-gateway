@@ -13,10 +13,10 @@
 
 from typing import Annotated
 
-import httpx
 from fastapi import Depends, Request
 
 from app.config import Settings, settings
+from app.llm_client import LlmClient
 
 
 def get_settings() -> Settings:
@@ -34,12 +34,15 @@ def get_settings() -> Settings:
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
-def get_llm_client(request: Request) -> httpx.AsyncClient:
-    """从 app.state 里取【应用级共享】的 HTTP 客户端（生命周期由 lifespan 管，不是请求）"""
+def get_llm_client(request: Request) -> LlmClient:
+    """从 app.state 里取【应用级共享】的上游适配器（生命周期由 lifespan 管，不是请求）"""
     # request.app 就是那个 FastAPI 实例：state 是挂在它身上的"任意属性袋"
-    client: httpx.AsyncClient = request.app.state.llm_client
+    client: LlmClient = request.app.state.llm_client
     return client
 
 
 # Annotated[类型, Depends(函数)] = “这个参数的值，由 Depends 里的函数来提供”
-LlmClientDep = Annotated[httpx.AsyncClient, Depends(get_llm_client)]
+# 注意这里声明的是 LlmClient 而不是 httpx.AsyncClient：
+# 路由代码里拿到的对象物理上只有 LlmClient 的方法
+# 没有 .get / .stream 这些 httpx 原生方法可调，从类型层面就杜绝了"绕过错误翻译直接调上游"的可能
+LlmClientDep = Annotated[LlmClient, Depends(get_llm_client)]

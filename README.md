@@ -3,11 +3,12 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9b-3 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
-错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应）。
-已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、应用级共享 HTTP 客户端、
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9b-4a 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
+已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
+**一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
 以及一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
-实测首帧 60ms / 总 906ms）。
+实测首帧 60ms / 总 906ms；上游失败时客户端拿 **502** 而不是 `200` + 断连）。
 详见[路线图](#路线图)。
 
 ---
@@ -254,11 +255,11 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 │   ├── schemas.py            # 对外数据契约：请求 / 响应的形状定义
 │   ├── constants.py          # 必须跨模块一致的常量（HTTP 头名等，只写一处）
 │   ├── errors.py             # 业务异常 AppError + 错误码→HTTP 状态码映射 + 异常处理器注册
-│   ├── llm_client.py         # 上游 HTTP 客户端的唯一构造点（create_llm_client）
-│   ├── main.py               # 命令行入口：离线演示 + `ping` 上游连通性检查
+│   ├── llm_client.py         # 上游适配器：唯一 import httpx、唯一翻译上游故障的地方（LlmClient / LlmChatStream）
+│   ├── main.py               # 命令行入口：离线演示 + `ping` 上游连通性检查（与 HTTP 共用同一个适配器）
 │   └── api/
 │       ├── __init__.py
-│       ├── deps.py           # 依赖注入：get_settings / get_llm_client（从 app.state 取共享 client）
+│       ├── deps.py           # 依赖注入：get_settings / get_llm_client（从 app.state 取共享适配器）
 │       └── app.py            # FastAPI 应用对象 + lifespan + 路由（uvicorn app.api.app:app）
 │
 ├── playground/               # 实验区：一次性验证代码，随时可删，不参与交付
@@ -284,7 +285,7 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 
 ```bash
 uv run ruff format .          # 1. 格式化
-uv run ruff check . --fix     # 2. lint（规则集 E/F/I/UP/B）
+uv run ruff check . --fix     # 2. lint（规则集 E/F/I/UP/B/TID）
 uv run mypy .                 # 3. 类型检查（strict + warn_unreachable，全项目含 playground/）
 ```
 
@@ -295,8 +296,8 @@ uv run mypy .                 # 3. 类型检查（strict + warn_unreachable，�
 | 检查 | 结果 |
 |---|---|
 | `ruff check .` | All checks passed! |
-| `ruff format --check .` | 14 files already formatted |
-| `mypy .` | Success: no issues found in 14 source files |
+| `ruff format --check .` | 16 files already formatted |
+| `mypy .` | Success: no issues found in 16 source files |
 
 > 三条命令的**范围一律用 `.`**（全项目，含 `playground/`）。`mypy` 的默认范围由
 > `[tool.mypy] files = ["."]` 保证，所以带不带参数结果一致。
@@ -319,7 +320,9 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **mypy strict + ruff 双工具** | 二者分工不同：**ruff 管"形状"**（格式、导入顺序、可疑写法），**mypy 管"含义"**（类型是否自相矛盾）。后者需要理解代码语义，是 ruff 做不到的 | 严格模式初期会报较多错，需要写全类型注解 |
 | **上层供应商中立**（`llm_api_key` / `llm_base_url` / `llm_model`） | 走"OpenAI 兼容协议"，但配置项**不以供应商命名** —— 换厂商只改 `.env` 三行，代码零改动（实测：把 `base_url` 指向另一家兼容服务，`/models` 检查命令原样可用） | 需要在代码与供应商 JSON 之间做一层转换；专有能力（如某家私有参数）不能直接用 |
 | **上游一律视为不可信输入**（2026-10-21 新增，规范 §十四） | 和用户输入同级：`json.loads` 的结果是 `Any`，键名/类型/结构都可能与假设不同。失败分三层——**L1 没回应 / L2 状态码不对 / L3 200 但结构不对**，只有 L2 被 `raise_for_status()` 自动覆盖，L1/L3 必须自己翻译成 502。流式下 L3 发生在头已发出之后，只能把错误编码进流 | 需要写 `try/except (ValueError, KeyError, TypeError)` 与流内错误帧；📎 实测现有代码有 **6 种 L3 场景落到 500**、**4 种导致流「200 + 断连」**、**1 种静默丢整条流**（见[路线图](study_notes/学习档案与路线图.md)待办 #14~#18） |
-| **分层：接口层 / 业务层 / 基础设施层** | 判据只有一条：**这段代码离了 HTTP 还活得下去吗**。接口层懂 `Request` / 状态码 / 响应；业务层只认普通 Python 值；基础设施层管 httpx / 配置 / DB。硬规则：**业务层永远不 import `fastapi`**，调用方向单向 | 现阶段还要为"分层而分层"会过度设计 —— 一个 4 行规则、只有一个调用方时抽到 `services/` 只是搬家；出现第二个调用方（CLI / 另一个接口）才是拆分信号 |
+| **上游调用一律封进适配器**（`LlmClient`，2026-10-21 新增，规范 §14.7） | 把「发请求 + 判状态码 + 读错误正文 + 解析 JSON + 翻译成 `AppError`」收进一个类，契约一句话：**成功返回值、失败抛 `AppError`、绝不泄漏 `httpx` 异常**。路由因此**不 import `httpx`、不写 `try/except`**，新加路由不可能漏翻译。用 `ruff` 的 `TID251` 把这条约定变成**机械检查**（只有 `llm_client.py` 与 `playground/` 可 import `httpx`）。⚠️ 曾试过"每条路由各写一遍"（抄漏一次：`UPSTREAM_MALFORMEAD` 拼错 → L3 全变 400）和"全局 `@app.exception_handler(httpx.xxx)`"（路由确实零行，但它靠 ASGI 中间件栈，**CLI / 定时任务里完全失效**，且不用起 FastAPI 就没法单测） | 适配器要自己管 `aclose()`（`send(stream=True)` 没有 `async with` 帮你关）；`stream` 默认值必须取安全的 `False`，否则 `response.json()` 抛 `ResponseNotRead` → 500，而 **MockTransport 复现不出来**；流式接口还得额外做 **pre-flight**（先校验状态码再返回 `StreamingResponse`），代价是 TTFB 从 60ms 升到约 181~266ms |
+| **同一业务规则只有一份实现**（2026-10-21 新增，规范 §14.8） | 与上一条同型：`/v1/chat` 与 `/v1/chat/stream` 共用同一个 `ChatRequest`，"最后一条必须是 `user`"就必须抽成 `ensure_last_message_is_user()` 两条路由都调。📎 曾经只写在一条路由里 → 另一条**放行非法请求并真的打上游、白花一次调用** | 抽之前先问"会被调用几次"：只有 1 个调用点时抽出去属于提前抽象（比重复更糟）。分层归属：**形状归 pydantic，语义归纯函数/服务层，HTTP 归路由** |
+| **分层：接口层 / 业务层 / 基础设施层** | 判据只有一条：**这段代码离了 HTTP 还活得下去吗**。接口层懂 `Request` / 状态码 / 响应；业务层只认普通 Python 值；基础设施层管 httpx / 配置 / DB。硬规则：**业务层永远不 import `fastapi`**，调用方向单向。上两条（适配器 / 业务规则）就是这条判据的具体落地：`LlmClient` 属基础设施层，`ensure_last_message_is_user` 属"离了 HTTP 也活得下去"的纯函数 | 现阶段还要为"分层而分层"会过度设计 —— 一个 4 行规则、只有一个调用方时抽到 `services/` 只是搬家；出现第二个调用方（CLI / 另一个接口）才是拆分信号 |
 | **业务错误码与 HTTP 状态码解耦** | `AppError` 只带 `code` + `message`，**不带 `status_code`**；映射集中在 `_STATUS_BY_CODE` 一处。同一个 400 可对应多个业务码，客户端按 `code` 分支，不再靠匹配文案 | 多一层映射表；未登记的码会落到默认 400（属于"防崩溃"而非"正确"，需靠 `Literal`/测试兜住） |
 | **HTTP 客户端应用级共享（`lifespan`）** | 每请求新建客户端要重新做 TCP + TLS 握手：实测 200 次请求 **51.3 ms → 23.0 ms（快 2.23 倍）**。用 `lifespan` 在启动时建一次、关闭时释放；创建/销毁归 lifespan，**取用仍走依赖**（保留 `dependency_overrides` 可测接缝） | 单测必须 `with TestClient(app)` 才会触发 lifespan；`app.state` 是全局可变状态，用例间要手工还原 |
 | **错误日志与响应分离** | 500 只回 `request_id` + 一句人话，**堆栈只进服务端日志** —— 既不泄露内部结构，又能靠 ID 精确定位 | 目前日志只有 stderr、无格式化、`logger.info` 会被丢弃；生产需补日志配置与集中收集（已知待办 #7） |
@@ -358,6 +361,10 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **"一帧"是数据边界，不是时间单位**：实测同一句话可切 10 帧（1.861s）/ 2 帧（0.383s）/ 201 帧（0.002s）—— 帧数与总耗时无关。`\n\n` 管"帧在哪结束"，`await` 管"下一帧何时到"；假数据的 `sleep(0.2)` 只是"上游延迟"的替身演员
 - **SSE 少写一个换行不报错，但整条流失效**：三帧各带 `\n\n` 解析出 3 个事件；全部只写一个 `\n` 只解析出 **1 个**事件（内容是最后的 `[DONE]`），前端表现为"一个字都没收到"—— 症状与原因完全不像的 bug
 - **"我的代码里找不到 `async for`"是正常的**：驱动 `event_source` 的那句在 `starlette/responses.py:253`（`async for chunk in self.body_iterator`）。打印调用栈可直接看到 `responses.py:279 in wrap → responses.py:253 in stream_response → event_source`。生成器只产出、不碰网络；`StreamingResponse` 只上网、不碰内容
+- **同一段错误翻译写了 N 遍，一定会抄错一次**：本项目真实发生过两种——`upstream_models` 里那 12 行 `except httpx.xxx` 是**永不触发的死代码**（翻译早在上游函数里做完了）；手抄时把 `UPSTREAM_MALFORMED` 写成 `UPSTREAM_MALFORMEAD`，而码表兜底是 `.get(code, 400)` → **所有 L3 场景静默返回 400**，三道质量门全绿。解决办法不是"更仔细"，而是**把翻译封进适配器**（规范 §14.7）＋ 用 `TID251` 禁止其它文件 `import httpx`
+- **`stream` 默认值写成 `True`，三道门全绿但接口 500**：`send(stream=True)` 只拿响应头，接着 `response.json()` 抛 `httpx.ResponseNotRead`；它的 MRO 是 `ResponseNotRead → StreamError → RuntimeError`，**既不是 `RequestError` 也不在 `(ValueError, KeyError, TypeError)` 里**，于是穿过所有 `except` 落到 500。⚠️ **`MockTransport` 复现不出来** —— 它的 `httpx.Response(200, json=...)` body 已在内存，`stream=True` 与 `request()` 毫无区别。判据：**涉及"body 读没读"的改动必须打真网络**
+- **`@app.exception_handler(httpx.xxx)` 不是"封层"的替代品**：它靠 ASGI 中间件栈兜异常，**只在有请求时存在** —— CLI / 定时任务里调同一个上游完全不生效，而且"不起 FastAPI 就没法单测"。它是"路由零 try/except"的充分条件，却不是"任何调用点都翻译"的充分条件
+- **同一条业务规则写在两条路由里，一定会漏一条**：`/v1/chat` 拒 assistant 收尾（400），`/v1/chat/stream` 却放行、还真打上游、白花一次调用。抽 `ensure_last_message_is_user()` 后两条一致，且**必须放在 pre-flight 之前**，否则"先花钱再拒绝"（规范 §14.8）
 
 | 文档 | 内容 |
 |---|---|

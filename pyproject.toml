@@ -96,4 +96,15 @@ extend-exclude = ["*.md"]
 #   I  = isort（import 的排序与分组）
 #   UP = pyupgrade（把旧写法升级成新写法，如用 X | None 代替 Optional[X]）
 #   B  = flake8-bugbear（容易写出 bug 的写法，如可变默认参数）
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "TID"]
+
+# ===== 只有 llm_client.py 允许直接 import httpx =====
+# 用机械检查代替口头约定：任何其它文件绕过适配器直连上游，ruff 会直接报 TID251
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"httpx".msg = "上游调用必须走 LlmClient（src/app/llm_client.py），不要直接 import httpx"
+
+# 适配器自己是唯一的例外
+[tool.ruff.lint.per-file-ignores]
+"src/app/llm_client.py" = ["TID251"]
+# playground/ 是学习实验脚本，刻意直接写 httpx（不经过适配器），不是业务代码
+"playground/*.py" = ["TID251"]

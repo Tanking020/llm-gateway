@@ -4205,6 +4205,121 @@ DONE × 1
 > **五类帧：ROLE（首帧，丢）→ REASONING（思维链，丢）→ CONTENT（回答，转 DELTA）→ FINISH（拆成 FINISH_REASON + USAGE）→ DONE（我方重发）。
 > 顺序固定，但「结束信息只在最后一帧」这一条决定了代码里的处理次序。**
 
+## 9.8e 上游封层与 pre-flight（9b-4a，2026-10-21）
+
+> 起因：学习者质疑「岂不是每个路由都要单独写完整的异常上抛？这会不会太复杂了，这是正常写法吗」
+> —— 质疑成立，之前的步骤卡设计错了**两次**。完整复盘见
+> [学习过程记录.md](学习过程记录.md) 专题 9；硬约束见[规范](../工程规范与协作约定.md) §14.7 / §14.8。
+
+### ① 三个版本：错在哪一步
+
+| 版本 | 做法 | 问题 |
+|---|---|---|
+| V1 | 每条路由自己 `try/except httpx.xxx` → `AppError` | **放错层**：N 份真相，抄漏/抄错（本项目已发生两次） |
+| V2 | 全局 `@app.exception_handler(httpx.RequestError / HTTPStatusError)` | **用错机制**：靠 ASGI 中间件栈兜异常，**CLI / 定时任务里完全失效**；且不起 FastAPI 就没法单测 |
+| **V3** | 把「发请求 + 判状态码 + 读错误正文 + 解析 + 翻译」封进 `LlmClient` 适配器 | — |
+
+⭐ 判据：**先问「这段代码会被调用几次」—— 会被 ≥2 个调用点用到的错误处理，不属于任何一个调用点。**
+次级判据（用来排除 V2）：**不启动 FastAPI 能测吗？定时任务里还有效吗？** —— V2 两个都是 ❌。
+
+### ② 改动前后的代码形状（同一件事，两种写法）
+
+```python
+# ❌ 改前：路由直接持有 httpx，自己翻译三类失败（30~40 行，每条路由一份）
+@app.get("/v1/upstream/models")
+async def upstream_models(client: LlmClientDep) -> ModelListResponse:
+    try:
+        resp = await client.get("/models")
+    except httpx.RequestError as exc:            # L1
+        raise AppError("UPSTREAM_UNREACHABLE", "…") from exc
+    if resp.status_code >= 400:                   # L2（3xx 会被放过）
+        raise AppError("UPSTREAM_BAD_STATUS", "…")
+    try:
+        payload = resp.json(); raw = payload["data"]   # L3
+    except (ValueError, KeyError, TypeError) as exc:
+        raise AppError("UPSTREAM_MALFORMED", "…") from exc
+    return ModelListResponse(total=len(raw), items=raw)
+
+# ✅ 改后：路由只有两行，物理上看不见 httpx
+@app.get("/v1/upstream/models")
+async def upstream_models(client: LlmClientDep) -> ModelListResponse:
+    models = await client.list_models()      # 失败必抛 AppError，成功必是 list[ModelItem]
+    return ModelListResponse(total=len(models), items=models)
+```
+
+适配器的契约只有一句：**成功返回值，失败抛 `AppError`，绝不把 `httpx` 异常泄漏给调用方。**
+因此路由层**不需要**写任何 `try/except` 来翻译 httpx 错误。
+
+### ③ 职责边界：什么进适配器，什么留在业务层
+
+| 进适配器（传输 + 协议 + 错误翻译） | 留在业务层（语义） |
+|---|---|
+| 发请求 / `build_request` / `send(stream=True)` | 哪个字段是回答正文 |
+| 状态码判断（`is_success`）、读 error body、写日志 | 帧的类型（THINKING / DELTA / FINISH / USAGE） |
+| 切行、剥 `data:` 前缀、消化 `[DONE]`、`json.loads` | 转发哪些字段（白名单） |
+| L1/L2/L3 统一翻译成 `AppError` | 业务错误码的含义 |
+| 关闭响应（`aclose`） | 什么时候关（放 `finally`） |
+
+### ④ pre-flight：让流式接口还能返回 502
+
+```python
+# 顺序不能换：先校验上游，再返回 StreamingResponse
+upstream = await client.open_chat_stream(body)   # 内部 send(stream=True) 拿到响应头就停
+# ↑ L1 连不上 / L2 状态码不对 → 抛 AppError → 由 errors.py 的处理器回 502
+return StreamingResponse(event_source(), media_type="text/event-stream")
+```
+
+📎 实测数字：
+
+| 场景 | 改前（9b-2/9b-3） | 改后（9b-4a） |
+|---|---|---|
+| 上游正常，首个 body 帧 | **60.0ms** | 约 181~266ms（多了"等上游响应头"） |
+| 上游返回 400 | `200` + 半截流 + 后端报错 | **502** + `{"error":{"code":"UPSTREAM_BAD_STATUS"}}` |
+
+⭐ 代价换来正确性：TTFB 从 60ms 涨到约 181~266ms，仍远小于首个**内容**帧的 845.8ms。
+
+### ⑤ 一个"三道门全绿但接口 500"的真坑
+
+`_request(..., stream: bool = True)` 默认值写反 → `list_models()` 走流式分支 → `response.json()` 抛
+`httpx.ResponseNotRead`（MRO：`ResponseNotRead → StreamError → RuntimeError`，**既不是 `RequestError`
+也不在 `(ValueError, KeyError, TypeError)` 里**）→ 穿过所有 `except` → 500。
+
+⚠️ **`MockTransport` 复现不出来**：它的 `httpx.Response(200, json=...)` body 已在内存，
+`send(stream=True)` 与 `request()` 毫无区别。
+
+⭐ 两条判据：① `stream` 这类开关**默认值取"安全的那一边"**（False = 读完 body）；
+② **涉及"body 读没读"的改动必须打真网络**。
+
+### ⑥ 用 lint 把约定变成机械检查
+
+```toml
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"httpx".msg = "上游调用必须走 LlmClient（src/app/llm_client.py），不要直接 import httpx"
+
+[tool.ruff.lint.per-file-ignores]
+"src/app/llm_client.py" = ["TID251"]
+"playground/*.py" = ["TID251"]     # 学习脚本刻意直写 httpx
+```
+
+📎 实测：在 `app.py` 加回 `import httpx` → `TID251 httpx is banned`。
+
+⭐ **规范里写"请勿…"是弱的，lint 里写"禁止…"是强的。**
+
+### ⑦ 同一课的另一半：业务规则也只能有一份
+
+`/v1/chat` 与 `/v1/chat/stream` 共用 `ChatRequest`，但"最后一条必须是 `user`"只写在一条路由里
+→ 另一条**放行非法请求、还真打上游、白花一次调用**（📎 实测：一条 400、一条 200）。
+修法：抽 `ensure_last_message_is_user(request)`，并且**放在 pre-flight 之前**。
+
+### ⑧ 一句话记忆
+
+> **上游调用必有适配器：一个类、一个文件、一句契约（成功返值 / 失败抛 `AppError` / 不泄漏 `httpx`）。
+> 路由看不见 `httpx`，「翻不翻译」就不再是一个需要每轮重新决定的问题。
+> 流式接口额外加 pre-flight —— 先验状态码，再开流。**
+
 ## 9.9 自检
 
 > 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 9 SSE 流式）。

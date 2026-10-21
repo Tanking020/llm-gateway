@@ -23,7 +23,12 @@ from app.constants import HEADER_REQUEST_ID
 
 
 class AppError(Exception):
-    """业务规则不允许：携带 【稳定错误码】 + 【给人看的说明】"""
+    """
+    业务规则不允许：携带 【稳定错误码】 + 【给人看的说明】
+
+    上游错误原本应该是 RequestError 类型，但是上游错误对客户端就是服务器返回错误；
+    因此上游错误统一用业务错误 AppError 来管理。
+    """
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -34,6 +39,13 @@ class AppError(Exception):
 # 错误码 -> HTTP 状态码。没登记的码默认 400（"你的请求有问题"这一类）
 _STATUS_BY_CODE: dict[str, int] = {
     "LAST_MESSAGE_NOT_USER": status.HTTP_400_BAD_REQUEST,
+    # 以下三个都属于【上游的错】，必须与 500（我方的错）区分开
+    # L1: 上游根本没回应（DNS / TCP / TLS 失败 / 超时）
+    "UPSTREAM_UNREACHABLE": status.HTTP_502_BAD_GATEWAY,
+    # L2: 上游有回应，但状态码是 4xx / 5xx
+    "UPSTREAM_BAD_STATUS": status.HTTP_502_BAD_GATEWAY,
+    # L3: 上游回了 200，但 body 不是我们约定的结构（HTML / 空 / 字段改名 / null）
+    "UPSTREAM_MALFORMED": status.HTTP_502_BAD_GATEWAY,
 }
 
 # 以模块名为 logger 名，日志里能一眼看出是哪一行代码打的
