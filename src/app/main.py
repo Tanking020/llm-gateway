@@ -10,10 +10,8 @@
 import asyncio
 import sys
 
-import httpx
-
 from app.config import settings  # 直接用同一个 settings 单例，不在别处再 Setting() 一遍
-from app.llm_client import create_llm_client
+from app.llm_client import LlmClient, create_llm_client
 from app.schemas import ChatRequest, ChatResponse, Message
 
 
@@ -43,12 +41,15 @@ def echo(request: ChatRequest) -> ChatResponse:
     return ChatResponse(content=last.content, model=request.model or settings.llm_model)
 
 
-async def fetch_model_ids(client: httpx.AsyncClient) -> list[str]:
-    """查上游可用模型。client 由调用方传入（依赖注入），测试时可换成假的"""
-    response = await client.get("/models")
-    response.raise_for_status()
-    payload: dict[str, list[dict[str, object]]] = response.json()
-    return [str(item["id"]) for item in payload["data"]]
+async def fetch_model_ids(client: LlmClient) -> list[str]:
+    """
+    查上游可用模型。client 由调用方传入（依赖注入），测试时可换成假的
+
+    这里不再有 raise_for_status 和 payload["data"]：
+        L1/L2/L3 全在 LlmClient.list_models 里翻译好了，
+        失败会直接抛 AppError，成功一定拿到 list[ModelItem]
+    """
+    return [model.id for model in await client.list_models()]
 
 
 async def main(argv: list[str]) -> int:

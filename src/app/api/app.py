@@ -23,8 +23,6 @@ from contextlib import asynccontextmanager
 # Annotated：用于给函数签名中参数的 "类型位" 扩容
 from typing import Annotated
 
-import httpx
-
 # Query: 用于在上面勾选"这个查询参数要被怎么对待"，FastAPI 读它去约束和写文档
 # status：是一个装了一堆 HTTP 状态码的模块
 # HTTPException：是一个普通异常类，负责把异常抛给框架，再由框架翻译成 HTTP 响应
@@ -36,16 +34,16 @@ from app.api.deps import LlmClientDep, SettingsDep
 from app.constants import HEADER_REQUEST_ID
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
-from app.schemas import ChatRequest, ChatResponse, ModelItem, ModelListResponse
+from app.schemas import ChatRequest, ChatResponse, ModelListResponse
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
-    应用启动时建共享 client，关闭时关掉它（整个进程各一次，不是每请求）
+    应用启动时建一个共享的【上游适配器】，关闭时关掉它（整个进程各一次，不是每请求）
 
     为什么用 async with 包住 yield：
-        退出 async with 时会自动 await client.aclose()（httpx 的 __aexit__）
+        退出 async with 时会自动 await client.aclose()（LlmClient 的 __aexit__）
         写成 yield 之后的普通语句，异常时那行会被跳过 → 连接池泄漏
     """
     # 启动段：整个进程只跑一次
@@ -192,56 +190,38 @@ async def get_model(model_name: str) -> dict[str, str]:
     return {"model_name": model_name}
 
 
+def ensure_last_message_is_user(request: ChatRequest) -> None:
+    """
+    语义检查：形状合法 ≠ 能回答。最后一条不是 user，就没有【要回答的问题】
+
+    规则分工：形状归 pydantic（schemas.py），语义归业务代码（本函数）
+
+    ⚠️ 为什么抽成函数，而不是在每条路由里各写一遍：
+        /v1/chat 与 /v1/chat/stream 共用同一个 ChatRequest 契约，
+        同一条业务规则就必须只有一份实现 —— 否则新加路由时一定会漏
+        （本项目已经漏过一次：/v1/chat/stream 曾放过 assistant 收尾的请求，
+          还真的把那段话发给上游、拿回一整段回答，且白花一次 token）
+
+    ⚠️ 这条规则【对当前这个问答接口正确】，但不是绝对正确：
+        有些场景允许以 assistant 收尾（例如"续写/补全上一句"），后续需要时可以放开
+    """
+    last = request.messages[-1]
+    if last.role != "user":
+        raise AppError(
+            code="LAST_MESSAGE_NOT_USER",
+            message=f"最后一条消息必须是 user，当前是 {last.role}",
+        )
+
+
 @app.post("/v1/chat")
 async def chat(request: ChatRequest, config: SettingsDep) -> ChatResponse:
     """
     request 是【请求体】—— 类型是 pydantic 模型，所以 FastAPI 从 JSON body 里面取；
     config 是【依赖】—— FastAPI 调 get_settings() 后注入
     """
+    ensure_last_message_is_user(request)
     last = request.messages[-1]
-    # 语义检查：形状合法 ≠ 能回答。最后一条不是 user，就没有【要回答的问题】
-    #   这种语义错（业务规则）不进 schemas.py
-    #   规则：形状归 pydantic，语义归路由
-    #
-    # ⚠️ 这条规则【对当前这个问答接口正确】，但【不是绝对正确】，有些场景允许以 assistant 收尾
-    #   我们的接口约定优先使用严格版，后续有支持续写的需求可以放开
-    if last.role != "user":
-        raise AppError(
-            code="LAST_MESSAGE_NOT_USER",
-            message=f"最后一条消息必须是 user，当前是 {last.role}",
-        )
     return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
-
-
-async def fetch_upstream_models(client: LlmClientDep) -> list[ModelItem]:
-    """
-    查上游真实可用的模型名列表
-
-    上游返回 10 个键，我们只用 3 个 —— 用 model_validate 把原始 dict 转成
-    ModelItem: 多余的键被忽略（白名单），缺 id 会在这一行直接报错
-
-    这是本项目第一次由服务端主动访问外部网络：
-        之前的 /v1/models 返回的是硬编码的 KNOWN_MODELS；
-        现在这条路由返回的是真实上游数据，形成对照
-
-    单独成一个函数（而不是写在路由里）：
-        1. 可测试 —— client 是参数，测试时能传假 client，不联网
-        2. 职责清晰 —— 路由只管接请求/返响应，业务逻辑单独放
-
-    ⚠️ 上游出错时这里不自己处理：直接让 httpx 的异常往上冒 ——
-       上游【有回应】但状态码是 4xx/5xx → HTTPStatusError；
-       上游【根本没回应】(连不上 / 超时) → RequestError。
-       由调用方 upstream_models 把两者统一翻译成 502 Bad Gateway
-    """
-    resp = await client.get("/models")
-    resp.raise_for_status()
-    # json() 返回的是【未校验的原始数据】，声明成全 object 只是为了让 mypy 允许我们继续处理
-    #   ⚠️ 这个注解防不住上游改结构：payload["data"] 若被改名会 KeyError → 500（不是 422 / 502）
-    payload: dict[str, list[dict[str, object]]] = resp.json()
-    # model_validate 是 Pydantic 的类方法，作用：
-    #   把一个字典（或 JSON）校验并转换成 Pydantic 模型实例
-    #   通过这个转换把不可信的原始数据变成经过校验、类型安全的 Python 对象
-    return [ModelItem.model_validate(item) for item in payload["data"]]
 
 
 # FastAPI 构建路由时会检查：有显式 response_model 就用它，没有就用【返回注解】
@@ -251,25 +231,15 @@ async def upstream_models(client: LlmClientDep) -> ModelListResponse:
     """
     真实调用上游 /models。与 /v1/models（硬编码）对照用。
 
-    client 是【依赖】：从 app.state 取出由 lifespan 创建的【应用级共享】客户端，
+    client 是【依赖】：从 app.state 取出由 lifespan 创建的【应用级共享】上游适配器，
     请求结束不会被关闭（连接池要复用），进程关闭时由 lifespan 统一释放
+
+    更新：这里只有两行：调用 + 组响应。
+        上游三类失败全部由 LlmClient.list_models 翻译成 AppError，
+        再由 errors.py 的处理器映射成 502。
+        路由层【不 import httpx、不写 try/except】—— 这是本项目对上游调用的统一姿势。
     """
-    # 更新：上游挂了返回 502（上游错误），不能返回 500（LLM 应用后端（我们）错误）
-    try:
-        models = await fetch_upstream_models(client)
-    except httpx.HTTPStatusError as exc:
-        # 错误类型 1：上游【有回应】但状态码是 4xx/5xx → 能读 exc.response.status_code
-        #   ⚠️【上游报给服务器】的 401 与【服务器报给客户端】的 401 意义不同，所以不能透传
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"上游返回状态码 {exc.response.status_code}",
-        ) from exc
-    except httpx.RequestError as exc:
-        # 错误类型 2：上游【根本没有回应】（连不上 / 超时 / DNS 失败）→ 没有 .response 可读
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="无法连接上游模型服务",
-        ) from exc
+    models = await client.list_models()
 
     # total 由【我们】算：过滤后的条数，不是上游返回的条数
     #   现在还没加过滤，所以暂时等于 len(上游列表)；加了 prefix 过滤后两者就不相等了
@@ -288,58 +258,46 @@ async def chat_stream(
 ) -> StreamingResponse:
     """真模型流式：逐帧解析上游，转发回答文字 + 结束原因 + token 用量（思维链按产品要求丢弃）"""
 
+    # 与 /v1/chat 完全同一条业务规则，所以调同一个函数
+    # ⚠️ 必须放在 pre-flight 之前：否则会白花一次上游调用（真金白银）
+    ensure_last_message_is_user(request)
+
+    # 上游请求体的字段名由 OpenAI 兼容协议规定
+    body: dict[str, object] = {
+        "model": request.model or config.llm_model,
+        # Message 是 pydantic 模型，必须先 model_dump() 转成纯 dict 才能序列化
+        "messages": [m.model_dump() for m in request.messages],
+        "temperature": request.temperature,
+        # 这个开关是"逐块发"的开关：不开就是等全部生成完一次性返回
+        "stream": True,
+    }
+    # max_tokens 为 None 时【不放进请求体】（而不是放一个 null）
+    #   实测 DeepSeek 接受显式 null（返回 200），但省略更保险：
+    #   有些 OpenAI 兼容实现会拒绝 null；而且"这个键不存在"在语义上就是"不限制"
+    if request.max_tokens is not None:
+        body["max_tokens"] = request.max_tokens
+
+    # ===== pre-flight：先确认上游通不通、状态码对不对，再决定我们回什么 =====
+    # 为什么【必须在 return StreamingResponse 之前】：
+    #   StreamingResponse 一旦被框架返回，200 响应头 + transfer-encoding: chunked 就发出去了，
+    #   之后再出错也改不了状态码（9b-2 实测：日志先写 200，157ms 后才报 422）
+    # 这一行会抛 AppError（L1 连不上 / L2 状态码不对），由 errors.py 的处理器回 502
+    #   实测上游响应头到达耗时 181~266ms
+    upstream = await client.open_chat_stream(body)
+
     # 内层异步生成器：真正"一段一段往外吐"的地方
     # 推进它的是 StreamingResponse 里的 async for（starlette/responses.py:253），不是本文件
     async def event_source() -> AsyncIterator[str]:
         """异步生成器：每 yield 一次 = 一帧 SSE，框架收一帧发一帧"""
-        # 连上就先发一帧状态，前端可以立刻显示"模型思考中"
-        #    这一帧在【请求上游之前】发出，所以几乎立刻到达客户端
-        #    实测不加它时：首个内容帧 845.8ms（占总耗时 93%）
+        # 先发一帧状态，前端可以立刻显示"模型思考中"
+        #   注意：加了 pre-flight 之后，这一帧要等上游响应头回来才发得出去
+        #   实测 TTFB 从 60.0ms 变成约 181~266ms，仍远小于首个内容帧的 845.8ms
         yield f"data: {json.dumps({'status': 'thinking'}, ensure_ascii=False)}\n\n"
 
-        # 上游请求体的字段名由 OpenAI 兼容协议规定
-        body: dict[str, object] = {
-            "model": request.model or config.llm_model,
-            # Message 是 pydantic 模型，必须先 model_dump() 转成纯 dict 才能序列化
-            "messages": [m.model_dump() for m in request.messages],
-            "temperature": request.temperature,
-            # 这个开关是"逐块发"的开关：不开就是等全部生成完一次性返回
-            "stream": True,
-        }
-        # max_tokens 为 None 时【不放进请求体】（而不是放一个 null）
-        #   实测 DeepSeek 接受显式 null（返回 200），但省略更保险：
-        #   有些 OpenAI 兼容实现会拒绝 null；而且"这个键不存在"在语义上就是"不限制"
-        if request.max_tokens is not None:
-            body["max_tokens"] = request.max_tokens
-
-        # client.stream(): 发请求但【不读 body】，返回的对象可逐行读
-        # async with: 退出代码块时自动关闭连接（不关会泄漏连接池）
-        async with client.stream("POST", "/chat/completions", json=body) as resp:
-            # 上游 4xx/5xx 在这里抛 httpx.HTTPStatusError
-            # ⚠️ 已知缺陷：此时响应头 200 已发出，客户端会看到"200 + 半截流"（待修）
-            resp.raise_for_status()
-
-            seen_done = False
-            # aiter_lines(): 按换行切行并且去掉行尾 \n，且【一行到就交一行】
-            #   实测它会把 SSE 的空行也作为 '' 返回，所以下面必须过滤
-            async for line in resp.aiter_lines():
-                # 空行（帧分隔符）、注释行、event: 等其它字段一律跳过
-                if not line.startswith("data: "):
-                    continue
-
-                # 去掉 "data: " 前缀，剩下才是 JSON 文本
-                raw = line[len("data: ") :]
-                # 上游自己的收尾标记：
-                if raw.strip() == "[DONE]":
-                    seen_done = True
-                    # 如果中途 break 会导致 body 未被读完，那 httpx 将会销毁连接
-                    continue  # 不 break: 让连接能回收，下次请求复用已有连接，省去重新握手成本
-                if seen_done:
-                    continue  # [DONE] 之后的帧一律忽略
-
-                # 解析这一帧（json.loads 返回 Any：JSON 结构在运行期才知道，静态类型帮不上）
-                chunk = json.loads(raw)
-
+        try:
+            # aiter_chunks 已经帮我们做完了：切行、跳空行、剥 data: 前缀、
+            # 消化 [DONE]、json.loads —— 这里拿到的就是干净的 dict
+            async for chunk in upstream.aiter_chunks():
                 # usage（本次请求消耗资源量的统计信息）可能出现在两种位置，先单独处理：
                 #   a) 和结束原因挤在同一帧
                 #   b) 单独一帧且 choices 为空列表
@@ -411,6 +369,11 @@ async def chat_stream(
 
                 # 重组成【我们自己】的帧格式再交出去（白名单：上游 7 个顶层键只留 1 个信息）
                 yield f"data: {json.dumps({'delta': text}, ensure_ascii=False)}\n\n"
+        finally:
+            # 【必须手动关】： open_chat_stream 没有 async with 帮我们关
+            # 三条路都会走到这里：正常读完 / 流内异常 / 客户端断开（CancelledError）
+            # 读完再关 = 连接归还池可复用；没读完就关 = 连接直接被销毁
+            await upstream.aclose()
 
         # 无论上游怎么结束，收尾标记都由我们发，且只发一次
         yield "data: [DONE]\n\n"
