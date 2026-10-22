@@ -314,6 +314,9 @@ async def chat_stream(
                 # 所以不能假设"每帧都有 choices"，先取值再判断
                 usage = chunk.get("usage")
                 choices = chunk.get("choices") or []  # .get() 的默认值只能处理键不存在的情况
+                if not isinstance(choices, list):
+                    logger.warning("上游 choices 不是列表，已丢弃: type=%s", type(choices).__name__)
+                    continue
                 if not choices:
                     # 这种帧只可能是"纯用量帧"（OpenAI 开 stream_options.include_usage 时会出现）
                     # 它没有内容也没有结束原因，所以处理完就可以跳过
@@ -339,6 +342,11 @@ async def chat_stream(
                 # 当前两者相同，只处理 index=0 这一个候选：我们不传 n，DeepSeek 也只支持 n=1
                 # 但是万一将来上游返回多个候选（每帧只含一个、index 交替），
                 # 不加这行会把两路文字搅成乱码（如 "答另案一A段"），而不是"只丢一路"
+                if not isinstance(choice, dict):
+                    logger.warning(
+                        "上游 choices[0] 不是对象，已丢弃: type=%s", type(choice).__name__
+                    )
+                    continue
                 if choice.get("index", 0) != 0:  # index = 0 防御性编程
                     continue
                 # DeepSeek 每帧都有 delta，但换上游可能变，这里同样是防御性编程
@@ -411,14 +419,39 @@ async def chat_stream(
                     + "\n\n"
                 )
 
+            # 【正常路径的收尾】：
+            # 注意 finally 里面只能放清理，不能放【生成值的操作】（例如 yield）
+            #   这是因为【客户端断开】时 FastAPI 会转发 aclose()给生成器并抛 GeneratorExit
+            #   生成器收到后，只会走进 finally:
+            #   （因为 GeneratorExit 是特殊异常，没进 try / exception）
+            #   如果 finally 里 yield → 生成器试图“复活” → Python 拒绝（生成器会抛 RuntimeError）
+            yield "data: [DONE]\n\n"
+
+        except Exception as exc:
+            # 【异常路径：把错误编码进流，再收尾】
+            # 这里不用显式放过 CancelledError / GeneratorExit 是因为这俩是特殊异常
+            # 他俩直接继承自 BaseException，不是 Exception（普通异常）的子类
+            # 所以「客户端断开」和「生成器被关闭」根本不会进这个分支，
+            # 会原样往外抛，由 finally 和上层处理
+            # logger.exception 会带完整 traceback；而回给前端的只有一句人话
+            # （绝不回显 str(exc) 或堆栈 —— 那可能泄露内部结构）
+            logger.exception("流式过程中失败：%s", type(exc).__name__)
+            yield (
+                "data: "
+                + json.dumps(
+                    {"error": {"code": "STREAM_FAILED", "message": "生成过程中中断"}},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
+
         finally:
+            # ⚠️ finally 只做清理，绝不 yield
             # 【必须手动关】： open_chat_stream 没有 async with 帮我们关
             # 三条路都会走到这里：正常读完 / 流内异常 / 客户端断开（CancelledError）
             # 读完再关 = 连接归还池可复用；没读完就关 = 连接直接被销毁
             await upstream.aclose()
-
-        # 无论上游怎么结束，收尾标记都由我们发，且只发一次
-        yield "data: [DONE]\n\n"
 
     # 返回流式响应：这里只负责上网，不负责产出
     return StreamingResponse(
