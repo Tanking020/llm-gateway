@@ -374,6 +374,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **`@app.exception_handler(httpx.xxx)` 不是"封层"的替代品**：它靠 ASGI 中间件栈兜异常，**只在有请求时存在** —— CLI / 定时任务里调同一个上游完全不生效，而且"不起 FastAPI 就没法单测"。它是"路由零 try/except"的充分条件，却不是"任何调用点都翻译"的充分条件
 - **同一条业务规则写在两条路由里，一定会漏一条**：`/v1/chat` 拒 assistant 收尾（400），`/v1/chat/stream` 却放行、还真打上游、白花一次调用。抽 `ensure_last_message_is_user()` 后两条一致，且**必须放在 pre-flight 之前**，否则"先花钱再拒绝"（规范 §14.8）
 - **类型标注不是运行时保证**：`chunk: dict[str, Any] = json.loads(raw)` 零校验 —— `json.loads` 返回 `Any`，赋给 `dict` 完全合法。📎 这个谎一直没被发现，直到我在下游又写了 `isinstance(chunk, dict)`，mypy 立刻报 `Statement is unreachable`：**它抓的是「你对自己的类型都不信」**。修法是让适配器兑现 `AsyncIterator[dict]` 的承诺（内部丢弃非 dict），而不是让每个调用方去怀疑
+- **「字段值宽松」不等于「出问题」**：`null` / `''` / 缺键往往正是协议规定的**正常中间状态**（`finish_reason` 在每一帧都有，中间帧就是 `null`）。📎 我把判空写成 `is not None`，结果**空字符串也报警**、还打出 `type=str`（自相矛盾），一个正常请求会刷几十条 warning —— 等于把告警调成没人看。三档判据见规范 §14.4 ⑥
 - **SSE 的 `data:` 后面空格是可选的**：规范里 `data:{...}` 合法。📎 旧写法 `startswith("data: ")` 遇到它会把**整条流静默丢弃** —— 客户端只收到 `thinking` + `[DONE]`，服务端零日志。而 `data:` 空行是合法的空数据事件，不跳过会让 `json.loads("")` 抛 `JSONDecodeError` **打断整条流**
 - **同一份事实出现第二份，就是定时炸弹**：五起事故（`Bearear` / `X-Request_ID` / `UPSTREAM_MALFORMEAD` / 12 行永不触发的 `except` / role 校验漏一条路由）**没有一起是"不小心"**。判据不是"看起来重复"，而是**"改一处会不会漏另一处"** —— 但只要 N ≥ 2，第 N+1 次改动就会漏，所以对策是消灭第二份，而不是"更仔细"（规范 §4.6）
 
