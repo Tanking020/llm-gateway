@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 # Annotated：用于给函数签名中参数的 "类型位" 扩容
-from typing import Annotated
+from typing import Annotated, Any
 
 # Query: 用于在上面勾选"这个查询参数要被怎么对待"，FastAPI 读它去约束和写文档
 # status：是一个装了一堆 HTTP 状态码的模块
@@ -213,6 +213,20 @@ def ensure_last_message_is_user(request: ChatRequest) -> None:
         )
 
 
+def _as_dict(value: object) -> dict[str, Any]:
+    """
+    把上游可能给的任意 JSON 值收窄成 dict；不是 dict 就给空 dict
+
+    为什么需要它：上游字段可能是 null / 字符串 / 数组（json.loads 可返回任意 JSON 类型），
+        直接 .get() 会抛 AttributeError，而那时响应头早已发出 —— 一个坏帧会打断整条流。
+        （📎 实测 "usage": "oops" 会让整条流 STREAM_FAILED，尽管回答内容本来能正常送达）
+
+    为什么不在这里记 warning：usage 在多数帧里就是 null（正常现象），记了会刷屏。
+        真正需要人看的"零内容"由 content_frames == 0 那条 error 兜住。
+    """
+    return value if isinstance(value, dict) else {}
+
+
 @app.post("/v1/chat")
 async def chat(request: ChatRequest, config: SettingsDep) -> ChatResponse:
     """
@@ -312,7 +326,7 @@ async def chat_stream(
                 #   a) 和结束原因挤在同一帧
                 #   b) 单独一帧且 choices 为空列表
                 # 所以不能假设"每帧都有 choices"，先取值再判断
-                usage = chunk.get("usage")
+                usage = _as_dict(chunk.get("usage"))
                 choices = chunk.get("choices") or []  # .get() 的默认值只能处理键不存在的情况
                 if not isinstance(choices, list):
                     logger.warning("上游 choices 不是列表，已丢弃: type=%s", type(choices).__name__)
@@ -350,12 +364,13 @@ async def chat_stream(
                 if choice.get("index", 0) != 0:  # index = 0 防御性编程
                     continue
                 # DeepSeek 每帧都有 delta，但换上游可能变，这里同样是防御性编程
-                delta = choice.get("delta") or {}
+                delta = _as_dict(choice.get("delta"))
 
                 # 结束原因：只在最后一帧有值（"stop" = 模型自己说完 / "length" = 被截断）
                 #   必须放在下面 content 的判断【之前】，否则会被 continue 跳过
                 finish_reason = choice.get("finish_reason")
-                if finish_reason:
+                # 只转发字符串：非字符串（如对象/数组）会让前端的 === "stop" 悄悄失效
+                if isinstance(finish_reason, str) and finish_reason:
                     logger.info("流式结束: reason=%s", finish_reason)
                     payload = json.dumps({"finish_reason": finish_reason}, ensure_ascii=False)
                     yield f"data: {payload}\n\n"
@@ -420,11 +435,17 @@ async def chat_stream(
                 )
 
             # 【正常路径的收尾】：
-            # 注意 finally 里面只能放清理，不能放【生成值的操作】（例如 yield）
-            #   这是因为【客户端断开】时 FastAPI 会转发 aclose()给生成器并抛 GeneratorExit
-            #   生成器收到后，只会走进 finally:
-            #   （因为 GeneratorExit 是特殊异常，没进 try / exception）
-            #   如果 finally 里 yield → 生成器试图“复活” → Python 拒绝（生成器会抛 RuntimeError）
+            # 为什么【不能】放 finally 里：
+            #   客户端断开时 Starlette 的 StreamingResponse 会取消任务，对生成器调 aclose()，
+            #   后者往生成器里抛 GeneratorExit
+            #   GeneratorExit 直接继承 BaseException（不是 Exception），所以只会走到 finally，
+            #   不会进下面的 except 分支
+            #   如果 finally 里 yield → 生成器试图"复活" → Python 拒绝（RuntimeError:
+            #   async generator ignored GeneratorExit）
+            # 为什么还要在 except 里【再写一次】：
+            #   try 里的正常路径和 except 里的异常路径是两个【互斥】分支 ——
+            #   异常一旦抛出，try 里后面的 yield 一行都不会执行
+            #   所以"两条路都要发 [DONE]"必须在两个分支各写一次，不能靠 finally 兜
             yield "data: [DONE]\n\n"
 
         except Exception as exc:
