@@ -374,6 +374,17 @@ async def chat_stream(
                     logger.info("流式结束: reason=%s", finish_reason)
                     payload = json.dumps({"finish_reason": finish_reason}, ensure_ascii=False)
                     yield f"data: {payload}\n\n"
+                elif finish_reason is not None and not isinstance(finish_reason, str):
+                    # 上游给了结束原因但【不是字符串】—— 我们无法转发，
+                    #   前端的 "说完 / 被截断" 判断会失效，所以必须留痕
+                    #   （否则上游改结构了，我们事后完全查不到）
+                    # 注意两个"不报警"的情况：
+                    #   None / '' —— 都是"本帧还没有结束原因"，是正常的中间帧
+                    logger.warning(
+                        "上游 finish_reason 不是字符串，已丢弃: type=%s value=%r",
+                        type(finish_reason).__name__,
+                        finish_reason,
+                    )
 
                 # 用量：实测 DeepSeek 把它和 finish_reason 挤在最后一帧；
                 #   OpenAI 则是单独一帧（choices 为空，已在上面处理）。
