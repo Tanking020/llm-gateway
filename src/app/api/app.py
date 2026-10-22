@@ -294,10 +294,20 @@ async def chat_stream(
         #   实测 TTFB 从 60.0ms 变成约 181~266ms，仍远小于首个内容帧的 845.8ms
         yield f"data: {json.dumps({'status': 'thinking'}, ensure_ascii=False)}\n\n"
 
+        #   raw_chunks=0 -> 上游根本没按 SSE 回（HTML / 空 body）
+        #   raw_chunks>0 而 content_frames=0 -> 回了帧但没有内容帧（忽略 stream=True / 只有思维链）
+        raw_chunks = 0  # 收到的原始 SSE 帧数量
+        content_frames = 0  # 其中包含回答文字的帧数量
+
         try:
             # aiter_chunks 已经帮我们做完了：切行、跳空行、剥 data: 前缀、
             # 消化 [DONE]、json.loads —— 这里拿到的就是干净的 dict
             async for chunk in upstream.aiter_chunks():
+                raw_chunks += 1
+
+                # 这里不用再检查 chunk 的类型：aiter_chunks 的契约就是「只吐 dict」，
+                # 非 dict 的已在适配器里被丢弃并记了 warning（协议细节归适配器，业务归这里）
+
                 # usage（本次请求消耗资源量的统计信息）可能出现在两种位置，先单独处理：
                 #   a) 和结束原因挤在同一帧
                 #   b) 单独一帧且 choices 为空列表
@@ -360,15 +370,47 @@ async def chat_stream(
                     )
                     yield f"data: {json.dumps({'usage': usage}, ensure_ascii=False)}\n\n"
 
-                # 内容帧：content 可能是 None / "" / 字符串三种取值，用真值判断一次覆盖
+                # 内容帧：content 可能是 None / "" / 字符串三种取值，必须是【字符串】才允许转发
                 text = delta.get("content")
-                if not text:
-                    # 首帧（role）、思维链帧（reasoning_content）、空内容帧都走这条路
-                    # 注意：finish_reason 与 usage 已在上面处理过，这里 continue 不会漏掉它们
+                if not isinstance(text, str):
+                    # None 是最常见的（首帧 role / 结束帧 / 思维链帧），静默跳过
+                    # 但"非 None 且非字符串"说明上游改了结构（多模态风格）
+                    # if not text 会放它过去（非空 list 是真值），把数组塞给前端
+                    if text is not None:
+                        logger.warning(
+                            "上游 delta.content 不是字符串，已丢弃：type=%s value=%s",
+                            type(text).__name__,
+                            text,
+                        )
                     continue
+                if not text:
+                    continue
+
+                content_frames += 1
 
                 # 重组成【我们自己】的帧格式再交出去（白名单：上游 7 个顶层键只留 1 个信息）
                 yield f"data: {json.dumps({'delta': text}, ensure_ascii=False)}\n\n"
+
+            # ===== 零内容保护 =====
+            # 上游回了 200，但我们一帧内容都没转发出去
+            # 三种真实场景：200 + HTML / 200 + 空 body / 上游忽略 stream:true
+            # 状态码是 200 -> pre-flight 拦不住；头已发出 -> 改不了状态码
+            # 唯一做法：在流里明确说"这次没拿到内容"，别让前端以为"回答就是空的"
+            if content_frames == 0:
+                logger.error(
+                    "流式零内容：上游 chunk=%s 内容帧=0 —— "
+                    "可能是 HTML / 空 body / 上游忽略 stream=True",
+                    raw_chunks,
+                )
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {"error": {"code": "STREAM_NO_CONTENT", "message": "上游未返回任何内容"}},
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
+                )
+
         finally:
             # 【必须手动关】： open_chat_stream 没有 async with 帮我们关
             # 三条路都会走到这里：正常读完 / 流内异常 / 客户端断开（CancelledError）

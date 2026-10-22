@@ -3792,7 +3792,7 @@ async def event_source(request: Request) -> AsyncIterator[str]:
 | **`asyncio.CancelledError`** | 客户端断开时，Starlette 会**取消**生成器任务 |
 | `GeneratorExit` | 生成器被关闭时抛出 |
 
-**推荐的完整写法**：
+**推荐的完整写法（P3 形态）**：
 
 ```python
 async def event_source(request: Request) -> AsyncIterator[str]:
@@ -3801,12 +3801,33 @@ async def event_source(request: Request) -> AsyncIterator[str]:
             if await request.is_disconnected():
                 break
             yield sse({"delta": chunk})
+        yield "data: [DONE]\n\n"          # ① 正常路径
     except asyncio.CancelledError:
         # ⭐ 关键：把取消传播给上游 LLM 请求，让它也停下来（省钱）
+        #   注意这里【不能】再 yield —— 生成器正在被取消，yield 会抛 RuntimeError
         raise
+    except Exception:
+        logger.exception("流式过程中失败")
+        yield 'data: {"error": {"code": "STREAM_FAILED"}}\n\n'   # ② 异常编码进流
+        yield "data: [DONE]\n\n"                                  # 异常路径也要收尾
     finally:
-        yield "data: [DONE]\n\n"
+        await upstream.aclose()       # ⚠️ 只做清理，绝不 yield
 ```
+
+### `[DONE]` 放在哪：三种写法 × 三条路径（📎 2026-10-22 实测，订正本节旧模板）
+
+| 写法 | ① 正常读完 | ② 流内异常 | ③ 客户端断开（`break` + `aclose()`） |
+|---|---|---|---|
+| **P1** `finally:` 里 `yield "[DONE]"` ← ❌ 旧模板 | ✅ 有 `DONE` | ✅ 有 `DONE` | ❌ **`RuntimeError: async generator ignored GeneratorExit`** |
+| **P2** `finally` 只清理，`[DONE]` 写在 `try/finally` **之后** | ✅ 有 `DONE` | ❌ **没有 `DONE`** | ✅ 不报错、也没有 `DONE` |
+| **P3** 正常路径 + 异常路径各发一次（上面那段） | ✅ | ✅ | ✅ |
+
+⭐ 根因：`aclose()` 往生成器里抛 `GeneratorExit`，而**收到 `GeneratorExit` 后再 `yield` 是 Python 硬禁止的**
+（`except GeneratorExit: pass` 也救不了）。
+
+⚠️ **P2 不是"错"，但不够**：它在"客户端断开"那格是安全的，代价是**流内异常时客户端连 `[DONE]` 都收不到**
+（📎 本项目实测：上游 `data:` 行坏 JSON → 客户端只收到 `thinking` 一帧就没了）。
+**P2 → P3 是 9b-4b 的任务，不是 bug 修复。**
 
 > ⭐ **这是 LLM 应用最实际的成本优化之一**。
 > 用户点了"停止"，你的上游请求**也应该停止** —— 否则每次"点了又停"都在白花钱。
@@ -4319,6 +4340,70 @@ select = ["E", "F", "I", "UP", "B", "TID"]
 > **上游调用必有适配器：一个类、一个文件、一句契约（成功返值 / 失败抛 `AppError` / 不泄漏 `httpx`）。
 > 路由看不见 `httpx`，「翻不翻译」就不再是一个需要每轮重新决定的问题。
 > 流式接口额外加 pre-flight —— 先验状态码，再开流。**
+
+## 9.8f 流式静默失败与三层防线（9b-4b-1，2026-10-22）
+
+> 完整实测与七种异常逐条对照见[学习过程记录.md](学习过程记录.md)专题 12。
+> 这里是**复习入口**：记住三层的分工和那条判据就够了。
+
+### ① 流式独有的失败形态：`200` + 空
+
+| | 非流式 | 流式 |
+|---|---|---|
+| 表达失败 | 改状态码（502） | **头已发出，改不了** |
+| "上游没给内容" | 502 + 错误体 | **200 + 空** ← 和"模型真说了空"一模一样 |
+| 客户端能区分 | 能（`!response.ok`） | **不能**（`response.ok === true`） |
+
+⭐ 所以必须多一条通道：**流内结构化 error 帧**。
+
+```text
+data: {"status": "thinking"}
+data: {"error": {"code": "STREAM_NO_CONTENT", "message": "上游未返回任何内容"}}
+data: [DONE]
+```
+
+### ② 三层，判据是「能不能在读到数据之前判断」
+
+| 层 | 看什么 | 拦什么 | 客户端 |
+|---|---|---|---|
+| ① pre-flight | 状态码 `is_success` | L1 连不上 / L2 状态码不对 | **502**（`ok === false`） |
+| ② 适配器 `aiter_chunks` | **行 / 帧本身** | `data:` 无空格、空 `data:` 行、解析结果非 dict | 丢弃 + WARNING（继续后续帧） |
+| ③ 路由 `event_source` | **字段 / 最终结果** | `content` 非字符串、一帧内容都没有 | 丢弃 + WARNING / `STREAM_NO_CONTENT`（`ok === true`） |
+
+⭐ **判据：这个问题在读到数据之前就能判断吗？** 能 → 前一层。
+⚠️ **反向会坏**：适配器若要知道"整个流结束了没"才能判断，它就不再是协议层了。
+
+### ③ 📎 七种异常各防在哪层（本项目实测）
+
+| 上游给了什么 | 层 | 客户端看到 |
+|---|---|---|
+| `data:{"..."}` 无空格（合法 SSE） | ② 适配器 | ✅ 正常 `delta`（旧写法：**整条流静默丢弃**） |
+| `data:` 空行（合法空事件） | ② 适配器 | ✅ 正常（旧写法：`JSONDecodeError` **打断整条流**） |
+| `data: null` | ② 适配器 | ✅ null 丢掉，**后续帧照常**（旧写法：`AttributeError` 断连） |
+| `data: [1,2,3]` | ② 适配器 | `STREAM_NO_CONTENT` |
+| `content` 是数组 | ③ 路由 | `STREAM_NO_CONTENT`（旧写法：**把数组塞给前端**） |
+| `200` + HTML / 空 body | ③ 路由 | `STREAM_NO_CONTENT`（旧写法：只收到 `thinking` + `[DONE]`） |
+| 忽略 `stream`（字段是 `message`） | ③ 路由 | `STREAM_NO_CONTENT` |
+
+### ④ 为什么用 `content_frames` 而不是 `raw_chunks`
+
+`raw_chunks` 数"上游发了多少帧"，`content_frames` 数"我们真正转发了多少"。
+📎 三种 `raw_chunks > 0` 但 `content_frames == 0`：忽略 `stream` / `content` 是数组 / 只有思维链帧。
+⭐ **用户关心的是"拿到多少字"，不是"上游发了几帧"。**
+
+### ⑤ 静默 vs 留痕的分界
+
+| 情况 | 日志 | 为什么 |
+|---|---|---|
+| `content is None`（首帧 role / 结束帧 / 思维链帧） | ❌ 不记 | **正常帧**，记了刷屏 |
+| `content` 是**非 None 的非字符串** | ✅ `warning` | 上游改结构了 |
+| 解析结果不是 dict | ✅ `warning` | 同上 |
+| 最终一帧内容都没有 | ✅ `error` | 请求**实质失败** |
+
+### ⑥ 一句话记忆
+
+> **状态码层只管「能不能开始流」；协议层只管「这一帧能不能用」；业务层才管「用户有没有拿到答案」。
+> 200 + 空内容对用户就是失败 —— 必须主动说出来。**
 
 ## 9.9 自检
 

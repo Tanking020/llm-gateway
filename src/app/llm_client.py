@@ -66,10 +66,15 @@ class LlmChatStream:
         # aiter_lines(): 按换行切行且去掉行尾 \n，一行到就交一行
         #   ⚠️ 它把 SSE 的空行也作为 '' 返回，所以下面要过滤
         async for line in self._response.aiter_lines():
-            if not line.startswith("data: "):
+            # ⚠️ SSE 规范允许 `data:{...}`（冒号后没有空格），空格是可选的
+            if not line.startswith("data:"):
                 continue
-            # 切片方法去掉字符串前缀
-            raw = line[len("data: ") :]
+            # 剥掉 "data:" 前缀；再 lstrip() 让 raw 只留真正的数据部分
+            #   json.loads 本身容忍前导空格，所以 lstrip 不是功能必需，
+            #   但它让 raw 的语义干净（将来打日志不会带上一串空格）
+            raw = line[len("data:") :].lstrip()
+            if not raw:
+                continue
             # [DONE] 是【传输层】的收尾标记，不属于业务数据，适配器负责消化掉
             # .strip() 是字符串方法，去掉字符串两端的空白字符（空格、换行、制表符等）
             if raw.strip() == "[DONE]":
@@ -79,9 +84,16 @@ class LlmChatStream:
                 continue
             if seen_done:
                 continue
-            # 显式标注类型：json.loads 返回 Any，直接 yield 会触发 mypy 的 warn_return_any
-            chunk: dict[str, Any] = json.loads(raw)
-            yield chunk
+            # json.loads 返回 Any —— 它可能是 dict，也可能是 null / 数组 / 数字 / 字符串
+            #   （实测 json.loads("null") -> None，json.loads("[]") -> []）
+            # 而本方法的契约是「只吐 dict」，所以校验必须做在【这里】：
+            #   如果放到调用方，调用方就得怀疑每一次返回，而类型标注又让我方没法怀疑
+            #   （mypy 会报 Statement is unreachable —— 这正是 2026-10-22 踩到的）
+            parsed: Any = json.loads(raw)
+            if not isinstance(parsed, dict):
+                logger.warning("上游 chunk 不是 JSON 对象，已丢弃: type=%s", type(parsed).__name__)
+                continue
+            yield parsed
 
     async def aclose(self) -> None:
         """关掉这条流（放 finally 里）"""

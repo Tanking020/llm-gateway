@@ -3,7 +3,7 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9b-4a 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9b-4b-1 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
 已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
 **一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
@@ -149,7 +149,7 @@ data: {"usage": {"prompt_tokens": 44, "completion_tokens": 63, "total_tokens": 1
 data: [DONE]
 ```
 
-**五类帧的分工**（我方对外只发这 5 类）：
+**五类帧的分工**（我方对外只发这 5 类 + 1 类错误帧）：
 
 | 帧 | 何时发 | 谁用 |
 |---|---|---|
@@ -157,9 +157,14 @@ data: [DONE]
 | `{"delta": "..."}` | 上游每吐一个 token | 正文逐字显示 |
 | `{"finish_reason": "..."}` | 上游最后一帧 | 区分正常结束 / 被截断（`length`） |
 | `{"usage": {...}}` | 上游最后一帧 | 成本计量（含思维链 token） |
+| **`{"error": {"code": "STREAM_NO_CONTENT", ...}}`** | 上游**一帧内容都没给**（200 + HTML / 空 body / 忽略 `stream`） | 区分「模型说了空」与「上游没给」——**`response.ok` 是 `true`，前端必须识别这一帧** |
 | `[DONE]` | 我方在流末尾**统一发一次** | 前端据此关闭连接 |
 
-**上游 5 类 → 我方 5 类的映射**（📎 实测问「从1数到3」：上游 64 帧 → 我方 9 帧）：
+⚠️ **流式接口的 `200` 也可能是失败**：响应头一旦发出就改不了状态码，
+所以「上游挂了」在流式下只能表达成 **200 + `error` 帧**；而真正的 L1/L2（连不上 / 状态码不对）
+已在 **pre-flight** 阶段拦成 **502**（`response.ok === false`）。
+
+**上游 5 类 → 我方 5 类的映射**（正常路径；📎 实测问「从1数到3」：上游 64 帧 → 我方 9 帧）：
 
 | 上游帧 | 数量 | 我方动作 | 我方帧 |
 |---|---|---|---|
@@ -320,6 +325,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **mypy strict + ruff 双工具** | 二者分工不同：**ruff 管"形状"**（格式、导入顺序、可疑写法），**mypy 管"含义"**（类型是否自相矛盾）。后者需要理解代码语义，是 ruff 做不到的 | 严格模式初期会报较多错，需要写全类型注解 |
 | **上层供应商中立**（`llm_api_key` / `llm_base_url` / `llm_model`） | 走"OpenAI 兼容协议"，但配置项**不以供应商命名** —— 换厂商只改 `.env` 三行，代码零改动（实测：把 `base_url` 指向另一家兼容服务，`/models` 检查命令原样可用） | 需要在代码与供应商 JSON 之间做一层转换；专有能力（如某家私有参数）不能直接用 |
 | **上游一律视为不可信输入**（2026-10-21 新增，规范 §十四） | 和用户输入同级：`json.loads` 的结果是 `Any`，键名/类型/结构都可能与假设不同。失败分三层——**L1 没回应 / L2 状态码不对 / L3 200 但结构不对**，只有 L2 被 `raise_for_status()` 自动覆盖，L1/L3 必须自己翻译成 502。流式下 L3 发生在头已发出之后，只能把错误编码进流 | 需要写 `try/except (ValueError, KeyError, TypeError)` 与流内错误帧；📎 实测现有代码有 **6 种 L3 场景落到 500**、**4 种导致流「200 + 断连」**、**1 种静默丢整条流**（见[路线图](study_notes/学习档案与路线图.md)待办 #14~#18） |
+| **流式失败三层防线**（2026-10-22 新增，笔记专题 12） | 判据是**「这个问题在读到数据之前就能判断吗」**：① **pre-flight**（看状态码）→ L1/L2 → **502**；② **适配器**（看「行 / 帧」：`startswith("data:")`、空行跳过、非 dict 丢弃）→ 丢弃 + WARNING；③ **路由**（看「字段 / 最终结果」：`isinstance(text, str)`、`content_frames == 0`）→ 零内容发 **`STREAM_NO_CONTENT`** 帧。📎 实测 7 种上游异常因此全部有 `[DONE]` 收尾（此前 3 种静默、2 种断连） | 前端必须知道 **200 也可能是失败**（`response.ok === true`），要在 SSE 循环里识别 `frame.error`；让适配器自己发错误帧是错的 —— 它就得知道「整个流」的状态，那它就不再是协议层 |
 | **单一真相：同一份事实只写一处**（2026-10-21 新增，规范 §4.6 总纲） | 判据不是"看起来重复"，而是**「改一处会不会漏另一处」**。五类事实各有各的家：字面量 → `constants.py`；错误码/状态码映射 → `errors.py`；上游错误翻译 → `LlmClient` 适配器（§14.7）；业务规则/语义校验 → 独立纯函数（§14.8）；可复用功能（SSE 切行、重试、分页） → 独立模块。📎 本项目五起同源事故（`Bearear` / `X-Request_ID` / `UPSTREAM_MALFORMEAD` / 12 行死代码 / role 校验漏一条路由）**没有一起是"不小心"** —— 只要同一份事实存在 N 份（N≥2），第 N+1 次改动就会漏 | 三个提问顺序：① 会被 ≥2 处用到吗（否 → 就地写）② 两处不一致会出错吗（否 → 可不抽）③ 抽完要传 ≥4 个参数吗（是 → **抽错了**）。⚠️ **反向代价同样真实**：抽太碎会让读代码要跳三个文件 —— 读的成本与改的成本必须一起算（§14.3） |
 | **上游调用一律封进适配器**（`LlmClient`，2026-10-21 新增，规范 §14.7） | 把「发请求 + 判状态码 + 读错误正文 + 解析 JSON + 翻译成 `AppError`」收进一个类，契约一句话：**成功返回值、失败抛 `AppError`、绝不泄漏 `httpx` 异常**。路由因此**不 import `httpx`、不写 `try/except`**，新加路由不可能漏翻译。用 `ruff` 的 `TID251` 把这条约定变成**机械检查**（只有 `llm_client.py` 与 `playground/` 可 import `httpx`）。⚠️ 曾试过"每条路由各写一遍"（抄漏一次：`UPSTREAM_MALFORMEAD` 拼错 → L3 全变 400）和"全局 `@app.exception_handler(httpx.xxx)`"（路由确实零行，但它靠 ASGI 中间件栈，**CLI / 定时任务里完全失效**，且不用起 FastAPI 就没法单测） | 适配器要自己管 `aclose()`（`send(stream=True)` 没有 `async with` 帮你关）；`stream` 默认值必须取安全的 `False`，否则 `response.json()` 抛 `ResponseNotRead` → 500，而 **MockTransport 复现不出来**；流式接口还得额外做 **pre-flight**（先校验状态码再返回 `StreamingResponse`），代价是 TTFB 从 60ms 升到约 181~266ms |
 | **同一业务规则只有一份实现**（2026-10-21 新增，规范 §14.8） | 与上一条同型：`/v1/chat` 与 `/v1/chat/stream` 共用同一个 `ChatRequest`，"最后一条必须是 `user`"就必须抽成 `ensure_last_message_is_user()` 两条路由都调。📎 曾经只写在一条路由里 → 另一条**放行非法请求并真的打上游、白花一次调用** | 抽之前先问"会被调用几次"：只有 1 个调用点时抽出去属于提前抽象（比重复更糟）。分层归属：**形状归 pydantic，语义归纯函数/服务层，HTTP 归路由** |
@@ -366,6 +372,8 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **`stream` 默认值写成 `True`，三道门全绿但接口 500**：`send(stream=True)` 只拿响应头，接着 `response.json()` 抛 `httpx.ResponseNotRead`；它的 MRO 是 `ResponseNotRead → StreamError → RuntimeError`，**既不是 `RequestError` 也不在 `(ValueError, KeyError, TypeError)` 里**，于是穿过所有 `except` 落到 500。⚠️ **`MockTransport` 复现不出来** —— 它的 `httpx.Response(200, json=...)` body 已在内存，`stream=True` 与 `request()` 毫无区别。判据：**涉及"body 读没读"的改动必须打真网络**
 - **`@app.exception_handler(httpx.xxx)` 不是"封层"的替代品**：它靠 ASGI 中间件栈兜异常，**只在有请求时存在** —— CLI / 定时任务里调同一个上游完全不生效，而且"不起 FastAPI 就没法单测"。它是"路由零 try/except"的充分条件，却不是"任何调用点都翻译"的充分条件
 - **同一条业务规则写在两条路由里，一定会漏一条**：`/v1/chat` 拒 assistant 收尾（400），`/v1/chat/stream` 却放行、还真打上游、白花一次调用。抽 `ensure_last_message_is_user()` 后两条一致，且**必须放在 pre-flight 之前**，否则"先花钱再拒绝"（规范 §14.8）
+- **类型标注不是运行时保证**：`chunk: dict[str, Any] = json.loads(raw)` 零校验 —— `json.loads` 返回 `Any`，赋给 `dict` 完全合法。📎 这个谎一直没被发现，直到我在下游又写了 `isinstance(chunk, dict)`，mypy 立刻报 `Statement is unreachable`：**它抓的是「你对自己的类型都不信」**。修法是让适配器兑现 `AsyncIterator[dict]` 的承诺（内部丢弃非 dict），而不是让每个调用方去怀疑
+- **SSE 的 `data:` 后面空格是可选的**：规范里 `data:{...}` 合法。📎 旧写法 `startswith("data: ")` 遇到它会把**整条流静默丢弃** —— 客户端只收到 `thinking` + `[DONE]`，服务端零日志。而 `data:` 空行是合法的空数据事件，不跳过会让 `json.loads("")` 抛 `JSONDecodeError` **打断整条流**
 - **同一份事实出现第二份，就是定时炸弹**：五起事故（`Bearear` / `X-Request_ID` / `UPSTREAM_MALFORMEAD` / 12 行永不触发的 `except` / role 校验漏一条路由）**没有一起是"不小心"**。判据不是"看起来重复"，而是**"改一处会不会漏另一处"** —— 但只要 N ≥ 2，第 N+1 次改动就会漏，所以对策是消灭第二份，而不是"更仔细"（规范 §4.6）
 
 | 文档 | 内容 |
