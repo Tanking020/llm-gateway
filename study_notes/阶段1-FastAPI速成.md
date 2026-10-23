@@ -18,8 +18,8 @@
 | uvicorn | 0.54.0（2026-10-14 实测一致） |
 | pydantic | 2.13.5 |
 | httpx | 0.28.1 |
-| sqlalchemy | **2.1.3**（+ `greenlet` 3.5.6） |
-| aiosqlite | 0.22.1 |
+| sqlalchemy | **2.1.6**（+ `greenlet` 3.5.6；2026-10-23 Step 10.1 实测） |
+| aiosqlite | 0.22.1（2026-10-23 Step 10.1 实测） |
 | pytest / pytest-asyncio | 9.1.1 / 1.4.0 |
 
 > ⭐ **为什么强调这个**：网上大量 FastAPI 教程停留在 0.7x / pydantic v1 时代，
@@ -82,7 +82,7 @@ Resolved 31 packages | Installed 11 packages
 | Step 7 | 中间件与 CORS | 洋葱模型 / 前端跨域 |
 | Step 8 | 异步的正确姿势 | `async def` 不是"更快"，是"不阻塞" |
 | **Step 9** | **SSE 流式响应** ⭐⭐ | **LLM 应用的命门：首字延迟** |
-| Step 10 | 数据库（SQLAlchemy 2.0 异步） | 会话历史存哪 |
+| Step 10 | 数据库（SQLAlchemy 2.1，2.0 风格异步 ORM） | 会话历史存哪 |
 | Step 11 | 配置 / 日志 / 安全 | API Key 绝不能进前端 |
 | Step 12 | 测试 FastAPI | TestClient / ASGITransport / 依赖覆盖 |
 | Step 13 | 部署 | uvicorn + Docker + 反向代理 |
@@ -111,8 +111,8 @@ Resolved 31 packages | Installed 11 packages
 | 6 | 错误处理与 `lifespan` | ✅ 已整理 | ✅ 已完成（6.1~6.4：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client；配套实测见 §6.1b~§6.1e、§6.3b、§6.4b） |
 | 7 | 中间件与 CORS | ✅ 已整理 | ✅ 已完成（7a 请求 ID + 耗时中间件 / 7b CORS；含常量抽离与日志级别配置） |
 | 8 | 异步正确姿势 | ✅ 已整理 | ✅ 已完成（`playground/blocking_demo.py`：1 慢 + 5 快并发，实测阻塞写法把快请求从 13ms 拖到 325ms，**差 25 倍**；另测线程池 40 上限是排队、GIL 下线程池对 CPU 密集无效 0.96x） |
-| 9 | **SSE 流式** | ✅ 已整理 ⭐ | 🟡 进行中（**9a ✅** 假数据逐字 `GET /v1/chat/stream`，实测 TTFB 0.014s / total 1.85s、`chunked`、10 帧合法；**9b-1 ✅** 上游真实帧结构取证；**9b-2 ✅** 已改 `POST` + 真调上游 `stream=true`、只转发 `content`，实测 20 帧到达、首个内容帧 845.8ms；剩 9b-3~5：心跳 / `usage` / 流内错误 / 客户端断开） |
-| 10 | 数据库 | ✅ 已整理 | ⬜ 未开始 |
+| 9 | **SSE 流式** | ✅ 已整理 ⭐ | ✅ 已完成（2026-10-23：9a → 9b-4b-3；文档 §9.1~§9.11、自检题 1~61、待办 #1~#23 全部收口，详见[路线图](学习档案与路线图.md)） |
+| 10 | 数据库 | ✅ 已整理 | 🟡 进行中（10.1 依赖与 greenlet 复现已完成；模型与数据库功能未开始） |
 | 11 | 配置/日志/安全 | ✅ 已整理 | 🟡 部分（配置已由阶段 0 的 `config.py` 解决；**日志已有基础**：`logging` + `request_id` + 堆栈只进 stderr（§6.3b），格式化 / 集中收集 / 密钥检查未做） |
 | 12 | 测试 | ✅ 已整理 | ⬜ 未开始 |
 | 13 | 部署 | ✅ 已整理（本机未装 Docker） | ⬜ 未开始 |
@@ -4971,16 +4971,29 @@ error: Statement is unreachable  [unreachable]
 
 ---
 
-# Step 10 · 数据库（SQLAlchemy 2.0 异步）
+# Step 10 · 数据库（SQLAlchemy 2.1，2.0 风格异步 ORM）
 
 ## 定位
 
 > LLM 应用的三个刚需数据：**会话历史、文档元数据、调用记录（成本/可观测）**。
-> 本 Step 用 SQLAlchemy 2.0 异步 + SQLite 起步（⚠️ 生产换 PostgreSQL，写法几乎不变）。
+> 本 Step 用 SQLAlchemy 2.1 的 2.0 风格异步 ORM + SQLite 起步（⚠️ 生产换 PostgreSQL，写法几乎不变）。
 
-## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够
+| 小步 | 产出 | 验证方式 | 状态 |
+|---|---|---|---|
+| ① 依赖与 greenlet | 安装 `sqlalchemy[asyncio]`、`aiosqlite` | 隔离环境复现裸装 2.1 的 `ImportError`；项目异步导入与三道门 | ✅ 2026-10-23 |
+| ② Conversation 模型 | 定义 `Base` 与 `Conversation` | 检查表名/字段；内存 SQLite 建表、插入、读取 | ⬜ |
+| ③ engine 与会话生命周期 | engine、sessionmaker、lifespan、`get_db`、`DbDep` | 启停时建表/释放资源；请求依赖能取得 session | ⬜ |
+| ④ CRUD 接口 | 创建、列表、详情、删除四个接口 | `/docs` 契约检查；HTTP 成功、未找到及删除后查询 | ⬜ |
+| ⑤ usage 持久化 | 调用记录模型；流式接口保存上游 usage | MockTransport 覆盖有/无 usage 与异常路径；检查 SSE 回归和记录数量 | ⬜ |
+| ⑥ N+1 与自检 | 解释关系查询次数与预加载；完成本节自检 | 从自检题清单作答；复测数据库与 SSE | ⬜ |
 
-**实测报错**（安装 `sqlalchemy` 后直接 import 异步模块）：
+> ⚠️ **数据库持久化的设计边界**：`:memory:` + `StaticPool` 适合测试中让多个 session 共用同一个内存库，但进程重启后数据会消失。若调用记录要跨重启保留，应用运行时应使用 SQLite 文件或 PostgreSQL；到第③步前先定清楚应用库与测试库的用途，不能把测试连接池误当持久化方案。
+
+## 10.1 ⚠️ SQLAlchemy 2.1 异步：要显式安装 greenlet extra
+
+**版本边界先说清楚**：SQLAlchemy 2.1 将 `greenlet` 移入 `[asyncio]` extra；只安装基础 `sqlalchemy` 后导入异步模块会失败。这个结论**不能泛化到 SQLAlchemy 2.0**：2.0 系列的安装行为不同。
+
+📎 **2026-10-23 隔离环境实测**：裸装 2.1 后执行 `from sqlalchemy.ext.asyncio import create_async_engine`，先出现 `ModuleNotFoundError: No module named 'greenlet'`，随后抛出：
 
 ```text
 sqlalchemy\ext\asyncio\__init__.py:28: in <module>
@@ -4994,21 +5007,21 @@ In order to ensure this dependency is available, use the 'sqlalchemy[asyncio]' i
 **正确命令**：
 
 ```powershell
-uv add "sqlalchemy[asyncio]" aiosqlite
+uv add "sqlalchemy[asyncio]>=2.1,<2.2" aiosqlite
 ```
 
-**实测结果**：装上 `greenlet==3.5.6` 后一切正常。
+📎 **项目实测结果**：`sqlalchemy==2.1.6`、`greenlet==3.5.6`、`aiosqlite==0.22.1`；安装 extra 后异步模块导入成功，三道质量门全绿。
 
 | 认知 | 说明 |
 |------|------|
-| `sqlalchemy` 本体**不含**异步所需的 `greenlet` | 这是可选的"额外依赖"（extras） |
-| 所以方括号写法 `sqlalchemy[asyncio]` | ⭐ 阶段 0 讲的"直接依赖 vs 间接依赖"在**声明层**的体现 |
-| 换 PostgreSQL 还要 `asyncpg` | `uv add "sqlalchemy[asyncio]" asyncpg` |
+| SQLAlchemy 2.1 基础安装不自动安装异步所需的 `greenlet` | `greenlet` 由 `[asyncio]` extra 声明 |
+| `aiosqlite` 是独立依赖，不是 SQLAlchemy extra | SQLite 的异步驱动单独写在 `uv add` 命令里 |
+| 换 PostgreSQL 还要 `asyncpg` | 例如 `uv add "sqlalchemy[asyncio]>=2.1,<2.2" asyncpg` |
+| “2.0 风格”与“2.0.x 版本”不是一回事 | 这里使用 `Mapped` / `mapped_column` 等 2.0 风格 API，运行库选择 2.1 |
 
-> ⭐ **这个坑值得记熟练**：几乎每个用 SQLAlchemy 异步的人第一次都会踩。
-> 而且报错信息**已经告诉你怎么修了** —— 学会读报错里的 `Hint` / `use the ... install target`。
+> ⭐ **判据**：看到 SQLAlchemy 2.1 的异步导入报 `greenlet` 缺失，就安装 `sqlalchemy[asyncio]`；不要把 2.1 的安装行为说成所有 SQLAlchemy 版本都如此。
 
-## 10.2 模型定义（SQLAlchemy 2.0 风格）
+## 10.2 模型定义（SQLAlchemy 2.0 风格 API）
 
 ```python
 from datetime import UTC, datetime
@@ -5031,7 +5044,7 @@ class Conversation(Base):
 
 | 关键点 | 说明 |
 |--------|------|
-| `DeclarativeBase` | 2.0 的基类（旧写法是 `declarative_base()` 函数，**已过时**） |
+| `DeclarativeBase` | SQLAlchemy 2.0 风格的声明式基类（旧教程常用函数式 `declarative_base()`） |
 | `Mapped[int]` | ⭐ **类型注解就是列定义**，mypy 能检查，IDE 有补全 |
 | `mapped_column(...)` | 列级配置（主键、长度、默认值） |
 | `default=lambda: ...` | 默认值（⚠️ 不是 `default=datetime.now(UTC)`，同 pydantic 的 `default_factory` 陷阱） |
@@ -5046,19 +5059,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 engine = create_async_engine(
-    "sqlite+aiosqlite:///:memory:",                     # ① 驱动写在 URL 里
-    connect_args={"check_same_thread": False},          # ② SQLite 专用
-    poolclass=StaticPool,                               # ③ 测试专用：复用同一条连接
+    "sqlite+aiosqlite:///:memory:",                     # ① SQLite 方言 + aiosqlite 驱动 + 内存库
+    poolclass=StaticPool,                               # ② 显式指定内存库使用的连接池
 )
-SessionMaker = async_sessionmaker(engine, expire_on_commit=False)   # ④
+SessionMaker = async_sessionmaker(engine, expire_on_commit=False)   # ③
 ```
 
 | # | 要点 |
 |---|------|
 | ① | URL 格式 `方言+驱动://...`。`sqlite+aiosqlite:///./app.db`（文件）或 `postgresql+asyncpg://...` |
-| ② | SQLite 默认禁止跨线程用同一连接，FastAPI 的线程池需要放开 |
-| ③ | ⚠️ **`StaticPool` 只适合测试**：`:memory:` 数据库是"每连接一个独立库"，不固定连接就看不到数据 |
-| ④ | ⭐ **`expire_on_commit=False` 很重要**，见下 |
+| ② | 对本例的 SQLAlchemy 2.1.6 + `aiosqlite`：实测 `:memory:` 引擎默认池已是 `StaticPool`，显式写出只是把选择标清楚；`check_same_thread=False` 不是"FastAPI 用线程池"就必须添加的参数 |
+| ③ | ⭐ **`expire_on_commit=False` 很重要**，见下 |
+
+> ⚠️ **内存库的边界**：`:memory:` 数据库在进程结束后消失，适合隔离练习/测试，不满足跨重启保留调用记录的要求。`StaticPool` 让连接共用同一个内存库，并不会把它变成持久化存储。需要保留数据时用 SQLite 文件或 PostgreSQL。
+
+> 📎 本机检查：SQLAlchemy 2.1.6 对 `sqlite+aiosqlite:///:memory:` 生成的连接参数含 `check_same_thread=True`，默认 pool 类型为 `StaticPool`。这与旧教程常见的同步 `sqlite3` / FastAPI 线程池示例不是同一配置场景。
 
 **为什么 `expire_on_commit=False`**：
 
@@ -5067,8 +5082,8 @@ SessionMaker = async_sessionmaker(engine, expire_on_commit=False)   # ④
 | 默认 `True` | commit 后对象的所有属性**过期**，再访问 `conv.title` 会**触发新的查询** |
 | `False` | commit 后属性仍可直接读 |
 
-> ⚠️ 异步下更危险：过期后访问属性需要**隐式 await**，而在**同步序列化阶段**（如 `response_model` 处理时）
-> 无法 await → 直接报错（`MissingGreenlet`）。
+> ⚠️ 异步下更危险：过期后访问属性需要**隐式 IO**，而在**同步序列化阶段**（如 `response_model` 处理时）
+> 无法 await → 报错。本机 SQLAlchemy 2.1.6 + `aiosqlite` 实测，顶层异常是 `StatementError`，其 `orig` 是 `MissingGreenlet`。
 > **`expire_on_commit=False` 是异步 SQLAlchemy 的标准配置。**
 
 ## 10.4 会话生命周期：`yield` 依赖 + lifespan
@@ -5098,7 +5113,7 @@ app = FastAPI(lifespan=lifespan)                        # ⑤
 
 | # | 说明 |
 |---|------|
-| ① | `conn.run_sync(...)` 把**同步的** DDL 操作丢进线程执行（SQLAlchemy 2.0 的标准套路） |
+| ① | `conn.run_sync(...)` 在异步连接上下文中通过 greenlet 运行同步函数，并把其中 SQLAlchemy 数据库 IO 接到异步驱动；它**不是线程池**。不要在回调中做阻塞 IO 或长时间 CPU 计算，以免卡住事件循环。具体机制见 [SQLAlchemy asyncio 文档](https://docs.sqlalchemy.org/en/21/orm/extensions/asyncio.html#running-synchronous-methods-and-functions-under-asyncio)。 |
 | ② | 进程退出时释放连接池，否则连接泄漏 |
 | ③ | ⭐ **"路由正常返回才提交"**：路由里抛异常 → 自动回滚，数据不留半截 |
 | ④ | 回滚后**必须 `raise`**，否则异常被吞，客户端收到 200（**非常隐蔽的 bug**） |
@@ -5116,8 +5131,7 @@ async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversatio
     conv = Conversation(title=payload.title)
     db.add(conv)              # 放进会话（此时还没发 SQL）
     await db.flush()          # ① 发 INSERT，拿到自增 id
-    await db.refresh(conv)    # ② 把数据库生成的默认值（如 created_at）读回来
-    return conv
+    return conv               # ② 本例的 Python 默认值也已在 flush 时生成
 
 
 @app.get("/conversations", response_model=list[ConversationOut])
@@ -5132,17 +5146,25 @@ async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
     if conv is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     return conv
+
+
+@app.delete("/conversations/{conv_id}", status_code=204)  # 注册成功时返回 204 的删除接口
+async def delete_conversation(conv_id: int, db: DbDep) -> None:  # 根据路径中的主键删除会话
+    conv = await db.get(Conversation, conv_id)      # ⑤ 先按主键查找待删除记录
+    if conv is None:                                 # 找不到记录时不执行删除
+        raise HTTPException(status_code=404, detail="conversation not found")  # 用 404 告知客户端资源不存在
+    await db.delete(conv)                           # ⑥ AsyncSession.delete 是异步方法
 ```
 
 | 方法 | 用途 |
 |------|------|
 | `db.add(obj)` | 加入会话（**不立即执行**） |
 | `await db.flush()` | **执行 SQL**，拿到自增 ID，但**不提交** |
-| `await db.refresh(obj)` | 重新从数据库读该对象 |
+| `await db.refresh(obj)` | 重新从数据库读该对象；若需要服务器端生成值且未自动取回时再用，本例的 Python 端 `default` 在 flush 时已生成 |
 | `await db.execute(stmt)` | 执行查询 |
 | `result.scalars().all()` | 取单个实体列的列表 |
-| `await db.get(Model, pk)` | 按主键查（**优先用这个**，比 `select` 快且简洁） |
-| `db.delete(obj)` | 标记删除 |
+| `await db.get(Model, pk)` | 按主键查（**优先用这个**，表达直接；若对象已在 identity map 中还可不发 SQL，不应笼统认为它总比 `select` 快） |
+| `await db.delete(obj)` | 标记删除；`AsyncSession.delete()` 是异步方法，必须 `await` |
 
 > ⭐ **`add` vs `flush` vs `commit`** 的区别（面试爱问）：
 > | 动作 | 发 SQL？ | 能否回滚？ | 事务结束？ |
@@ -5160,6 +5182,8 @@ async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
 
 ## 10.6 ⚠️ N+1 查询问题
 
+> ⚠️ 下方 `conv.messages` 是**关系模型的教学伪代码**，不是当前 Step 10 的 `Conversation` 可运行代码：当前 `Conversation` 还没有 `messages` 关系。此处只用来解释查询次数，不能复制后期待项目直接运行。
+
 ```python
 convs = await db.execute(select(Conversation))
 for conv in convs.scalars():
@@ -5172,8 +5196,8 @@ for conv in convs.scalars():
 | 显式 join | `select(...).join(...)` |
 | 批量查 + 内存拼装 | 查所有 message，按 `conversation_id` 分组 |
 
-> ⭐ **判断信号**：**循环里访问"关系属性"**（`conv.messages`）几乎总是 N+1。
-> 100 条会话 → 101 次查询，接口从 10ms 变成 1s。
+> ⭐ **判断信号**：若查询父记录后，在循环中为每条记录单独查询关系数据，就会变成 `1 + N` 次查询。
+> ⚠️ 上方是**同步 ORM 的概念示例**。在 `AsyncSession` 中直接访问未加载关系会尝试隐式 IO；本机 SQLAlchemy 2.1.6 + `aiosqlite` 实测，顶层异常是 `StatementError`，其 `orig` 是 `MissingGreenlet`。不同调用路径可能有异常包装差异，不要依赖顶层异常类型；异步环境应使用 `selectinload` 等预加载方式，或明确执行可等待的查询。
 >
 > 🔗 这和 ML 里的"**特征工程要向量化，不要 for 循环**"是同一种思维：
 > **把 N 次操作合成 1 次批量操作**。
@@ -5983,13 +6007,14 @@ last_id = request.headers.get("Last-Event-ID")
 **连接池**：数据库/HTTP 连接建立很贵（TCP + TLS + 认证），所以**复用**。
 
 ```python
+# 适用于使用 QueuePool 的数据库（如 PostgreSQL），不是 SQLite 内存库配置
 engine = create_async_engine(url, pool_size=5, max_overflow=10, pool_timeout=30)
 ```
 
 | 参数 | 含义 |
 |------|------|
 | `pool_size` | 常驻连接数 |
-| `max_overflow` | 临时可超出的数量（总上限 = 20） |
+| `max_overflow` | 临时可超出的数量（本例总上限 = 5 + 10 = 15） |
 | `pool_timeout` | 等不到连接时，等多久后报错 |
 
 > ⚠️ **池太小**：请求排队等待 → 延迟飙升。
@@ -5997,9 +6022,9 @@ engine = create_async_engine(url, pool_size=5, max_overflow=10, pool_timeout=30)
 >
 > ⭐ **一个必算的数**：
 > ```text
-> 总连接数 = pool_size + max_overflow (每 worker) × worker 数
+> 总连接数 = (pool_size + max_overflow) × worker 数
 > ```
-> 4 个 worker × 20 = **80 个连接**。如果你的 PostgreSQL `max_connections=100`，
+> 本例 4 个 worker × 15 = **60 个连接**。如果你的 PostgreSQL `max_connections=100`，
 > 再加上别的服务，**很快就会打满**。**这是上线后最容易踩的容量坑。**
 
 **背压（backpressure）**：当下游处理不过来时，让上游"慢下来"而不是无限堆积。
@@ -6130,7 +6155,9 @@ async def guarded_stream(req: ChatRequest) -> AsyncIterator[str]:
 
 ---
 
-# 附录 A · 代码片段速查（可直接抄）
+# 附录 A · 代码片段速查（回顾用，非完整文件）
+
+> 本附录用于快速回顾局部写法，不保证每个片段单独可运行；真正可抄的步骤代码以对应 Step 的步骤卡为准，并需带逐行中文注释。
 
 ## 应用骨架
 
@@ -6291,30 +6318,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
 ## 数据库
 
-```python
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-class Conversation(Base):
-    __tablename__ = "conversations"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    title: Mapped[str] = mapped_column(String(100))
-
-
-engine = create_async_engine(settings.database_url, pool_size=5, max_overflow=10)
-SessionMaker = async_sessionmaker(engine, expire_on_commit=False)
-
-# CRUD
-db.add(obj); await db.flush(); await db.refresh(obj)
-result = await db.execute(select(Conversation).order_by(Conversation.id))
-rows = list(result.scalars().all())
-obj = await db.get(Conversation, pk)
-```
+> 数据库的版本、模型、连接池、会话生命周期与 CRUD 以本文件上方 **Step 10.1~10.8** 为唯一详细说明，避免这里再维护一份可能过时的实现片段。当前只完成 Step 10.1 依赖验证；`models.py`、`database_url` 配置与 CRUD 尚未实现，后续按 Step 10 逐步落地。
 
 ## 测试
 
@@ -6561,4 +6565,3 @@ uv add --dev pytest pytest-asyncio httpx2
 45. "后端中转"架构额外带来的四个收益？
 46. 500 错误要同时满足哪两个目标？怎么做到？
 47. 为什么 LLM 应用的限流比普通接口更紧急？
-

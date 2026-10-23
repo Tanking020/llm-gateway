@@ -3,12 +3,13 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9b-4b-2 已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成；Step 10.1 依赖安装与 greenlet 复现已完成**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
 已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
 **一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
 以及一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
 实测首帧 60ms / 总 906ms；上游失败时客户端拿 **502** 而不是 `200` + 断连）。
+数据库当前只完成 SQLAlchemy 2.1 / aiosqlite 依赖验证；模型、连接生命周期与 CRUD 尚未实现。
 详见[路线图](#路线图)。
 
 ---
@@ -34,7 +35,7 @@
 | 数据契约与配置 | pydantic / pydantic-settings | 2.13.5 / 2.15.0 |
 | 静态检查 | mypy（strict）/ ruff | 2.4.0 / 0.16.10 |
 | Web 框架 | FastAPI + uvicorn（ASGI） | 0.143.0 / 0.54.0 |
-| 数据库 | SQLAlchemy 2.0 async + SQLite → PostgreSQL | 阶段 1 引入 |
+| 数据库 | SQLAlchemy 2.1 async（2.0 风格 ORM）+ aiosqlite；SQLite → PostgreSQL | 2.1.6 / 0.22.1；Step 10.1 已安装 |
 | 测试 | pytest + pytest-asyncio | 阶段 1 引入 |
 | 交付 | Docker（多阶段构建 + 非 root 运行） | 阶段 1 引入 |
 
@@ -259,6 +260,7 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 │   ├── __init__.py
 │   ├── config.py             # 全部可调参数集中在这里，类型安全且带校验
 │   ├── schemas.py            # 对外数据契约：请求 / 响应的形状定义
+│   ├── models.py             # SQLAlchemy ORM 模型（Step 10 进行中，模型尚未定义）
 │   ├── constants.py          # 必须跨模块一致的常量（HTTP 头名等，只写一处）
 │   ├── errors.py             # 业务异常 AppError + 错误码→HTTP 状态码映射 + 异常处理器注册
 │   ├── llm_client.py         # 上游适配器：唯一 import httpx、唯一翻译上游故障的地方（LlmClient / LlmChatStream）
@@ -345,7 +347,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | 阶段 | 内容 | 产出 | 状态 |
 |---|---|---|---|
 | **0 · 工程基础** | 依赖管理、版本控制、项目结构、数据契约、静态检查 | 规范的项目骨架 | ✅ 已完成 |
-| **1 · FastAPI + 数据库** | 路由、依赖注入、中间件、异常处理、**SSE 流式响应**、SQLAlchemy 异步 CRUD | 可运行的聊天接口后端（业务逻辑先 echo 占位） | 🚧 进行中 |
+| **1 · FastAPI + 数据库** | 路由、依赖注入、中间件、异常处理、**SSE 流式响应**、SQLAlchemy 异步 CRUD | 可运行的聊天接口后端（业务逻辑先 echo 占位） | 🚧 进行中：Step 1~9 完成；Step 10.1 依赖验证完成，数据库功能尚未实现 |
 | **2 · LLM 原生 API** | OpenAI 兼容接口、流式消费、token 与成本核算、Function Calling、结构化输出 | 手写的 LLM 调用层（不依赖 LangChain） | ⬜ |
 | **3 · RAG** | 文本切分策略、Embedding 选型、**混合检索（BM25 + 向量 + RRF）**、Rerank、引用溯源、**RAGAS 量化评估与参数消融** | 带评估报告的中文知识库问答系统 | ⬜ |
 | **4 · Agent + 部署** | 多步规划、工具调用、LangGraph、可观测性、容器化部署 | 真实场景的多步 Agent 服务 | ⬜ |
@@ -379,12 +381,13 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **SSE 的 `data:` 后面空格是可选的**：规范里 `data:{...}` 合法。📎 旧写法 `startswith("data: ")` 遇到它会把**整条流静默丢弃** —— 客户端只收到 `thinking` + `[DONE]`，服务端零日志。而 `data:` 空行是合法的空数据事件，不跳过会让 `json.loads("")` 抛 `JSONDecodeError` **打断整条流**
 - **同一份事实出现第二份，就是定时炸弹**：五起事故（`Bearear` / `X-Request_ID` / `UPSTREAM_MALFORMEAD` / 12 行永不触发的 `except` / role 校验漏一条路由）**没有一起是"不小心"**。判据不是"看起来重复"，而是**"改一处会不会漏另一处"** —— 但只要 N ≥ 2，第 N+1 次改动就会漏，所以对策是消灭第二份，而不是"更仔细"（规范 §4.6）
 - **流式接口的访问日志耗时 ≠ 请求耗时**：📎 假上游每 0.4s 吐一帧、共 3 帧，中间件在 **42.7ms** 就打出 `-> 200 16.4ms`，而整条流到 **1266.9ms** 才结束。根因在 ASGI：中间件等的 `call_next` 返回于**响应头就绪**那一刻（第一条 `http.response.start`），之后逐帧发送发生在框架内部、中间件全程不参与。⭐ 推论：真实耗时要另记；且**绝不能读 `response.body`**（读一次就把流抽干，SSE 失效）
+- **SQLAlchemy 2.1 的 greenlet 安装行为不能泛化到 2.0**：📎 2.1.6 裸装后导入异步模块报缺 `greenlet`，添加 `sqlalchemy[asyncio]` 后通过；2.0.55 裸装同样导入则成功。2.1 起需显式安装 extra，`aiosqlite` 仍是单独依赖。
 
 | 文档 | 内容 |
 |---|---|
 | [学习档案与路线图.md](study_notes/学习档案与路线图.md) | 目标、能力缺口分析、阶段规划 |
 | [阶段0-工程基础.md](study_notes/阶段0-工程基础.md) | uv / Git / 项目结构 / pydantic / 类型注解 / 异步 / 测试 / lint / Docker |
-| [阶段1-FastAPI速成.md](study_notes/阶段1-FastAPI速成.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 测试 → 部署（Step 1~6 后有「前半程回顾」章节；**Step 9 的 §9.9「一条流式请求的全生命周期」是三张全景图的复习入口**，§9.2b~9.2d / §9.3a 是流式的分层讲解） |
+| [阶段1-FastAPI速成.md](study_notes/阶段1-FastAPI速成.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 测试 → 部署（Step 1~6 后有「前半程回顾」章节；Step 10 的 6 个小步与 SQLAlchemy 2.1 / greenlet 版本边界已整理；**Step 9 的 §9.9「一条流式请求的全生命周期」是三张全景图的复习入口**，§9.2b~9.2d / §9.3a 是流式的分层讲解） |
 | [学习过程记录.md](study_notes/学习过程记录.md) | 步骤流水、踩坑记录、关键结论 |
 | [工具与依赖速查.md](study_notes/工具与依赖速查.md) | 第三方包与工程工具速查：定位、安装、常用 API 与命令、易错点 |
 | [工程规范与协作约定.md](工程规范与协作约定.md) | 本项目的工程规范：命名、分层、质量门、安全约定 |
