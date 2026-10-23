@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # 环境变量里写 "8000"（字符串），pydantic 会自动转成 int 8000
     port: int = 8000
 
+    # 数据库连接串。格式是「方言+驱动://路径」，sqlite+aiosqlite 表示"用 aiosqlite 驱动访问 SQLite"
+    # 默认落到【当前工作目录】的 app.db（已加进 .gitignore）；可用 .env 里的 DATABASE_URL 覆盖
+    database_url: str = "sqlite+aiosqlite:///./app.db"
+
     # ===== 上游 LLM 供应商（OpenAI 兼容协议）=====
     # 字段名故意不用 openai_*：我们走的是"OpenAI 兼容"协议，具体供应商可替换
     # （现在接 DeepSeek，将来换别家或本地推理，只改 .env，代码不动）

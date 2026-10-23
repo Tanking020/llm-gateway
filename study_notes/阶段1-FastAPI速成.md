@@ -4981,6 +4981,17 @@ error: Statement is unreachable  [unreachable]
 > ⚠️ **「2.0 风格」≠「2.0.x 版本」**：`Mapped` / `mapped_column` / `DeclarativeBase` 这套写法叫「2.0 风格 API」，
 > 而本项目实际锁的是 **2.1 系列**（`sqlalchemy[asyncio]>=2.1,<2.2`，本机解析到 2.1.6）。
 
+| 小步 | 产出 | 状态 |
+|---|---|---|
+| ① 10.1 依赖取证 | `sqlalchemy[asyncio]` + `aiosqlite`；独立 venv 复现 greenlet 缺失 | ✅ 2026-10-23 |
+| ② 10.2 模型定义 | `src/app/models.py`：`Base` + `Conversation`（`Mapped` / `mapped_column` / `default=lambda`） | ✅ 2026-10-23 |
+| ③ 10.3a 引擎与会话工厂 | `config.database_url` + `src/app/database.py`（`engine` / `SessionMaker`）+ `.gitignore` 忽略 `*.db` | ✅ 2026-10-24 |
+| ④ 10.3b lifespan 集成 | `lifespan` 启动段建表、关闭段 `dispose()` | ⬜ 待做 |
+| ⑤ 10.3c `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ⬜ 待做 |
+| ⑥ 10.4 CRUD 四接口 | 创建 / 列表 / 详情 / 删除 + `/docs` 契约 | ⬜ 待做 |
+| ⑦ 10.5 usage 落库 | 调用记录表 + 流式接口保存上游 `usage` | ⬜ 待做 |
+| ⑧ 10.6 N+1 与自检 | `selectinload` 预加载；本节自检 | ⬜ 待做 |
+
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
 **版本边界先说清楚**（📎 2026-10-23 在两个独立环境分别实测）：
@@ -5094,24 +5105,66 @@ tzinfo 还在吗:     False
 
 ## 10.3 引擎与会话工厂
 
+**项目实际写法**（`src/app/database.py`，运行库用**文件**）：
+
 ```python
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
-engine = create_async_engine(
-    "sqlite+aiosqlite:///:memory:",                     # ① 驱动写在 URL 里
-    connect_args={"check_same_thread": False},          # ② SQLite 专用
-    poolclass=StaticPool,                               # ③ 测试专用：复用同一条连接
-)
-SessionMaker = async_sessionmaker(engine, expire_on_commit=False)   # ④
+from app.config import settings
+
+engine = create_async_engine(settings.database_url)   # ① URL 来自配置，默认 sqlite+aiosqlite:///./app.db
+SessionMaker = async_sessionmaker(engine, expire_on_commit=False)   # ②③
+
+__all__ = ["engine", "SessionMaker", "AsyncSession"]
 ```
 
 | # | 要点 |
 |---|------|
-| ① | URL 格式 `方言+驱动://...`。`sqlite+aiosqlite:///./app.db`（文件）或 `postgresql+asyncpg://...` |
-| ② | SQLite 默认禁止跨线程用同一连接，FastAPI 的线程池需要放开 |
-| ③ | ⚠️ **`StaticPool` 只适合测试**：`:memory:` 数据库是"每连接一个独立库"，不固定连接就看不到数据 |
-| ④ | ⭐ **`expire_on_commit=False` 很重要**，见下 |
+| ① | URL 格式 `方言+驱动://路径`。本项目 `sqlite+aiosqlite:///./app.db`（**文件**，跨重启保留）；换 PostgreSQL 写 `postgresql+asyncpg://...`，只改这一处 |
+| ② | `async_sessionmaker` 是**模具**：`SessionMaker()` 才产出一个新的 `AsyncSession`。⚠️ 把 `SessionMaker` 当会话用会 `AttributeError` |
+| ③ | ⭐ **`expire_on_commit=False` 很重要**，见下 |
+
+### ⚠️ `create_async_engine` **不连数据库**
+
+```text
+create_async_engine(url)   →  创建引擎对象（含一个空连接池），不建立任何连接
+第一次执行 SQL 时          →  才真的 open 连接
+```
+
+📎 2026-10-24 实测：`from app.database import engine` 之后 `Test-Path app.db` 仍然是 **`False`** —— 文件都还没生成。
+
+⭐ **判据：看到「engine 建好了」不等于「连上了」。** 判断连没连只能看有没有真的发出 SQL（或看 `app.db` 是否出现）。
+
+### ⭐ 为什么引擎是**模块级单例**，不放 `lifespan`
+
+| 理由 | 说明 |
+|---|---|
+| **决定性的**：非请求上下文也要能用 | 放 `app.state` 就必须先有 `request` → CLI / 定时任务 / 迁移脚本全部拿不到。**和 Step 9「全局 exception_handler 在 CLI 里失效」是同一条规律** |
+| 类型检查 | `app.state` 是 `Any`，属性名拼错 mypy 查不到（本项目**待办 #8** 就是这个坑）；模块级对象 mypy 知道它是 `AsyncEngine` |
+| 职责更单一 | `lifespan` 只管「启动建表 / 关闭 dispose」，不用管「创建」 |
+| 不会重复创建 | `with TestClient(app)` 进两次 → `app.state` 版会造两个 engine，前一个没 dispose |
+
+⭐ **判据**：**「只要进程活着就该存在的东西」→ 模块级单例；「每个请求各要一份的东西」→ 依赖注入。**
+engine 属前者（连接池跨请求复用），session 属后者（一次请求一个事务）。
+
+> ⚠️ **模块级单例也有代价**：测试想换成 `:memory:` 时不好办。对策正是 10.4 的 `get_db` 做成依赖 —— 测试用 `app.dependency_overrides[get_db]` 替换。**单例解决「生命周期」，依赖注入解决「可替换」，两件事各解决一半。**
+
+### `:memory:` + `StaticPool` 只用于**测试**
+
+```python
+from sqlalchemy.pool import StaticPool
+
+mem_engine = create_async_engine(
+    "sqlite+aiosqlite:///:memory:",
+    poolclass=StaticPool,        # 让所有会话共用同一条连接 → 才能看到同一份内存数据
+)
+```
+
+📎 本机 2.1.6 实测：`:memory:` 引擎**默认池已是 `StaticPool`**（`check_same_thread=True`）；**文件库**默认是 `AsyncAdaptedQueuePool`（`check_same_thread=False`）。显式写 `StaticPool` 只是把选择标清楚。
+
+⚠️ **`:memory:` 数据库进程一结束就消失** —— 适合测试，不能当持久化存储。本项目运行时用**文件**，测试时可覆盖成内存库。
+
+> ⚠️ 旧教程常见的 `connect_args={"check_same_thread": False}` 是给**同步** `sqlite3` + FastAPI 线程池用的。`sqlite+aiosqlite` 走 `AsyncAdaptedQueuePool`，实测默认已是 `check_same_thread=False`，不必手写。
 
 **为什么 `expire_on_commit=False`**：
 
