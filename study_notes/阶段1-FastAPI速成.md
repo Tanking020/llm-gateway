@@ -5044,13 +5044,53 @@ class Conversation(Base):
 
 | 关键点 | 说明 |
 |--------|------|
-| `DeclarativeBase` | 2.0 的基类（旧写法是 `declarative_base()` 函数，**已过时**） |
-| `Mapped[int]` | ⭐ **类型注解就是列定义**，mypy 能检查，IDE 有补全 |
+| `DeclarativeBase` | 2.0 风格的基类（旧写法是 `declarative_base()` 函数，**已过时**）。继承它的类会自动把表登记进 `Base.metadata`，`create_all` 就靠这份清单建表 |
+| `Mapped[int]` | ⭐ **类型注解就是列定义**，mypy 能检查，IDE 有补全。没有 `Optional` = 数据库里 `NOT NULL` |
 | `mapped_column(...)` | 列级配置（主键、长度、默认值） |
 | `default=lambda: ...` | 默认值（⚠️ 不是 `default=datetime.now(UTC)`，同 pydantic 的 `default_factory` 陷阱） |
 
 > ⭐ **`Mapped[T]` 的好处**：SQLAlchemy 从注解**推断列类型**，同时又让 mypy 知道
 > `conv.title` 是 `str` 而不是 `Any`。**这是"注解即功能"的又一次体现**。
+
+### ⚠️ 两个实测出来的「已知限制」
+
+这两条不影响代码跑，但会影响你对**约束从哪来**的判断。
+
+#### ① `String(100)` 在 SQLite 里**不强制**
+
+📎 2026-10-23 实测：往 `String(100)` 列塞 **200 个字符的标题** → **静默存进去了**，没有任何报错。
+
+```text
+String(100) 列里存进多长: 200 个字符
+→ SQLite 是否拒绝了超长值: 没有，静默存下
+```
+
+⭐ **SQLite 忽略所有长度约束**（它把 `VARCHAR(100)` 当 `TEXT` 处理，这是 SQLite 的"动态类型"设计）。换 PostgreSQL 才会真的报错。
+
+**判据**：**长度校验必须放在 pydantic 层**（`ConversationIn` 的 `max_length`），不能指望数据库帮你挡。
+`String(100)` 仍要写 —— 它是给 PostgreSQL / 建表文档 / 建模意图看的，不是给 SQLite 用的。
+
+#### ② `created_at` 的时区**读回来会丢**
+
+📎 实测往返：
+
+```text
+flush 后（内存里）: datetime(2026, 10, 23, 14, 9, 42, tzinfo=UTC)
+从库里读回:        datetime(2026, 10, 23, 14, 9, 42)          ← tzinfo 没了
+tzinfo 还在吗:     False
+```
+
+而且**换写法救不回来**：📎 实测 `DateTime(timezone=True)` 在 SQLite 上**读回同样是 `tzinfo=None`** —— 因为 SQLite 根本没有时区类型，它只存一个字符串。
+
+**对策（本项目的约定）**：
+
+| 做法 | 说明 |
+|---|---|
+| 库里**一律存 UTC** | 用 `default=lambda: datetime.now(UTC)` 保证写入就是 UTC |
+| 读回**当作 UTC 处理** | 需要算时间差时 `.replace(tzinfo=UTC)`；展示时再转本地时区 |
+| 真需要严格时区 | 换 PostgreSQL（有 `timestamptz`），或自定义 `TypeDecorator` 在读回时补上 `tzinfo` |
+
+⭐ 判据：**数据库的「约束」和「类型」都是方言相关的** —— 写代码时以为的保证，换个方言可能成立、也可能不成立。凡是"靠数据库帮我挡"的想法，都要先问一句「这个方言真的会挡吗」。
 
 ## 10.3 引擎与会话工厂
 
