@@ -31,9 +31,11 @@ class Conversation(Base):
     # 两边分别是"列类型注解"和"列配置"
     id: Mapped[int] = mapped_column(primary_key=True)
 
+    # ⚠️ SQLite 不强制这个上限（实测塞 200 字符能存进去），真正的长度校验要在
+    # pydantic 层做；写在这里是为了换 PostgreSQL 时语义正确、也便于生成文档
     title: Mapped[str] = mapped_column(String(100))
 
     # 默认值必须是"可调用对象"（lambda），不能直接写 datetime.now(UTC)：
-    # 直接写会在【定义类的那一刻】求值一次，导致所有行共用同一个时间
+    # 直接写会在【import 类的那一刻】求值一次，导致后续所有行共用同一个时间
     # 数据库存 UTC（协调世界时），展示时再转本地时间
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))

@@ -50,3 +50,9 @@ htmlcov/
 
 # Windows 自动生成的缩略图缓存
 Thumbs.db
+
+# 本地 SQLite 数据库文件（运行时生成，属于可再生数据，不进仓库）
+# app.db 是 config.py 里 database_url 的默认落点；-journal / -wal 是 SQLite 的临时日志文件
+*.db
+*.db-journal
+*.db-wal
