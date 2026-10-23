@@ -2878,6 +2878,8 @@ async def items_fast():
 
 > **这是"普通后端"和"LLM 应用后端"的分水岭。**
 > 不做流式，你的产品在用户眼里就是"卡住不动"；做了流式，同样的模型、同样的耗时，**体验完全不同**。
+>
+> 🔁 **复习入口：[§9.9 一条流式请求的全生命周期](阶段1-FastAPI速成.md)（三张全景图）** —— 先看图，再查细节。
 
 ## 9.1 为什么 LLM 应用**必须**流式
 
@@ -4405,9 +4407,304 @@ data: [DONE]
 > **状态码层只管「能不能开始流」；协议层只管「这一帧能不能用」；业务层才管「用户有没有拿到答案」。
 > 200 + 空内容对用户就是失败 —— 必须主动说出来。**
 
-## 9.9 自检
+## 9.9 一条流式请求的全生命周期（全景图，2026-10-23 补）
+
+> 这一节是 **Step 9 的复习入口**：把前面 9.1 ~ 9.8f 散落的知识点，按「一条请求从进来到出去」的顺序串成一张路线图。
+> 面试时被问「你这个流式接口怎么做的」，答案的骨架就是这一节的三张图 + 三条规律。
+>
+> **怎么用**：不要通读。先看三张图（9.9.1 ~ 9.9.3），能自己复述出「哪一步之后状态码就改不了了」，
+> 再挑记不清的步骤去读 9.9.4 对应的那一段。
+
+### 9.9.1 图一：时间轴 —— 谁在等谁
+
+```text
+时间 →
+
+客户端               我们的 FastAPI 服务                      DeepSeek 上游
+  │                        │                                      │
+  │──① POST /v1/chat/stream│                                      │
+  │───────────────────────>│                                      │
+  │                        │ ② uvicorn 收到 TCP，组装 ASGI scope   │
+  │                        │ ③ 中间件：分配 request_id             │
+  │                        │ ④ 路由匹配 → 依赖注入 get_llm_client  │
+  │                        │ ⑤ pydantic 校验请求体（422 就死在这）  │
+  │                        │ ⑥ ensure_last_message_is_user（400）  │
+  │                        │ ⑦ 拼 body = {model, messages, stream}│
+  │                        │                                      │
+  │                        │──⑧ send(stream=True) ───────────────>│
+  │                        │                                      │ 模型开始生成
+  │                        │  ⏸ 等响应头（实测 181~266ms）         │
+  │                        │<─────⑨ 200 + 响应头 ─────────────────│
+  │                        │ ⑩ is_success 检查通过                  │
+  │                        │ ⑪ 返回 StreamingResponse              │
+  │<──⑫ 200 + chunked ─────│   ★ 状态码从这里【焊死】              │
+  │                        │                                      │
+  │                        │<─────⑬ data: {...} 第 1 帧 ──────────│
+  │<──⑭ data: {"delta":..} │ ⑮ aiter_lines → aiter_chunks         │
+  │                        │    → 三层守卫 → 重组 → yield          │
+  │                        │            ...（反复 ⑬~⑮）...         │
+  │                        │<─────⑯ data: [DONE] ─────────────────│
+  │                        │ ⑰ 零内容检查 → yield [DONE]           │
+  │<──⑱ data: [DONE] ──────│ ⑲ finally: upstream.aclose()         │
+  │                        │ ⑳ 连接归还池                          │
+  │──㉑ 客户端读到 EOF，连接结束│                                     │
+```
+
+⭐ **全图只有一个分界点值得记死：第 ⑫ 步。**
+`200 + transfer-encoding: chunked` 一旦发出去，**HTTP 状态码就再也改不了**（HTTP 协议层面，不是 FastAPI 的限制）。
+Step 9 里所有的设计 —— pre-flight、错误编码进流、零内容保护 —— **全都是为了绕开这一个约束**。
+
+### 9.9.2 图二：对象关系 —— 谁持有谁
+
+```text
+                            ┌─────────────────────────────┐
+                            │  uvicorn（ASGI 服务器）      │
+                            │  「怎么收 TCP、怎么发字节」   │
+                            └──────────────┬──────────────┘
+                                           │ 调用 app(scope, receive, send)
+                            ┌──────────────▼──────────────┐
+                            │  app: FastAPI               │
+                            │  「路由表 + 异常表 + 中间件」 │
+                            └──────────────┬──────────────┘
+                                           │
+              ┌────────────────────────────┼─────────────────────────┐
+              │                            │                         │
+   ┌──────────▼──────────┐      ┌──────────▼──────────┐   ┌──────────▼─────────┐
+   │ add_request_id      │      │ chat_stream()       │   │ errors.py           │
+   │ （中间件）           │      │ （路由函数）         │   │ 异常处理器          │
+   │ 分配 request_id      │      │ 校验 + pre-flight   │   │ AppError → 502      │
+   │ 记耗时日志           │      │ 返回流式响应         │   │ Exception → 500     │
+   └─────────────────────┘      └──────────┬──────────┘   └────────────────────┘
+                                           │
+                    ┌──────────────────────┼──────────────────────┐
+                    │ ① 用                │ ② 造                │ ③ 返回
+        ┌───────────▼────────┐  ┌──────────▼──────────┐  ┌────────▼─────────────┐
+        │ LlmClient           │  │ event_source()      │  │ StreamingResponse    │
+        │ （适配器，持有        │  │ （异步生成器）        │  │ （Starlette 的壳）    │
+        │  httpx.AsyncClient） │  │ 三层守卫 + 重组帧     │  │ 只负责把帧写上网      │
+        └───────────┬────────┘  └──────────┬──────────┘  └──────────────────────┘
+                    │                      │
+                    │ open_chat_stream()   │ aiter_chunks()
+                    ▼                      │
+        ┌──────────────────────┐           │
+        │ LlmChatStream        │◄──────────┘
+        │ （持有 httpx.Response）│
+        └──────────────────────┘
+
+  ★ 依赖方向：event_source ──> LlmChatStream ──> httpx.Response
+    event_source 永远看不见 httpx，只看得见「一个能吐 dict 的东西」
+```
+
+⭐ **这张图要能回答一个问题**：「如果要把 httpx 换成 aiohttp，改哪几个文件？」
+答案：**只改 `llm_client.py` 一个文件**。因为依赖方向是单向的，路由层根本不知道 httpx 存在（`pyproject.toml` 的 `TID251` 规则会**拦住**任何其他文件 import httpx）。
+
+### 9.9.3 图三：12 个失败点，谁接住
+
+```text
+    可能出错的位置                          谁接住                  客户端看到
+  ─────────────────────────────────────────────────────────────────────────────
+ ① 客户端发的 JSON 格式错          pydantic / FastAPI          422 + 字段定位
+ ② 请求体字段类型/长度不对           pydantic / FastAPI          422 + 字段定位
+ ③ 最后一条消息不是 user           ensure_last_message_is_user  400 + AppError
+ ④ 上游 DNS/TCP/TLS 失败           LlmClient._request L1        502 UPSTREAM_UNREACHABLE
+ ⑤ 上游超时                        LlmClient._request L1        502 UPSTREAM_UNREACHABLE
+ ⑥ 上游返回 4xx/5xx                LlmClient._request L2        502 UPSTREAM_BAD_STATUS
+ ──────────────── 以上都还能改状态码（响应头还没发） ──────────────────────────
+ ⑦ 上游 200 但 body 是 HTML        零内容保护                    200 + 流内 STREAM_NO_CONTENT
+ ⑧ 上游某帧是坏 JSON               → 中止                       200 + 流内 STREAM_FAILED
+ ⑨ 上游某帧字段类型不对            → 跳过（三档）                200 + 正常内容（可能没有）
+ ⑩ 我方代码抛未预期异常            except Exception              200 + 流内 STREAM_FAILED
+ ──────────────── 以下连流内错误帧都发不出去 ────────────────────────────────
+ ⑪ 客户端中途断开                  CancelledError 外抛           客户端自己断的，无需回应
+ ⑫ 什么都没发生但没内容            content_frames == 0           200 + 流内 STREAM_NO_CONTENT
+```
+
+判据：**「客户端还能收到一个合法的 HTTP 错误响应吗？」**
+- 能（①~⑥）→ 用**状态码 + JSON 错误体**
+- 不能（⑦~⑫）→ 只能把错误**编码进流**，且必须保证流有正常收尾
+
+### 9.9.4 逐步讲解
+
+#### ①~③ 请求进门前
+
+**② uvicorn 只做翻译。** 它把字节流翻译成 HTTP 语义（方法 / 路径 / 头 / body），再把响应语义翻译回字节流。它**不知道你有几条路由** —— 路由是 FastAPI 的事。
+
+→ 所以日志里会有两条看起来重复的行：
+
+| 日志 | 谁打的 | 含什么信息 |
+|---|---|---|
+| `INFO: 127.0.0.1:xxxx - "POST /v1/chat/stream HTTP/1.1" 200 OK` | **uvicorn** | 只有方法/路径/状态码 |
+| `POST /v1/chat/stream -> 200 16.4ms request_id=...` | **我们的中间件** | 多了耗时和 `request_id` |
+
+**③ 中间件的 `call_next` 等的是「响应头就绪」，不是「响应体发完」。**
+
+📎 实测（假上游每 0.4s 吐一帧、共 3 帧）：
+
+```text
+  25.6ms  === 客户端发起 POST ===
+  42.7ms  [日志] POST /v1/chat/stream -> 200 16.4ms request_id=1ea535d3aaee
+1266.9ms  === 客户端拿到响应头 status=200 ===
+1267.1ms  [帧] data: {"status": "thinking"} ... data: [DONE]
+1267.1ms  === 客户端读完（连接结束） ===
+```
+
+⭐ **访问日志在 42.7ms 就打出来了，而整条流到 1267ms 才结束** —— `-> 200 16.4ms` 这个数字**不包含**流式传输时长。
+（这是 TestClient 的表现，帧被缓冲到最后一起交付；真实 curl 下帧是逐条到达的，但**中间件日志提前这点一样成立**，因为它是 ASGI 层面的事实。）
+
+> ⚠️ **可观测性陷阱**：流式接口的「耗时」指标不能只看中间件日志。要真实耗时得在 `event_source` 的 `finally` 里另记一条。
+
+#### ④~⑦ 进屋后的三道检查
+
+**④ 依赖注入靠类型注解，不靠参数顺序。**
+
+```python
+async def chat_stream(
+    request: ChatRequest,          # pydantic 模型 → 从 body 来
+    client: LlmClientDep,          # Annotated[..., Depends(...)] → 从 lifespan 单例来
+    config: SettingsDep,           # Annotated[..., Depends(...)] → 从 .env 来
+) -> StreamingResponse:
+```
+
+**⑤ pydantic 校验在 422 处就死** —— 一个字节都不会发给上游。所以 `ChatRequest` 的每个约束（`min_length`、`Literal`）都是在**替上游省钱**。
+
+**⑥ 顺序：业务规则 → pre-flight。**
+
+```python
+ensure_last_message_is_user(request)      # 免费，先查
+upstream = await client.open_chat_stream(body)   # 花钱，后查
+```
+
+⭐ 判据：**免费检查必须排在花钱检查前面**。反了就是「先付钱再验票」。
+
+**⑦ 我们的契约 ≠ 上游的契约。** `ChatRequest` / `ChatResponse` 是**对外的**；`body` 那个 dict 是**对上上游的**。这一步是两份契约的翻译点，所以字段名、`None` 要不要放进去，都在这里决定。
+
+#### ⑧~⑪ pre-flight（全篇最关键的 20 行）
+
+| 动作 | 拿到什么 | 没拿到什么 |
+|---|---|---|
+| `build_request(...)` | 组装好的 `Request` 对象 | **不发网络** |
+| `send(..., stream=True)` | 状态码 + 响应头 | **一行 body 都没读** |
+| `http.request(...)`（非流式） | 状态码 + 响应头 + **整个 body 已进内存** | — |
+
+**为什么这样就能回 502**：
+
+```text
+send(stream=True) 返回的那一刻：上游响应头到手，我们【还没】发自己的响应头
+                                → 检查状态码还来得及 → 抛 AppError → 502 ✅
+
+如果挪进 event_source() 里（生成器内部第一行）：
+   return StreamingResponse(...) 已经执行
+   → 200 + chunked 已发给客户端
+   → 这时才发现上游 401 → 502 发不出去
+   → 只能在流里写一个错误帧，前端拿到的是「200 但内容里带 error」
+   → 且失败发生在【第一帧发出之前】，客户端会看到连接挂着不回包
+```
+
+⭐ **pre-flight 换来的不是「更早发现错误」，而是「保留了一个可以表达错误的通道（状态码）」**。这个区别在面试里很加分。
+
+**L2 为什么用 `is_success` 而不是 `>= 400`**：`raise_for_status()` 对 1xx/3xx **也抛**。302 说明「接口地址搬家了」—— 这是**配置层面**的问题，不是「上游拒绝服务」，混在一起会把排查方向带偏。
+
+**📎 `ResponseNotRead` 专讲（这一节最容易被忽略的坑）**
+
+```python
+try:
+    text = response.text
+except httpx.ResponseNotRead:
+    text = (await response.aread()).decode("utf-8", errors="replace")
+await response.aclose()
+```
+
+| 怎么发出去的 | `response.text` 可用？ | 原因 |
+|---|---|---|
+| `await http.request(...)` | ✅ | body 已读进内存 |
+| `await http.send(..., stream=True)` | ❌ `ResponseNotRead` | body 还在网络上；`.text` 是**同步属性**，没法 await |
+
+致命之处：**`ResponseNotRead` 不是 `RequestError` 的子类** → L1 的 `except httpx.RequestError` 抓不到它 → 直接穿透到 500 兜底 → 用户看到「服务内部错误」，而真实原因只是「想读上游 401 的错误正文，但读法不对」。
+
+> 📎 这正是 9b-4a 那个「三道门全绿但真实环境 500」的 bug：`_request(..., stream: bool = True)` 默认值写反，`list_models()` 走了流式路径。
+> **MockTransport 测不出来**，因为假响应的 body 本来就在内存里 —— 假上游天然「已读完」。
+
+**判据一句话**：`.` `.text` 是**同步属性**、`.aread()` 是**异步方法**。同步 / 异步的边界，就是这类 bug 的产地。
+
+#### ⑫ 状态码焊死
+
+```python
+return StreamingResponse(
+    event_source(),
+    media_type="text/event-stream",
+    headers={
+        "Cache-Control": "no-cache",       # 别让中间层缓存（否则可能拿到别人的答案）
+        "X-Accel-Buffering": "no",         # 给 nginx 看：别攒缓冲（否则流式失效）
+    },
+)
+```
+
+注意这一行**只创建对象，一个字节都还没发**。真正发送是框架执行 `await response(scope, receive, send)`。但对业务代码而言效果一样：**从这里之后，没有状态码可言了**。
+
+#### ⑬~⑱ 逐帧流水线（两层解析）
+
+```text
+上游字节流（互联网上的 TCP 分片，边界随机）
+   │
+   │  httpx.Response.aiter_lines()     ← httpx 负责：解码 + 按 \n 切行 + 去行尾
+   ▼
+行（可能有空行 ''、可能不是 data: 开头）
+   │
+   │  LlmChatStream.aiter_chunks()     ← 我们负责 L1 协议层
+   │     ① not line.startswith("data:") → 跳过
+   │     ② raw = line[5:].lstrip(); if not raw → 跳过（空 data 行）
+   │     ③ raw.strip() == "[DONE]" → 记 seen_done，跳过
+   │     ④ seen_done 之后的帧全跳（上游多发的东西）
+   │     ⑤ json.loads(raw) → 可能是 None / list / str / int
+   │     ⑥ isinstance(parsed, dict) 检查 → 不是对象就 warning + 丢
+   ▼
+dict（★ 契约保证：到这里一定是 dict）
+   │
+   │  event_source() 的 async for       ← 我们负责 L2 字段层
+   │     usage  = _as_dict(chunk.get("usage"))      ① 静默收窄
+   │     choices = chunk.get("choices") or []
+   │     ⑦ isinstance(choices, list)?   否则 warning + continue
+   │     ⑧ 空列表？→ 纯用量帧，处理完 continue
+   │     choice = choices[0]
+   │     ⑨ isinstance(choice, dict)?    否则 warning + continue
+   │     ⑩ choice["index"] != 0 → continue（多候选用）
+   │     delta = _as_dict(choice.get("delta"))      ① 静默收窄
+   │     finish_reason 是 str 且非空 → yield 帧；非 str 且非 None → warning
+   │     text = delta.get("content")
+   │     ⑪ isinstance(text, str)? 否则（非 None 时）warning + continue
+   │     ⑫ 空字符串 → continue
+   │     content_frames += 1
+   ▼
+我们自己的帧  data: {"delta": "..."}\n\n     ← ★ yield 一次 = 发一帧
+```
+
+⭐ **为什么 `isinstance(parsed, dict)` 必须在 `aiter_chunks` 里、不能移到路由里**：
+
+`aiter_chunks` 标注了 `-> AsyncIterator[dict[str, Any]]`，这是**对调用方的承诺**。路由里再写一次 `isinstance(chunk, dict)`，mypy 会报：
+
+```text
+error: Statement is unreachable  [unreachable]
+```
+
+因为**刚承诺它是 dict，转头又怀疑它不是**。这不是 mypy 太严 —— 是**契约设计冲突**，正确做法是让承诺在**能兑现的地方**兑现（详见 §14.4 ⑤、笔记专题 12）。
+
+### 9.9.5 三条最容易记错的规律
+
+| # | 容易记错 | 正确理解 |
+|---|---|---|
+| 1 | 「中间件日志的 16ms 就是请求耗时」 | ❌ 那是**到响应头为止**的耗时（📎 9.9.4 ③ 实测：日志 42.7ms / 流结束 1267ms）。流式请求的真实耗时要另记 |
+| 2 | 「`.text` 读响应正文，总能读」 | ❌ `stream=True` 时抛 `ResponseNotRead`，它**不是** `RequestError`，会漏到 500；要用 `await aread()` |
+| 3 | 「错误都用一个 `except Exception` 抓」 | ❌ `CancelledError` / `GeneratorExit` 直接继承 `BaseException`，**故意**漏过去。改成 `except BaseException` 会把「客户端断开」误当成「我方故障」 |
+
+### 9.9.6 一句话总结
+
+> **一条流式请求有两个不可逆的时刻：⑧（钱花出去了）和 ⑫（状态码焊死了）。
+> 所有的防御都安排在这两个时刻之前（pre-flight、业务校验），或者安排在这之后唯一的表达通道里（错误编码进流）。**
+
+## 9.10 自检
 
 > 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 9 SSE 流式）。
+> **第 57~59 题专门考 §9.9 的三张图**（走完整路径 / 断开的三个问题 / 守卫放错位置）。
 
 ---
 
