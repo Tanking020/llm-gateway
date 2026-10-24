@@ -383,6 +383,8 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **流式接口的访问日志耗时 ≠ 请求耗时**：📎 假上游每 0.4s 吐一帧、共 3 帧，中间件在 **42.7ms** 就打出 `-> 200 16.4ms`，而整条流到 **1266.9ms** 才结束。根因在 ASGI：中间件等的 `call_next` 返回于**响应头就绪**那一刻（第一条 `http.response.start`），之后逐帧发送发生在框架内部、中间件全程不参与。⭐ 推论：真实耗时要另记；且**绝不能读 `response.body`**（读一次就把流抽干，SSE 失效）
 - **SQLAlchemy 2.1 的 greenlet 安装行为不能泛化到 2.0**：📎 两个独立环境实测 —— `sqlalchemy==2.0.55` **裸装会自动装上** `greenlet`，异步模块导入成功；`sqlalchemy==2.1.6` **裸装**则 `ModuleNotFoundError: No module named 'greenlet'`，必须声明 `[asyncio]` extra。⭐ 判据：**同一个库的大版本之间，「装了就能用」可能悄悄变** —— 报错信息里让装什么就装什么（`use the 'sqlalchemy[asyncio]' install target`），不要凭旧文档推断
 - **`create_async_engine` 不等于「连上了」**：📎 导入 `app.database` 之后 `Test-Path app.db` 仍是 `False` —— 引擎只是建了个空连接池，真正 open 连接发生在第一次执行 SQL。⭐ 推论：**「对象建好了」和「东西发生了」是两件事**，判断后者的唯一办法是看副作用（文件出现 / 真发了 SQL）
+- **`async with` 的关闭指令不在 `with` 那一行**：它在对象的 `__aexit__` 里（本项目是 `LlmClient.__aexit__` → `await self._http.aclose()`）。`async with X as y` 等价于 `y = await X.__aenter__()` + `try/finally: await X.__aexit__(...)`，所以**正常结束和抛异常都必然关闭**（📎 实测异常路径 `exc_type=RuntimeError` 时仍执行）。⚠️ 推论：`yield` 必须在 `async with` **里面** —— 放外面不报错，但清理会发生在**启动阶段**（📎 实测服务运行期 `client.closed = True`，每个请求拿到的都是已关闭客户端）
+- **连接池省的是握手费**：📎 20 次请求复用同一个 `AsyncClient` → **1 条 TCP**、1.75ms/次；每次新建 → **20 条**、11.01ms/次，**慢 6.28 倍**（本机回环，公网差距更大）。项目里有两个池：httpx（上游，`__aexit__` 关）与 SQLAlchemy（数据库，`dispose` 关），维护方式相同：**启动建一次 → 全程复用 → 退出释放一次**
 
 | 文档 | 内容 |
 |---|---|

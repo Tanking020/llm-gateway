@@ -32,8 +32,10 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import LlmClientDep, SettingsDep
 from app.constants import HEADER_REQUEST_ID
+from app.database import engine
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
+from app.models import Base
 from app.schemas import ChatRequest, ChatResponse, ModelListResponse
 
 
@@ -45,13 +47,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     为什么用 async with 包住 yield：
         退出 async with 时会自动 await client.aclose()（LlmClient 的 __aexit__）
         写成 yield 之后的普通语句，异常时那行会被跳过 → 连接池泄漏
+
+    ⚠️ yield 只能出现一次，而且它【必须在 async with 里面】。
+        放在外面不会报错（📎 实测），但清理会发生在【启动阶段】：
+        with 先退出 → client 先被关掉 → 然后才交给服务使用，
+        于是整个运行期间每个请求拿到的都是一个已关闭的客户端。
+        判据：async with 的作用域 = 【它被使用的那段时间】。
     """
-    # 启动段：整个进程只跑一次
+
+    # 启动段[1]：建表。create_all 只建"还不存在的表"，已存在的表不会改结构
+    #   run_sync 用 greenlet 在同线程内跑同步风格的 DDL（不是线程池）
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # 启动段[2]：整个进程共享一个上游适配器
     async with create_llm_client() as client:
-        # 点号！把 client 挂到 app.state 的 llm_client 属性上（逗号是解包赋值，会炸）
+        # 把 client 挂到 app.state 的 llm_client 属性上
         app.state.llm_client = client
         yield  # 服务运行期间停在这里；关闭时从这行继续
-    # 关闭段：退出 async with 自动 aclose()
+        # 关闭段[1]：退出 async with 自动 aclose()
+
+    # 关闭段[2]：释放数据库连接池
+    await engine.dispose()
 
 
 # 日志配置：默认 root 级别是 WARNING 且没有 handler, info 会被静默丢弃
