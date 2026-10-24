@@ -4983,14 +4983,15 @@ error: Statement is unreachable  [unreachable]
 
 | 小步 | 产出 | 状态 |
 |---|---|---|
-| ① 10.1 依赖取证 | `sqlalchemy[asyncio]` + `aiosqlite`；独立 venv 复现 greenlet 缺失 | ✅ 2026-10-23 |
-| ② 10.2 模型定义 | `src/app/models.py`：`Base` + `Conversation`（`Mapped` / `mapped_column` / `default=lambda`） | ✅ 2026-10-23 |
-| ③ 10.3a 引擎与会话工厂 | `config.database_url` + `src/app/database.py`（`engine` / `SessionMaker`）+ `.gitignore` 忽略 `*.db` | ✅ 2026-10-24 |
-| ④ 10.3b lifespan 集成 | `lifespan` 启动段建表、关闭段 `dispose()` | ⬜ 待做 |
-| ⑤ 10.3c `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ⬜ 待做 |
-| ⑥ 10.4 CRUD 四接口 | 创建 / 列表 / 详情 / 删除 + `/docs` 契约 | ⬜ 待做 |
-| ⑦ 10.5 usage 落库 | 调用记录表 + 流式接口保存上游 `usage` | ⬜ 待做 |
-| ⑧ 10.6 N+1 与自检 | `selectinload` 预加载；本节自检 | ⬜ 待做 |
+| ① §10.1 依赖取证 | `sqlalchemy[asyncio]` + `aiosqlite`；独立 venv 复现 greenlet 缺失 | ✅ 2026-10-23 |
+| ② §10.2 模型定义 | `src/app/models.py`：`Base` + `Conversation` | ✅ 2026-10-23 |
+| ③ §10.3 引擎与会话工厂 | `config.database_url` + `src/app/database.py` + `.gitignore` 忽略 `*.db` | ✅ 2026-10-24 |
+| ④ §10.3b 连接池补讲 | 连接池原理 / `__aexit__` 关闭时机 / `yield` 位置 | ✅ 2026-10-24 |
+| ⑤ §10.4 前半 · lifespan 集成 | 启动段建表、关闭段 `dispose()` | ✅ 2026-10-24 |
+| ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ⬜ 待做 |
+| ⑦ §10.5 CRUD 四接口 | 创建 / 列表 / 详情 / 删除 + `/docs` 契约 | ⬜ 待做 |
+| ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
+| ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -5177,6 +5178,192 @@ mem_engine = create_async_engine(
 > 无法 await → 报错。📎 本机 SQLAlchemy 2.1.6 + `aiosqlite` 实测：**顶层异常是 `StatementError`，其 `orig` 才是 `MissingGreenlet`** —— 别按顶层异常名去猜。
 > **`expire_on_commit=False` 是异步 SQLAlchemy 的标准配置。**
 
+## 10.3b 连接池与 `async with` 的关闭时机（2026-10-24 补讲）
+
+> **起因**：学习者问「连接池是什么，项目里怎么维护的？`async with create_llm_client() as client:` 这段到底怎么运行，我没看到关闭指令。」
+> 这两件事其实是同一件事：**`async with` 的关闭动作不在那一行，而在对象的 `__aexit__` 里**。
+
+### ① 连接池是什么
+
+> **连接池 = 一组"已经建好的连接"，用完不扔，放回去给别人接着用。**
+
+建一条 TCP 连接要握手。📎 Step 9 已量过真实公网代价：**TCP 19~45ms + TLS 43~70ms = 合计 60~115ms**。
+不用池的话，**每个请求都要先付一次这个过路费**才开始传数据。
+
+### ② 📎 实测：复用 vs 不复用
+
+本机起了一个会记「accept 了几条连接」的 TCP 服务器，各发 20 次（已排除首次热身）：
+
+```text
+  20 次请求，复用同一个 client : 新连接  1 条  总耗时  35.1ms  平均  1.75ms/次
+  20 次请求，每次新建 client   : 新连接 20 条  总耗时 220.2ms  平均 11.01ms/次
+  新建方案慢 6.28 倍
+```
+
+⭐ **20 次请求只开了 1 条 TCP 连接**，客户端端口证明是同一根复用：
+
+```text
+[A] 一个 AsyncClient 连发 3 次：TCP 新连接数 = 1    客户端端口 = [51116]
+[B] 每次新建 AsyncClient：      TCP 新连接数 = 3    客户端端口 = [51117, 51118, 51119]
+```
+
+⚠️ 6.28 倍还只是**本机回环网络**（握手几乎不花时间）。换成真实公网，差距更大。
+
+### ③ 项目里有**两个**池
+
+| # | 池 | 装什么连接 | 创建 | 释放 |
+|---|---|---|---|---|
+| 1 | **httpx 的池** | 到 DeepSeek 的 TCP | `llm_client.py` `create_llm_client()` 里的 `httpx.AsyncClient(...)` | `LlmClient.__aexit__` → `await self._http.aclose()` |
+| 2 | **SQLAlchemy 的池** | 到 SQLite/PG 的连接 | `database.py` `create_async_engine(...)` | `lifespan` 的 `await engine.dispose()` |
+
+**维护方式完全一样**：
+
+```text
+进程启动时创建一次  →  整个服务期反复复用  →  进程退出时释放一次
+```
+
+📎 **SQLAlchemy 池的内部状态实测**（默认 size=5 / max_overflow=10）：
+
+```text
+=== 还没执行过任何 SQL ===
+  池类型: AsyncAdaptedQueuePool
+  size = 5        checkedin = 0      checkedout = 0     _max_overflow = 10
+  ⭐ checkedin=0 → 池是【懒】的，不执行 SQL 就一条连接都不建
+
+=== 执行一次 SQL 之后 ===
+  checkedout（借出中）= 1   checkedin（池内空闲）= 0
+
+=== 归还之后 ===
+  checkedout = 0   checkedin = 1     ← ★ 连接没销毁，放回池里等下次用
+
+=== dispose 之后 ===
+  checkedin = 0                      ← ★ 全部关掉
+```
+
+⭐ `checkedin = 0` 这条和「`create_async_engine` 不连库」是**同一件事的两面**。
+
+### ④ ⭐ `async with` 到底怎么运行：关闭指令在哪
+
+```python
+async with create_llm_client() as client:
+    app.state.llm_client = client
+    yield
+```
+
+关闭动作**不在这一行**，而在 `LlmClient` 的两个"魔法方法"里：
+
+```python
+async def __aenter__(self) -> "LlmClient":      # 进入 with 时调用
+    return self
+
+async def __aexit__(self, *exc_info: object) -> None:   # 离开 with 时调用
+    await self._http.aclose()                   # ★ 关闭指令就在这一行
+```
+
+⭐ **`async with` 是语法糖**，等价于：
+
+```python
+client = await X.__aenter__()
+try:
+    <块内代码>
+finally:
+    await X.__aexit__(...)      # 不管正常结束还是抛异常，一定执行
+```
+
+📎 **实测调用顺序**（给 `LlmClient` 套了个只加日志的 `Spy` 子类，行为不变）：
+
+```text
+=== 正常走完 async with ===
+  ① __aenter__ 被调用（返回 self）
+  ② 块内正在用：is_closed=False
+  ③ __aexit__ 被调用  exc_type=None
+     ④ __aexit__ 里的 await self._http.aclose() 执行完 → 池已关闭
+  ⑤ with 块之后的代码
+
+=== 块内抛异常 ===
+  ① __aenter__ 被调用
+  ② 块内抛 RuntimeError
+  ③ __aexit__ 被调用  exc_type=RuntimeError      ← ★ 抛异常也照样关闭
+     ④ 关闭完成
+  ⑤ 外层捕获到：模拟业务异常
+
+=== 手写 try/finally（等价写法）===
+  事件顺序与第一种【完全一样】  ← 语法糖的证明
+```
+
+### ⑤ `yield` 在这里的角色
+
+```text
+uvicorn 启动
+  ├─ 调用 lifespan(app)
+  │     ├─ ① __aenter__  → 池建好（空池）
+  │     ├─ ② app.state.llm_client = client
+  │     ├─ ③ 遇到 yield  → 【挂起，控制权交回 uvicorn】
+  │     │                    ⚠️ 此刻两个 async with 都还没退出
+  │     │  ←←← 服务运行期（可能几小时），池一直在，反复复用 →→→
+  │     └─ ④ uvicorn 关闭时，从 yield 之后继续
+  │           ├─ 退出 async with → __aexit__ → aclose()
+  │           └─ await engine.dispose()
+  ▼
+```
+
+⭐ **判据**：**`yield` 的位置 = 「启动完成」和「开始关闭」的分界线。**
+它在 `async with` 里面，就等于告诉 Python：「从我暂停到恢复之前，这个 with 块不算结束，所以 `__aexit__` 不要跑。」
+
+📎 **放错位置不会报错，但清理会发生在启动阶段**（实测事件顺序）：
+
+```text
+写法 B（yield 在 async with 外面）
+  1. 上游适配器: 打开
+  2. 上游适配器: 关闭          ← ★ 启动阶段就关了
+  3. yield 之前
+  4. 【服务运行中】client.closed = True     ← 每个请求拿到坏客户端
+
+写法 A（我们的）
+  1. 上游适配器: 打开
+  2. 【服务运行中】client.closed = False    ← 正常
+  3. 上游适配器: 关闭
+  4. yield 之后（关闭段）
+```
+
+### ⑥ 为什么 `create_llm_client()` 用 `return` 而不是 `yield`
+
+| 写法 | 谁负责关 | 能不能交出去 |
+|---|---|---|
+| `yield` 造依赖 | 造它的那个函数（`finally` 里） | ❌ 出不了那个函数 |
+| **`return` 一个实现 `__aenter__`/`__aexit__` 的对象** | **拿到它的人**（`async with`） | ✅ 可以传给别人 |
+
+同一个工厂函数，项目里有两种用法：
+
+```python
+# 用法 1：CLI（src/app/main.py）—— 自己开自己关
+async with create_llm_client() as client:
+    ...
+
+# 用法 2：HTTP 服务（lifespan）—— 开一次，挂到 app.state 给所有请求共用
+async with create_llm_client() as client:
+    app.state.llm_client = client
+    yield                    # 关闭仍由这一层负责
+```
+
+⭐ 这正是「`return` 对象」比「`yield` 依赖」灵活的地方。
+
+### ⑦ 不关闭的两种债务
+
+| 池 | 场景 | 后果 |
+|---|---|---|
+| httpx | 流式响应不 `aclose` | 📎 Step 9 实测：第二个请求 **`PoolTimeout`** |
+| httpx | 反复 `TestClient` / `--reload` | 连接累积 → `Too many open files` |
+| 数据库 | PostgreSQL（`max_connections` 有上限） | 重启几次吃满 → 新连接被拒 → **全站 500** |
+| 两个 | 单进程 SQLite / CLI 退出 | 操作系统回收，**看不出问题**（所以最危险） |
+
+⭐ **判据**：**「不是你的资源了，就还回去。」** —— Step 9 的 `stream=True` 要 `aclose`、这里的 `engine.dispose()`，是同一条。
+
+### ⑧ 三句话判据
+
+1. **连接池 = 复用已建好的连接**，省掉每次 60~115ms 握手（📎 实测复用快 **6.28 倍**，20 次请求只开 1 条 TCP）。
+2. **`async with` 的关闭指令在对象的 `__aexit__` 里**，不在 `with` 那一行；它保证**正常结束和抛异常都执行**（📎 两种路径实测都调到了）。
+3. **`yield` 是「启动完成 / 开始关闭」的分界线**：在里面 → 暂停期间池不会被关；在外面 → 清理发生在启动阶段（📎 `client.closed = True`）。
 ## 10.4 会话生命周期：`yield` 依赖 + lifespan
 
 ```python
