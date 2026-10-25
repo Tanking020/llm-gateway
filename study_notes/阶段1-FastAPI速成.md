@@ -4989,7 +4989,7 @@ error: Statement is unreachable  [unreachable]
 | ④ §10.3b 连接池补讲 | 连接池原理 / `__aexit__` 关闭时机 / `yield` 位置 | ✅ 2026-10-24 |
 | ⑤ §10.4 前半 · lifespan 集成 | 启动段建表、关闭段 `dispose()` | ✅ 2026-10-24 |
 | ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ✅ 2026-10-25 |
-| ⑦ §10.5 CRUD | POST ✅ / GET 列表 ✅ / GET 详情 ✅；DELETE 待做 | 🟡 进行中 |
+| ⑦ §10.5 CRUD 四接口 | POST ✅ / GET 列表 ✅ / GET 详情 ✅ / DELETE ✅ | ✅ 2026-10-25 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
@@ -5733,6 +5733,93 @@ db.get() 找不到 → 返回 None（不抛异常）
 ⚠️ **加 `/v1/conversations/latest` 时就会撞**（都是 2 段）—— 那时必须写在 `{conv_id}` 之前。项目里已有先例：`/v1/models/latest` 就写在 `/v1/models/{model_name}` 前面。
 
 ⭐ 判据：**同层出现「固定词」和「路径参数」时，固定词必须在前；段数不同则无所谓。**
+
+### DELETE：204 无内容
+
+```python
+@app.delete("/v1/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(conv_id: int, db: DbDep) -> None:
+    conv = await db.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话不存在：{conv_id}",
+        )
+    await db.delete(conv)   # AsyncSession.delete 是异步方法，必须 await
+```
+
+📎 实测完整生命周期：
+
+```text
+① 列表（1 条）        [200]
+② 删除 id=1          [204]   body 是空的
+③ 再查 id=1          [404] {"detail":"对话不存在：1"}
+④ 再删 id=1          [404]
+⑤ 列表               [] [200]
+直接读库：（空表）              ← 确认真的落盘删了
+```
+
+#### ⭐ 204 vs 200：不是"省 4 字节"，是"语义"
+
+📎 实测把 `status_code` 改成 200：
+
+```text
+  真删成功   status=200  body=b'null'  content-length=4
+  删不存在   status=404
+```
+
+📎 再测一个"什么都没做"的接口：
+
+```text
+  啥也没干   status=200  body=b'null'
+  ⚠️ 客户端完全无法区分「真删了」和「什么也没发生」
+```
+
+| | 204 | 200 + `null` |
+|---|---|---|
+| 能不能带 body | **不能**（FastAPI **注册路由时**就 `AssertionError`） | 能 |
+| 「什么都没做」能伪装成成功吗 | ❌ 语义上说不通 | ✅ 能 |
+| 客户端要解析 body 吗 | 不用 | 要（然后发现是 `null`，不知道什么意思） |
+
+⭐ 判据：**204 = "我做完了，而且没有什么要说"；200 + `null` = "我做完了，你要的内容是 null"** —— 后者在语法上就允许"其实我什么都没做"。
+
+#### ⚠️ FastAPI 在**注册路由时**就拦住 204 带 body
+
+📎 实测：`status_code=204` + `-> dict` + `return {"msg": "deleted"}` →
+
+```text
+AssertionError: Status code 204 must not have a response body
+  File "fastapi/routing.py", line 1137, in _populate_api_route_state
+```
+
+⭐ **服务根本起不来**，不是运行时才报。这是"尽早失败"的典范。
+⚠️ 反过来说：**写错时 `uvicorn` 起不来，别去查"为什么启动失败"，要看堆栈里的 `AssertionError`。**
+
+#### ⭐ DELETE 的幂等性：第二次删返回 404 也合法
+
+```text
+  删除存在的    204
+  删除不存在的  404
+  再删一次      404      ← 同一个 id 删第二次
+```
+
+| 说法 | 对不对 |
+|---|---|
+| 「DELETE 是幂等的」 | ✅ 标准语义：连续调用 N 次，**最终状态一样** |
+| 「DELETE 第二次必须返回 204」 | ❌ **不要求**，返回 404 也符合规范 |
+
+⭐ **两种都合法**，这是产品决策：
+
+| 策略 | 好处 | 坏处 |
+|---|---|---|
+| 第二次返回 **404**（本项目） | 客户端能知道"这条本来就不存在" | 客户端重试时要把 404 当成功 |
+| 第二次返回 **204** | 客户端重试逻辑简单 | 掩盖了"你删的东西根本不存在" |
+
+⭐ 本项目选 404 的理由：**和"查详情"保持一致**（查不到就 404）。**一致性比"哪种更优雅"更重要。**
+
+#### ⚠️ `await db.delete(conv)` 的 `await` 不能少
+
+漏掉 `await` **不报错**，但**删除不生效** —— 协程对象被创建了却从没执行。**静默的失效**。
 
 ### 方法速查
 
