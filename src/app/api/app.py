@@ -310,10 +310,10 @@ async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
     按 id 查一个对话：不存在返回 404
 
     db.get 找不到时返回 None（不抛异常），所以必须判空 ——
-    不判就会 conv.title 抛 AttributeError，变成 500（服务内部错误），
-    而用户应该看到的是 404（你要的东西不存在）。
+    不判返回 None 流到 response_model → ResponseValidationError（input=None）→ 500。
+    实测【不是】AttributeError。用户应该看到的是 404（你要的东西不存在）。
     """
-    # 数据库的 .get(model, id)方法，model 对应哪张表，id 对应主键名
+    # 数据库的 .get(model, id)方法，model 对应哪张表，id 对应主键名，查不到会返回 None
     conv = await db.get(Conversation, conv_id)
     if conv is None:
         raise HTTPException(
@@ -321,6 +321,27 @@ async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
             detail=f"对话不存在：{conv_id}",
         )
     return conv
+
+
+@app.delete("/v1/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(conv_id: int, db: DbDep) -> None:
+    """
+    删除一个对话：不存在返回 404
+
+    【注意】：返回注解必须是 None，且 status_code 必须是 204：
+    204 语义是【成功了，但没有任何内容要返回】
+    FastAPI 在注册路由时就会检查：若声明了 response 内容会直接
+    AssertionError: Status code 204 must not have a response body
+    （服务根本起不来，不是运行时才报）
+    """
+    conv = await db.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话不存在：{conv_id}",
+        )
+    await db.delete(conv)  # AsyncSession.delete 是异步方法，必须 await
+    # 不写 return: -> None 的函数隐式返回 None
 
 
 @app.get("/v1/conversations", response_model=list[ConversationOut])
