@@ -3,7 +3,7 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中（依赖 / 模型 / 引擎 / 请求级会话 / POST / GET 列表已落地，详情与删除未做）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中（依赖 / 模型 / 引擎 / 请求级会话 / POST / GET 列表 / GET 详情已落地，删除未做）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
 已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
 **一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
@@ -91,6 +91,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 | POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；`text/event-stream` + chunked | 200 / 422 |
 | POST | `/v1/conversations` | 新建对话（落库）；`title` 长度 1~100 | 201 / 422 |
 | GET | `/v1/conversations` | 列出全部对话，按 `id` 升序；空表返回 `[]` | 200 |
+| GET | `/v1/conversations/{conv_id}` | 单个对话；不存在 → 404；`conv_id` 非整数 → 422 | 200 / 404 / 422 |
 
 **成功响应形状**（Step 4 起，`schemas.py` 定义，可在 `/docs` 展开）：
 
@@ -391,6 +392,9 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **`.scalars()` 是「每行只取第 1 列」，不是「把 tuple 转成对象」**：📎 实测 `select(Conversation)` + `.scalars().all()` → `[Conversation, ...]`（第一列本来就是完整对象）；但 `select(id, title)` + `.scalars().all()` → **只剩 `[1, 2]`，`title` 被静默丢掉**。⭐ 判据：**拿完整对象用 `select(Model)` + `scalars()`；选多列就用 `.all()` 按名取**
 - **「运行时对不对」和「类型对不对」是两个独立问题**：📎 两次实测结论相反 —— `Conversation(title=payload)` 是**运行时错、mypy 查不到**（`**kwargs` 是 `Any`）→ 500；而 `return result.scalars().all()` 不套 `list()` 是**运行时没问题**（`type()` 就是 `<class 'list'>`，能 `append`）但 **mypy 拦**（`.all()` 声明的是 `Sequence`，不承诺可变）。⭐ 所以 `list(...)` 是**升级类型承诺**，不是让代码能跑
 - **空集合返回 `200 []`，不是 404**：📎 实测。「集合为空」是正常答案；404 是「你要的那个东西没有」。列表返 404 会让前端把「还没建过数据」和「接口不存在」混在一起 —— **语义撞车**。对照：`GET /{id}` 查单个不存在才是 404
+- **`abc` → 422 和 `999` → 404 是两个不同的拒法**：📎 实测 `conv_id: int` 转不动时 **FastAPI 在调用路由函数之前**就回 422（**你的函数体一行都没跑**）；`999` 能转成 int 所以进了函数，被 `if conv is None` 拒成 404。`-1` 也是 404（负数是合法整数）。⭐ 判据：**「格式不对」422 vs「格式对但没这条」404**
+- **`db.get()` 查不到返回 `None`，不判空会变成 500**：📎 实测 `None` 流到 `response_model` → pydantic 报 `ResponseValidationError: Input should be a valid dictionary or object..., input=None` → 客户端 500。⚠️ **不是 `AttributeError`**。⭐ 判据：**把 404 伪装成 500 最容易误导排查** —— 看到 `X | None` 就该判空
+- **PowerShell 里 `curl.exe` 的输出不要接管道**：📎 两次实测同一个病 —— 乱码 `鐜版湁瀵硅瘽` 是 PowerShell 按 **GBK** 解码 UTF-8 字节（数据本身正确）；`curl | python` 更严重，**10494 字节被压成 8954**，JSON 结构被破坏。解法：`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` / `curl -o` 写文件 / 直接用 Python。⭐ 判据：**看到乱码先查源头对不对，别急着改代码**
 - **连接池省的是握手费**：📎 20 次请求复用同一个 `AsyncClient` → **1 条 TCP**、1.75ms/次；每次新建 → **20 条**、11.01ms/次，**慢 6.28 倍**（本机回环，公网差距更大）。项目里有两个池：httpx（上游，`__aexit__` 关）与 SQLAlchemy（数据库，`dispose` 关），维护方式相同：**启动建一次 → 全程复用 → 退出释放一次**
 
 | 文档 | 内容 |

@@ -304,6 +304,25 @@ async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversatio
     return conv
 
 
+@app.get("/v1/conversations/{conv_id}", response_model=ConversationOut)
+async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
+    """
+    按 id 查一个对话：不存在返回 404
+
+    db.get 找不到时返回 None（不抛异常），所以必须判空 ——
+    不判就会 conv.title 抛 AttributeError，变成 500（服务内部错误），
+    而用户应该看到的是 404（你要的东西不存在）。
+    """
+    # 数据库的 .get(model, id)方法，model 对应哪张表，id 对应主键名
+    conv = await db.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话不存在：{conv_id}",
+        )
+    return conv
+
+
 @app.get("/v1/conversations", response_model=list[ConversationOut])
 async def list_conversations(db: DbDep) -> list[Conversation]:
     """
