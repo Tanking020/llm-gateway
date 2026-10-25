@@ -4989,7 +4989,7 @@ error: Statement is unreachable  [unreachable]
 | ④ §10.3b 连接池补讲 | 连接池原理 / `__aexit__` 关闭时机 / `yield` 位置 | ✅ 2026-10-24 |
 | ⑤ §10.4 前半 · lifespan 集成 | 启动段建表、关闭段 `dispose()` | ✅ 2026-10-24 |
 | ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ✅ 2026-10-25 |
-| ⑦ §10.5 CRUD 四接口 | POST ✅ / GET 列表 ✅ / GET 详情 ✅ / DELETE ✅ | ✅ 2026-10-25 |
+| ⑦ §10.5 conversations 接口 | POST ✅ / GET 列表 ✅ / GET 详情 ✅ / DELETE ✅ / PATCH ✅ | ✅ 2026-10-25 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
@@ -5957,6 +5957,129 @@ AssertionError: Status code 204 must not have a response body
 #### ⚠️ `await db.delete(conv)` 的 `await` 不能少
 
 漏掉 `await` **不报错**，但**删除不生效** —— 协程对象被创建了却从没执行。**静默的失效**。
+
+### PATCH：部分更新（Update）
+
+```python
+@app.patch("/v1/conversations/{conv_id}", response_model=ConversationOut)
+async def update_conversation(
+    conv_id: int,
+    payload: ConversationPatch,
+    db: DbDep,
+) -> Conversation:
+    conv = await db.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话不存在：{conv_id}",
+        )
+    conv.title = payload.title
+    # 不写 commit: 由 get_db 依赖统一提交（事务边界只在一处）
+    return conv
+```
+
+契约：
+
+```python
+class ConversationPatch(BaseModel):
+    title: str = Field(min_length=1, max_length=100, description="新的对话标题")
+```
+
+📎 实测九种情况：
+
+```text
+① 建完列表          [200]   [{"id":1,"title":"原标题",...}]
+② PATCH 存在的      [200]   {"id":1,"title":"改后标题","created_at":"…13:57:13.318091"}
+③ {}                [422]   {"detail":[{"type":"missing","loc":["body","title"],…}]}
+④ {"title":null}    [422]   {"detail":[{"type":"string_type","loc":["body","title"],…}]}
+⑤ PATCH 不存在      [404]   {"detail":"对话不存在：999"}
+⑥ 再 PATCH 不存在   [404]   {"detail":"对话不存在：999"}
+⑦ 最终列表          [200]   title 还是"改后标题"（没被污染）
+```
+
+⭐ ② 里 `created_at` **没变** —— 只改了 `title`，其他字段原样。
+⭐ ⑦ 证明 **404 时数据库完全没被碰**（`db.get` 返回 `None` 就 raise 了，一行写入都没发生）。
+
+#### ⭐ `missing` 和 `string_type` 是两种不同的错
+
+| | `{}` | `{"title": null}` |
+|---|---|---|
+| 字段出现了吗 | **没有** | **出现了** |
+| `type` | `missing` | `string_type` |
+| 人话 | 「你没说要改什么」 | 「你说要改成 null，但标题不能是 null」 |
+| 怎么修 | 补上 `title` | 给一个真实字符串 |
+
+⭐ 判据：**`missing` 修的是「漏传」，`string_type` 修的是「传错了」** —— 先看 `type` 再看 `msg`。
+
+#### ⭐⭐ 为什么不允许空 body：它是免费的 bug 探测器
+
+`{}` 的字面含义是「**我发了更新请求，但没说改什么**」—— 自相矛盾。
+
+放行的话只有三种解释，两种都很糟：
+
+| 解释 | 后果 |
+|---|---|
+| 什么都不做，返回 200 | ⚠️ **静默成功** —— 客户端以为改了，其实没改 |
+| 把所有字段清空 | 💀 灾难（一条空记录） |
+| 返回 422（本项目） | ✅ 立刻暴露 |
+
+**最要命的理由**：假设前端把 `title` 拼成 `titel` →
+
+```json
+{"titel": "新标题"}
+```
+
+| schema 写法 | 结果 |
+|---|---|
+| **`title: str`（必填，本项目）** | **422 `missing`** ✅ 立刻发现拼错 |
+| `title: str \| None = None` + 允许空更新 | **200**，但标题**一个字都没变** ⚠️ 前端以为成功 |
+
+⭐⭐ 判据：**「必填字段」是免费的 bug 探测器。** 改成"可选 + 默认 None"等于把它关掉。
+
+⚠️ 多字段 PATCH 时 `{}` 严格说合法（"什么都不改"），业界确实有宽松做法 —— 但**必须额外加 `extra="forbid"` 拒绝未知字段**，否则拼错字段名照样静默成功。本项目靠"必填"零成本实现了严格模式。
+
+#### `PATCH` 和 `PUT` 差在哪
+
+📎 假设模型有 `title` 和 `archived`，客户端只想改 `title`：
+
+| 方法 | 请求体 | `archived` |
+|---|---|---|
+| **`PATCH`** | `{"title": "新"}` | **保持原值**（部分更新） |
+| **`PUT`** | `{"title": "新"}` | **被重置成默认值 / null**（整体替换） |
+
+⭐ 判据：**「我只改我传的那部分」→ `PATCH`；「这就是完整的新版本」→ `PUT`**。
+
+⚠️ 本项目只有 `title` 一个可改字段，所以**两者行为完全一样** —— 不是 bug，是"部分"这个概念需要至少两个字段才体现得出来。
+
+#### ⭐ `exclude_unset` 才是多字段 PATCH 的标准做法
+
+```python
+class ConversationPatch(BaseModel):
+    title: str | None = None
+    archived: bool | None = None
+
+data = payload.model_dump(exclude_unset=True)   # 只拿"客户端真的传了"的字段
+for key, value in data.items():
+    setattr(conv, key, value)
+```
+
+📎 实测三种 `model_dump`（请求体 `{}`）：
+
+| 写法 | 结果 |
+|---|---|
+| `model_dump()` | `{'title': None}` ← ⚠️ **把没传的也吐出来**，直接 setattr 会清空 title |
+| `model_dump(exclude_unset=True)` | `{}` ✅ **只留真的传了的** |
+| `model_dump(exclude_none=True)` | `{}` —— 但**分不清「没传」和「传了 null」** |
+
+⭐⭐ 判据：**`exclude_unset` 问的是「字段有没有出现在请求体里」；`exclude_none` 问的是「值是不是 null」** —— 完全不同的问题。多字段 PATCH 必须用前者。
+
+⚠️ 现在只有一个字段所以用不上；加第二个字段时**必须**换成这种写法，否则会静默清空其他字段。
+
+#### 幂等性
+
+📎 实测 PATCH 不存在的对话两次，都返回 404 —— **最终状态不变，符合幂等**。
+
+⭐ `PATCH` 幂等、`POST` 不幂等（发两次创建两条）—— 这是两者最实用的分界。
 
 ### 方法速查
 

@@ -42,6 +42,7 @@ from app.schemas import (
     ChatResponse,
     ConversationIn,
     ConversationOut,
+    ConversationPatch,
     ModelListResponse,
 )
 
@@ -342,6 +343,32 @@ async def delete_conversation(conv_id: int, db: DbDep) -> None:
         )
     await db.delete(conv)  # AsyncSession.delete 是异步方法，必须 await
     # 不写 return: -> None 的函数隐式返回 None
+
+
+@app.patch("/v1/conversations/{conv_id}", response_model=ConversationOut)
+async def update_conversation(
+    conv_id: int,
+    payload: ConversationPatch,
+    db: DbDep,
+) -> Conversation:
+    """
+    修改一个对话的标题：不存在返回 404
+
+    PATCH = 部分更新：【只改客户端传了的字段】，没传的保持原样
+    PUT = 整体替换：没传的字段会被重置成默认值
+
+    本项目只有 title 一个可改字段，所以两者行为暂时相同
+    接口名写 PATCH 是为将来加字段时留的余地
+    """
+    conv = await db.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话不存在：{conv_id}",
+        )
+    conv.title = payload.title
+    # 不写 commit: 由 get_db 依赖统一提交（事务边界只在一处）
+    return conv
 
 
 @app.get("/v1/conversations", response_model=list[ConversationOut])

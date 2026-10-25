@@ -107,6 +107,23 @@ class ConversationIn(BaseModel):
     title: str = Field(min_length=1, max_length=100, description="对话标题")
 
 
+class ConversationPatch(BaseModel):
+    """
+    更新对话的请求体（PATCH）：目前只有 title 一个可改字段
+
+    【为什么不复用 ConversationIn】:
+        两者字段现在完全一样，但语义不同 —— 创建是"我把它交给你"，
+        更新是"我只改我给出的那部分"。将来 Conversation 加了新列（比如 archived），
+        创建接口要必填、更新接口要可选，所以这俩必须分开
+
+    【为什么 title 不带默认值】：
+        写成 title: str | None = None 会让 {"title": null} 通过校验，
+        然后写库时违反 NOT NULL —— 错误被拖到运行时，客户端收到 500 而不是 422
+    """
+
+    title: str = Field(min_length=1, max_length=100, description="新的对话标题")
+
+
 class ConversationOut(BaseModel):
     """
     对话的响应形状（白名单：没声明的字段不会出现在响应里）
