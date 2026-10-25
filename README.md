@@ -3,7 +3,7 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中（依赖 / 模型 / 引擎 / 请求级会话已落地，CRUD 未做）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中（依赖 / 模型 / 引擎 / 请求级会话 / POST 已落地，其余 CRUD 未做）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
 已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
 **一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
@@ -385,6 +385,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **`create_async_engine` 不等于「连上了」**：📎 导入 `app.database` 之后 `Test-Path app.db` 仍是 `False` —— 引擎只是建了个空连接池，真正 open 连接发生在第一次执行 SQL。⭐ 推论：**「对象建好了」和「东西发生了」是两件事**，判断后者的唯一办法是看副作用（文件出现 / 真发了 SQL）
 - **`async with` 的关闭指令不在 `with` 那一行**：它在对象的 `__aexit__` 里（本项目是 `LlmClient.__aexit__` → `await self._http.aclose()`）。`async with X as y` 等价于 `y = await X.__aenter__()` + `try/finally: await X.__aexit__(...)`，所以**正常结束和抛异常都必然关闭**（📎 实测异常路径 `exc_type=RuntimeError` 时仍执行）。⚠️ 推论：`yield` 必须在 `async with` **里面** —— 放外面不报错，但清理会发生在**启动阶段**（📎 实测服务运行期 `client.closed = True`，每个请求拿到的都是已关闭客户端）
 - **yield 依赖里的 `raise` 少了，代价不是「客户端收到 200」**：📎 实测 FastAPI 0.143.0 有专门守卫 —— 客户端仍拿到 **500 + 统一错误形状 + `request_id`**（与正常路径一模一样），但日志被 `FastAPIError: Response not awaited. ...` 顶替，且 **`__cause__ = None`** → 原始异常的类型/消息/行号**全丢**。⭐ 判据：**「客户端看到什么」和「日志里能查到什么」是两个独立验收项**，前者一致不代表后者没问题
+- **ORM 构造函数是 `**kwargs`，mypy 不保护写入时的取值**：📎 写成 `Conversation(title=payload)`（塞整个 pydantic 对象）时**三道门全绿**，运行时报 `ProgrammingError: type 'ConversationIn' is not supported` → 客户端 500。`inspect.signature` 显示 `(self, **kwargs)`。⭐ 判据：**mypy 管「读出来的类型」，不管「传进去是什么」** —— 入参校验只能靠 pydantic 契约
 - **连接池省的是握手费**：📎 20 次请求复用同一个 `AsyncClient` → **1 条 TCP**、1.75ms/次；每次新建 → **20 条**、11.01ms/次，**慢 6.28 倍**（本机回环，公网差距更大）。项目里有两个池：httpx（上游，`__aexit__` 关）与 SQLAlchemy（数据库，`dispose` 关），维护方式相同：**启动建一次 → 全程复用 → 退出释放一次**
 
 | 文档 | 内容 |
