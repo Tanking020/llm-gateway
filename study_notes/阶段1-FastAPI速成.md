@@ -5485,6 +5485,143 @@ async with SessionMaker() as session:
 | 依赖统一 `commit`（本项目） | 事务边界只有一处，改规则只改一处 |
 | 路由里各自 `commit` | N 个接口 N 处要记得写；且**提交早了，后面的修改就不在同一事务里**（没法整体回滚） |
 
+### ⭐ 裸 `raise` 什么时候用：「放行」的唯一正当理由
+
+（2026-10-25 实测）
+
+> **裸 `raise` 只有一个正当用途：我做了别的事（清理 / 记录），但对异常本身没有任何新话要说。**
+
+⚠️ 关键在**后半句**：如果你**也没别的事要做**，那连 `try/except` 都不该写。
+
+#### 两条硬约束
+
+📎 实测：
+
+```text
+--- 裸 raise 在 except 外 ---
+  类型: RuntimeError: No active exception to reraise
+```
+
+| 约束 | 说明 |
+|---|---|
+| ① 必须在 `except` 块里 | 手上没有正在处理的异常时，它不知道要重抛什么 |
+| ② 不带任何参数 | `raise e` **不是**裸 `raise`，行为不一样（见下） |
+
+#### 五种写法的帧数对比
+
+📎 同一个 `boom()` 抛 `ValueError`，五种包装方式的真实结果：
+
+| 写法 | 顶层帧数 | 帧序列 | `__cause__` |
+|---|---|---|---|
+| **F 不写 `try`** | 3 | `module` → `F` → `boom` | None |
+| **G `except: raise`**（别无他事） | 3 | `module` → `G` → `boom` | None |
+| **A `except: 清理; raise`** | 3 | `module` → `A` → `boom` | None |
+| **B `except as e: raise e`** | **4** | `module` → **`B:25`** → `B:26` → `boom` | None |
+| **C `except: raise 新异常`** | 2 | `module` → `C` | None（原异常进 `__context__`） |
+| **D `except as e: raise 新 from e`** | 2 | `module` → `D` | **`ValueError`** |
+
+**结论 ①：`except Exception: raise` 如果别无他事，纯属噪音**
+
+📎 F（不写 try）和 G（只写 raise）帧数完全一样：
+
+```text
+F 不写 try               帧数=3  帧=['<module>:18', 'F:11', 'boom:8']
+G except 里只 raise      帧数=3  帧=['<module>:18', 'G:14', 'boom:8']
+```
+
+⭐ **「放行」最干净的方式是压根不写 `except`** —— 少一层缩进、少一个块。
+
+**结论 ②：`raise e` 是错的，它多一帧**
+
+📎 B 是 4 帧，序列里多出 `B:25`（就是 `raise e` 那一行本身）；A 只有 3 帧。
+
+原因：`raise e` 是「**在当前帧重新抛出这个对象**」，Python 会在 `e.__traceback__` 前面**追加当前帧**。裸 `raise` 是「**继续传播手上这个异常**」，不追加。
+
+⚠️ 后果不是报错，是**日志里多一行毫无意义的 `raise e` 行号**，让你以为那里出的问题。
+
+**结论 ③：想改异常身份就 `from exc`，不要裸 `raise`**
+
+| | `__cause__` | 日志显示 |
+|---|---|---|
+| C `raise RuntimeError("包一层")` | `None` | `During handling of the above exception, another exception occurred:` |
+| D `raise RuntimeError("包一层") from exc` | `ValueError` | `The above exception was the direct cause of the following exception:` |
+
+⭐ 判据：**`from exc` 明确宣告「我是被它引起的」**；不写 `from` 只说「我在处理它时又炸了」（**可能只是巧合**）。
+
+#### 项目里唯一的裸 `raise`：`get_db`
+
+```python
+async with SessionMaker() as session:
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()   # ← 别的事：回滚
+        raise                      # ← 对异常没话说，原样丢给框架
+```
+
+三个替代方案为什么都不行：
+
+| 替代写法 | 问题 |
+|---|---|
+| `raise e` | 📎 多一帧，日志指向 `deps.py` 那行 `raise e` 而不是真正出错的地方 |
+| `raise AppError(...)` | **改变了异常身份** → 路由里的 `HTTPException(404)` 会被包成 500，语义全错 |
+| 不写 `raise` | 📎 客户端仍拿 500（FastAPI 有 `Response not awaited` 守卫），但 **`__cause__ = None`，根因全丢** |
+
+⭐ 所以这里「必须 raise（保住链）+ 必须裸 raise（不改身份、不加帧）」两个条件同时成立。
+
+#### ⚠️ 顺手证伪：`finally` 里 `rollback` 是错的
+
+📎 实测三种收尾写法（假的 `FakeSession` 打日志）：
+
+| 写法 | 正常路径 | 抛错路径 |
+|---|---|---|
+| **`except` + 裸 `raise`**（项目写法） | `COMMIT` → `CLOSE` | `ROLLBACK` → `CLOSE` |
+| **`finally: rollback`** | `COMMIT` → **`ROLLBACK`** → `CLOSE` | `ROLLBACK` → `CLOSE` |
+| **不写 `try`** | `COMMIT` → `CLOSE` | **只有 `CLOSE`**（没 `ROLLBACK`） |
+
+⭐⭐ 第 2 行最致命：**正常路径下 `COMMIT` 之后又 `ROLLBACK`** —— 数据刚提交就被回滚掉了。
+
+⭐ 原因：**`finally` 两条路都会跑**，而 `rollback` 只该在出错那条路上跑。想区分两条路，只能靠 `except`。
+
+⚠️ 第 3 行也别以为安全：抛错时没有 `ROLLBACK`，只是靠 `async with` 关闭时自动回滚兜住 —— **能跑但依赖隐式行为**。
+
+#### 什么时候**不该**用裸 `raise`
+
+| 你想做的 | 该写什么 |
+|---|---|
+| 什么额外事都不做，就让异常走 | **删掉 `try/except`** |
+| 换个更清楚的类型 / 消息 | `raise NewError(...) from exc` |
+| 只拦特定异常，其余自然放行 | 只写 `except SpecificError: 处理()` —— **其余不写，自动放行** |
+| 想吞掉异常不让上层知道 | **别用 `raise`**（这一步要极其谨慎） |
+
+#### 附：`except Exception` 拦不住 `BaseException`
+
+⭐ `CancelledError` / `GeneratorExit` / `KeyboardInterrupt` / `SystemExit` 直接继承 `BaseException`，会**自动穿过**你的 `except Exception`。
+
+这就是为什么 `except Exception` 在 `get_db` 里是安全的：客户端断开（`CancelledError`）不会被当成业务错误处理。**Step 9 的 `event_source` 能正确感知断连，靠的就是这条。**
+
+#### 一句话判据
+
+> **写 `raise` 前问自己：「我改变了这个异常的类型或消息吗？」**
+> **没改 → 裸 `raise`（或不写 `except`）。改了 → `raise New(...) from exc`。**
+> **`raise e` 永远不用** —— 它只会让日志多一行指向自己。
+
+#### 全项目 `raise` 审计（8 处）
+
+| 位置 | 写法 | 性质 |
+|---|---|---|
+| `app.py:210` | `raise HTTPException` | 抛新（有请求上下文） |
+| `app.py:234` | `raise AppError` | 抛新（业务规则） |
+| `app.py:319` | `raise HTTPException` | 抛新（404） |
+| `app.py:339` | `raise HTTPException` | 抛新（404） |
+| `llm_client.py:135` | `... from exc` | 抛新 + 链 |
+| `llm_client.py:172` | `... from exc` | 抛新 + 链 |
+| `llm_client.py:181` | `raise AppError` **无 `from`** | 抛新。✅ **正确**：在 `if not response.is_success` 分支里**手上没有异常对象**，`from exc` 只在 `except` 块里有意义 |
+| `deps.py:72` | **裸 `raise`** | **放行** —— 唯一一处，且是唯一该有的地方 |
+
+⭐ **8 处里 7 处「抛新」，1 处「放行」** —— 比例是对的。**放行永远比抛新少见**，因为放行意味着「我不打算表达任何观点」。
+
 ## 10.5 CRUD（本项目实际写法 + 实测）
 
 ### 契约先分家：`ConversationIn` / `ConversationOut`
