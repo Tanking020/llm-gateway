@@ -99,11 +99,11 @@ class ModelListResponse(BaseModel):
 
 # 对话标题这个「类型」只用一处定义，两个契约共用（改规则只改这一行）
 # strip_whitespace=True：先去掉首尾空白，再做长度校验
-#   ⚠️ 顺序很重要：📎 实测 StringConstraints 是 strip -> 校验，
+#   【注意】：顺序很重要：实测 StringConstraints 是 strip -> 校验，
 #      所以 "   "（3 空格）变成 "" -> 被 min_length=1 拒掉
 #      （不 strip 的话 min_length 只数字符个数，"   " 长度是 3，能通过 ->
 #        库里存进 3 个空格 -> 前端显示空白标题）
-#   ⚠️ 不能用 field_validator 实现：📎 实测 Field(min_length/max_length) 在
+#   不能用 field_validator 实现：实测 Field(min_length/max_length) 在
 #      field_validator 【之前】执行，所以 " 100 个字符 " 会先被判 string_too_long，
 #      而且报错类型会变成 value_error（客户端要额外处理）
 ConversationTitle = Annotated[
