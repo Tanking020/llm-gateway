@@ -16,7 +16,7 @@
     失败 -> 抛 AppError（code 一定是 UPSTREAM_* 之一，由 errors.py 映射成 502）
     绝不会把 httpx 的异常泄漏给路由层
 
-⚠️ 唯一的例外是流【已经开始之后】才出的错：那时我们的响应头早已发出，
+【注意】：唯一的例外是流【已经开始之后】才出的错：那时我们的响应头早已发出，
    AppError 会由路由层接住、编码成 event: error 帧（待办）。
 
 为什么 create_llm_client 返回这个类而不是 httpx.AsyncClient：
@@ -64,9 +64,9 @@ class LlmChatStream:
         """逐帧给出【已解析成 dict】的上游 chunk，自动跳过非数据行与 [DONE]"""
         seen_done = False
         # aiter_lines(): 按换行切行且去掉行尾 \n，一行到就交一行
-        #   ⚠️ 它把 SSE 的空行也作为 '' 返回，所以下面要过滤
+        #   【注意】：它把 SSE 的空行也作为 '' 返回，所以下面要过滤
         async for line in self._response.aiter_lines():
-            # ⚠️ SSE 规范允许 `data:{...}`（冒号后没有空格），空格是可选的
+            # 【注意】：SSE 规范允许 `data:{...}`（冒号后没有空格），空格是可选的
             if not line.startswith("data:"):
                 continue
             # 剥掉 "data:" 前缀；再 lstrip() 让 raw 只留真正的数据部分
@@ -123,7 +123,7 @@ class LlmClient:
 
         # L3：状态码 2xx，但 body 不一定是我们以为的结构
         #   ValueError -> body 不是 JSON（网关 HTML 错误页 / 空 body）
-        #                ⚠️ pydantic 的 ValidationError 也继承自 ValueError（实测 MRO），
+        #                【注意】：pydantic 的 ValidationError 也继承自 ValueError（实测 MRO），
         #                   所以"元素缺 id / id 不是字符串 / 元素不是对象"也落在这
         #   KeyError   -> 字段改名了（data 变 models），或 200 里塞了 {"error": ...}
         #   TypeError  -> 类型变了（{"data": null}，null 不可迭代）

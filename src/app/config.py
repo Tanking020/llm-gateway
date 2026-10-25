@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # （现在接 DeepSeek，将来换别家或本地推理，只改 .env，代码不动）
 
     # 上游 LLM 的 API Key
-    # ⚠️ 真实密钥只放 .env（不进 Git），这个字段只是用来读取它
+    # 【注意】：真实密钥只放 .env（不进 Git），这个字段只是用来读取它
     llm_api_key: str | None = None
 
     # 上游基础地址
