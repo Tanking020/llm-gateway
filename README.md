@@ -3,7 +3,7 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中（依赖 / 模型 / 引擎 / 请求级会话 / **CRUD 四接口全部完成**）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中（依赖 / 模型 / 引擎 / 请求级会话已落地；对话接口完成 **CRUD 四操作五接口**）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
 已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
 **一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
@@ -34,7 +34,7 @@
 | 数据契约与配置 | pydantic / pydantic-settings | 2.13.5 / 2.15.0 |
 | 静态检查 | mypy（strict）/ ruff | 2.4.0 / 0.16.10 |
 | Web 框架 | FastAPI + uvicorn（ASGI） | 0.143.0 / 0.54.0 |
-| 数据库 | SQLAlchemy 2.1 async（2.0 风格 ORM）+ aiosqlite；SQLite → PostgreSQL | 2.1.6 / 0.22.1；Step 10 进行中（依赖 / 模型 / 引擎已落地，CRUD 未做） |
+| 数据库 | SQLAlchemy 2.1 async（2.0 风格 ORM）+ aiosqlite；SQLite → PostgreSQL | 2.1.6 / 0.22.1；Step 10 进行中（依赖 / 模型 / 引擎 / 请求级会话已落地；对话 CRUD 四操作五接口全部完成） |
 | 测试 | pytest + pytest-asyncio | 阶段 1 引入 |
 | 交付 | Docker（多阶段构建 + 非 root 运行） | 阶段 1 引入 |
 
@@ -93,6 +93,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 | GET | `/v1/conversations` | 列出全部对话，按 `id` 升序；空表返回 `[]` | 200 |
 | GET | `/v1/conversations/{conv_id}` | 单个对话；不存在 → 404；`conv_id` 非整数 → 422 | 200 / 404 / 422 |
 | DELETE | `/v1/conversations/{conv_id}` | 删除对话（204 无内容）；不存在 → 404 | 204 / 404 / 422 |
+| PATCH | `/v1/conversations/{conv_id}` | 修改标题（部分更新）；不存在 → 404；空 body / null / 空串 → 422 | 200 / 404 / 422 |
 
 **成功响应形状**（Step 4 起，`schemas.py` 定义，可在 `/docs` 展开）：
 
@@ -396,6 +397,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **`abc` → 422 和 `999` → 404 是两个不同的拒法**：📎 实测 `conv_id: int` 转不动时 **FastAPI 在调用路由函数之前**就回 422（**你的函数体一行都没跑**）；`999` 能转成 int 所以进了函数，被 `if conv is None` 拒成 404。`-1` 也是 404（负数是合法整数）。⭐ 判据：**「格式不对」422 vs「格式对但没这条」404**
 - **204 的价值是「语义上不允许有 body」，不是「省 4 字节」**：📎 实测改成 `status_code=200` + `-> None` 后客户端收到 `b'null'`，`mypy`/`ruff` 都不说话；更关键的是「什么都不做」的接口也能返回一模一样的 `200 + null` —— **客户端无法区分「真删了」和「什么也没发生」**。而 204 带 body 时 FastAPI 在**注册路由时**就 `AssertionError`。⭐ 判据：**「能跑」和「语义正确」是两件事，语义错误不会让任何测试失败**
 - **裸 `raise` 的判据**：「我改变了异常的类型或消息吗？」没改 → 裸 `raise`（或不写 `except`）；改了 → `raise New(...) from exc`。`raise e` 永远不用（📎 实测多一帧，指向自己那行）。「放行」最干净的方式是**压根不写 `except`**。⚠️ **`finally` 里 `rollback` 是错的** —— 📎 正常路径也变成 `COMMIT, ROLLBACK, CLOSE`，提交完又被回滚掉
+- ⭐⭐ **「必填字段」是免费的 bug 探测器**（📎 PATCH 实测）：`title: str` 必填时 `{}` → 422 `missing`、`{"title": null}` → 422 `string_type`；改成 `title: str \| None = None` 两者都放行，且前端拼错 `titel` 会变成 **200 但一个字没改**。多字段 PATCH 必须 `model_dump(exclude_unset=True)`（📎 `model_dump()` 在 `{}` 下输出 `{'title': None}`，直接 setattr 会静默清空）
 - **`db.get()` 查不到返回 `None`，不判空会变成 500**：📎 实测 `None` 流到 `response_model` → pydantic 报 `ResponseValidationError: Input should be a valid dictionary or object..., input=None` → 客户端 500。⚠️ **不是 `AttributeError`**。⭐ 判据：**把 404 伪装成 500 最容易误导排查** —— 看到 `X | None` 就该判空
 - **PowerShell 里 `curl.exe` 的输出不要接管道**：📎 两次实测同一个病 —— 乱码 `鐜版湁瀵硅瘽` 是 PowerShell 按 **GBK** 解码 UTF-8 字节（数据本身正确）；`curl | python` 更严重，**10494 字节被压成 8954**，JSON 结构被破坏。解法：`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` / `curl -o` 写文件 / 直接用 Python。⭐ 判据：**看到乱码先查源头对不对，别急着改代码**
 - **连接池省的是握手费**：📎 20 次请求复用同一个 `AsyncClient` → **1 条 TCP**、1.75ms/次；每次新建 → **20 条**、11.01ms/次，**慢 6.28 倍**（本机回环，公网差距更大）。项目里有两个池：httpx（上游，`__aexit__` 关）与 SQLAlchemy（数据库，`dispose` 关），维护方式相同：**启动建一次 → 全程复用 → 退出释放一次**
