@@ -29,6 +29,7 @@ from typing import Annotated, Any
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep
 from app.constants import HEADER_REQUEST_ID
@@ -292,13 +293,32 @@ async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversatio
         id 由数据库生成，不把 INSERT 打下去就不知道是几，没法返回给客户端。
         flush 只发 SQL、不提交 —— 提交由 get_db 在路由返回后统一做。
     """
+    # payload 是 pydantic 对象，不是字符串 —— 必须取 .title
+    #   写 Conversation(title=payload) 会 500：数据库绑不了 ConversationIn 这个类型
     conv = Conversation(title=payload.title)
-    # 登记："我要存这个" —— 一个 SQL 都没发
+    # add 只登记（一个 SQL 都没发）；flush 才真的发 INSERT，
+    # 并把数据库分配的自增 id 填回 conv 对象 —— 所以后面能 return 带 id 的对象
     db.add(conv)
-    # 发 INSERT —— 数据库分配 id，这条 INSERT 还在事务里
     await db.flush()
+    # 提交不在这里：get_db 会在路由函数返回之后统一 commit
     return conv
-    # （路由返回后）get_db 里 await session.commit() ← 真正落盘
+
+
+@app.get("/v1/conversations", response_model=list[ConversationOut])
+async def list_conversations(db: DbDep) -> list[Conversation]:
+    """
+    列出全部对话，按 id 升序
+
+    order_by 不能省：SQL 不保证返回顺序（"恰好"按插入顺序只是实现细节）
+    """
+    # select(...) 只是"描述要查什么"，await db.execute(...) 才真的发 SQL
+    result = await db.execute(select(Conversation).order_by(Conversation.id))
+    # .scalars()：每行只取第 1 列。这里第 1 列就是完整的 ORM 对象，所以正好取出 Conversation；
+    #   换成 select(Conversation.id, Conversation.title) 就只剩 id（title 被静默丢掉，不报错）
+    # .all()：把结果全部取出成一个列表
+    # list(...)：结果声明的类型是 Sequence，套一层 list() 才满足返回注解 list[Conversation]
+    #   （运行时本来就是 list，套 list 是为了让 mypy 通过）
+    return list(result.scalars().all())
 
 
 # 【时序验证】流式必须起真服务；但 curl -w 的 ttfb 量的是"响应头"不是"首帧"

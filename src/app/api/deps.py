@@ -53,7 +53,7 @@ LlmClientDep = Annotated[LlmClient, Depends(get_llm_client)]
 
 async def get_db() -> AsyncIterator[AsyncSession]:
     """
-    一次请求一个对话：正常结束自动提交，由异常自动回滚
+    一次请求一个数据库会话：正常结束自动提交，出异常自动回滚
 
     为什么用 yield 而不是 return：
         会话和事务的生命周期必须【跨整个路由函数】—— 路由要先用会话查数据、
@@ -65,10 +65,10 @@ async def get_db() -> AsyncIterator[AsyncSession]:
     """
     async with SessionMaker() as session:
         try:
-            yield session  # 路由在跑；异常会在这里被"抛回来"
-            await session.commit()  # 提交
+            yield session  # 路由在这里跑；路由抛异常时，异常会被"抛回"这一行
+            await session.commit()  # 只有正常路径才走到（事务边界收在这一处）
         except Exception:
-            await session.rollback()  # 回滚
+            await session.rollback()  # 出错先回滚，再把异常重新抛出
             raise
 
 

@@ -4989,7 +4989,7 @@ error: Statement is unreachable  [unreachable]
 | ④ §10.3b 连接池补讲 | 连接池原理 / `__aexit__` 关闭时机 / `yield` 位置 | ✅ 2026-10-24 |
 | ⑤ §10.4 前半 · lifespan 集成 | 启动段建表、关闭段 `dispose()` | ✅ 2026-10-24 |
 | ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ✅ 2026-10-25 |
-| ⑦ §10.5 CRUD | POST ✅（10.5a）；GET 列表 / GET 详情 / DELETE 待做 | 🟡 进行中 |
+| ⑦ §10.5 CRUD | POST ✅ / GET 列表 ✅；GET 详情 / DELETE 待做 | 🟡 进行中 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
@@ -5567,6 +5567,96 @@ POST 响应：  "2026-10-25T08:43:49.609945Z"        ← 带 Z（内存对象，
 **后果**：同一个字段，POST 返回带 UTC 标记，GET（重新查库）返回不带 → 前端解析不一致。
 
 **现在不改**。触发修的条件：前端开始用 `created_at` 做时间计算时。修法两种（读回时 `.replace(tzinfo=UTC)` / 自定义 `TypeDecorator`），到那时再定。
+
+### GET 列表：`execute` → `scalars` → `all`
+
+```python
+@app.get("/v1/conversations", response_model=list[ConversationOut])
+async def list_conversations(db: DbDep) -> list[Conversation]:
+    result = await db.execute(select(Conversation).order_by(Conversation.id))
+    return list(result.scalars().all())
+```
+
+📎 实测：
+
+```text
+  空表       -> []                                                    [200]
+  两条       -> [{"id":1,...},{"id":2,...}]                            [200]
+```
+
+#### ⭐ `.scalars()` 不是「转换」，是「每行只取第 1 列」
+
+📎 实测四种组合，最后一行的结果最关键：
+
+```text
+select(Conversation)             → .all()          : [Row, Row]
+同上                              → .scalars().all() : [Conversation, Conversation]
+
+select(Conversation.id, .title)  → .all()          : [(1, 'A'), (2, 'B')]
+同上                              → .scalars().all() : [1, 2]        ← ★ title 被丢掉了
+```
+
+⭐ **判据**：`.scalars()` 只是取每行的第一列。我们 `select(Conversation)` 的第一列本来就是完整 ORM 对象，所以看起来像"转换"。
+⚠️ 换成 `select(id, title)` 再用 `.scalars()` → **title 静默丢失，不报错**。
+
+#### ⭐ `list(...)` 是给 mypy 看的，不是让代码能跑
+
+📎 实测：
+
+```text
+  type(result.scalars().all())  = <class 'list'>
+  isinstance(..., list)         = True
+  能 append 吗                   = 能
+```
+
+运行时它**就是** `list`。去掉 `list(...)` 后 mypy 报：
+
+```text
+error: Incompatible return value type (got "Sequence[Conversation]", expected "list[Conversation]")
+```
+
+⭐ **原因**：`.all()` 的**声明**返回类型是 `Sequence[...]`（只承诺可遍历 / 可索引 / 可 `len`，**不承诺可变**），运行时给的是 `list`。
+`list(...)` 的作用是**把类型承诺升级**到返回注解要求的 `list`。
+
+⚠️ 这和 10.5a 那个事故是**相反**的情形：
+
+| 事故 | 声明类型 | 运行时实际 | 谁拦住了 |
+|---|---|---|---|
+| 10.5a `Conversation(title=payload)` | `title: str` | 传进去的是 `ConversationIn` | ⚠️ **没人拦**（`**kwargs` 是 `Any`），运行时 500 |
+| 10.5b `scalars().all()` 不套 list | `Sequence` | 实际是 `list` | ✅ mypy 拦（类型不匹配），运行时没事 |
+
+⭐ 判据：**「运行时对不对」和「类型对不对」是两个独立问题。**
+这次是「类型保守、运行时更宽」（安全）；上次是「类型承诺了但没人检查」（危险）。
+
+#### ⭐ `order_by` 不能省、空表返回 `[]`
+
+```text
+SQL 标准：不写 ORDER BY 时，返回顺序【未定义】
+```
+
+⚠️ 实践中"恰好是插入顺序"只是 SQLite 当前的实现细节 —— 换库 / 加索引 / 行数变大走不同执行计划都可能变。**只要客户端会看到顺序，就必须显式 `order_by`。**
+
+⭐⭐ **空集合返回 `200 []`，不是 404**：
+
+| 场景 | 返回 | 理由 |
+|---|---|---|
+| 集合为空 | `200 []` | "查询成功，结果是空的" —— **正常答案** |
+| 单个资源不存在 | `404` | "你要的那个东西没有" —— **找不到** |
+
+反例：列表为空返回 404 → 前端把"404"当"还没建过对话"，但 404 同时又是"接口不存在" → **语义撞车**。
+
+#### ⭐ 新暴露的一个不一致：`created_at` 的两种格式
+
+📎 实测（同一批数据，POST 后再 GET）：
+
+```text
+POST 响应: "2026-10-25T10:04:33.132282Z"     ← 带 Z
+GET  响应: "2026-10-25T10:04:33.132282"      ← 没有 Z（同一行数据！）
+```
+
+**原因**：POST 返回的是**内存里刚建的对象**（`tzinfo` 还在）；GET 返回的是**从库里重新读出来的**（SQLite 不存时区 → `tzinfo` 丢了）。
+
+⚠️ **这是已知债务，现在不修**。触发条件：前端开始用 `created_at` 做时间计算时。修法（读回时补 `tzinfo` / 自定义 `TypeDecorator`）到那时再定。
 
 ### 方法速查
 
