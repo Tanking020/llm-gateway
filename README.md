@@ -3,7 +3,7 @@
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中（依赖 / 模型 / 引擎 / 请求级会话已落地，CRUD 未做）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
 已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
 **一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
@@ -267,7 +267,7 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 │   ├── main.py               # 命令行入口：离线演示 + `ping` 上游连通性检查（与 HTTP 共用同一个适配器）
 │   └── api/
 │       ├── __init__.py
-│       ├── deps.py           # 依赖注入：get_settings / get_llm_client（从 app.state 取共享适配器）
+│       ├── deps.py           # 依赖注入：get_settings / get_llm_client / get_db（一次请求一个会话）
 │       └── app.py            # FastAPI 应用对象 + lifespan + 路由（uvicorn app.api.app:app）
 │
 ├── playground/               # 实验区：一次性验证代码，随时可删，不参与交付
@@ -384,6 +384,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **SQLAlchemy 2.1 的 greenlet 安装行为不能泛化到 2.0**：📎 两个独立环境实测 —— `sqlalchemy==2.0.55` **裸装会自动装上** `greenlet`，异步模块导入成功；`sqlalchemy==2.1.6` **裸装**则 `ModuleNotFoundError: No module named 'greenlet'`，必须声明 `[asyncio]` extra。⭐ 判据：**同一个库的大版本之间，「装了就能用」可能悄悄变** —— 报错信息里让装什么就装什么（`use the 'sqlalchemy[asyncio]' install target`），不要凭旧文档推断
 - **`create_async_engine` 不等于「连上了」**：📎 导入 `app.database` 之后 `Test-Path app.db` 仍是 `False` —— 引擎只是建了个空连接池，真正 open 连接发生在第一次执行 SQL。⭐ 推论：**「对象建好了」和「东西发生了」是两件事**，判断后者的唯一办法是看副作用（文件出现 / 真发了 SQL）
 - **`async with` 的关闭指令不在 `with` 那一行**：它在对象的 `__aexit__` 里（本项目是 `LlmClient.__aexit__` → `await self._http.aclose()`）。`async with X as y` 等价于 `y = await X.__aenter__()` + `try/finally: await X.__aexit__(...)`，所以**正常结束和抛异常都必然关闭**（📎 实测异常路径 `exc_type=RuntimeError` 时仍执行）。⚠️ 推论：`yield` 必须在 `async with` **里面** —— 放外面不报错，但清理会发生在**启动阶段**（📎 实测服务运行期 `client.closed = True`，每个请求拿到的都是已关闭客户端）
+- **yield 依赖里的 `raise` 少了，代价不是「客户端收到 200」**：📎 实测 FastAPI 0.143.0 有专门守卫 —— 客户端仍拿到 **500 + 统一错误形状 + `request_id`**（与正常路径一模一样），但日志被 `FastAPIError: Response not awaited. ...` 顶替，且 **`__cause__ = None`** → 原始异常的类型/消息/行号**全丢**。⭐ 判据：**「客户端看到什么」和「日志里能查到什么」是两个独立验收项**，前者一致不代表后者没问题
 - **连接池省的是握手费**：📎 20 次请求复用同一个 `AsyncClient` → **1 条 TCP**、1.75ms/次；每次新建 → **20 条**、11.01ms/次，**慢 6.28 倍**（本机回环，公网差距更大）。项目里有两个池：httpx（上游，`__aexit__` 关）与 SQLAlchemy（数据库，`dispose` 关），维护方式相同：**启动建一次 → 全程复用 → 退出释放一次**
 
 | 文档 | 内容 |
