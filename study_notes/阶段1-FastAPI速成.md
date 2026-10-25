@@ -4990,6 +4990,7 @@ error: Statement is unreachable  [unreachable]
 | ⑤ §10.4 前半 · lifespan 集成 | 启动段建表、关闭段 `dispose()` | ✅ 2026-10-24 |
 | ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ✅ 2026-10-25 |
 | ⑦ §10.5 conversations 接口 | POST ✅ / GET 列表 ✅ / GET 详情 ✅ / DELETE ✅ / PATCH ✅ | ✅ 2026-10-25 |
+| ⑧ §10.5f 公共规则抽取 | `ConversationTitle`（`StringConstraints(strip_whitespace=True)`），POST/PATCH 共用；堵住纯空格标题（修前 200 → 修后 422） | ✅ 2026-10-25 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
