@@ -4989,7 +4989,7 @@ error: Statement is unreachable  [unreachable]
 | ④ §10.3b 连接池补讲 | 连接池原理 / `__aexit__` 关闭时机 / `yield` 位置 | ✅ 2026-10-24 |
 | ⑤ §10.4 前半 · lifespan 集成 | 启动段建表、关闭段 `dispose()` | ✅ 2026-10-24 |
 | ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ✅ 2026-10-25 |
-| ⑦ §10.5 CRUD | POST ✅ / GET 列表 ✅；GET 详情 / DELETE 待做 | 🟡 进行中 |
+| ⑦ §10.5 CRUD | POST ✅ / GET 列表 ✅ / GET 详情 ✅；DELETE 待做 | 🟡 进行中 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
@@ -5657,6 +5657,82 @@ GET  响应: "2026-10-25T10:04:33.132282"      ← 没有 Z（同一行数据！
 **原因**：POST 返回的是**内存里刚建的对象**（`tzinfo` 还在）；GET 返回的是**从库里重新读出来的**（SQLite 不存时区 → `tzinfo` 丢了）。
 
 ⚠️ **这是已知债务，现在不修**。触发条件：前端开始用 `created_at` 做时间计算时。修法（读回时补 `tzinfo` / 自定义 `TypeDecorator`）到那时再定。
+
+### GET 详情：`db.get()` + 判空 → 404
+
+```python
+@app.get("/v1/conversations/{conv_id}", response_model=ConversationOut)
+async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
+    conv = await db.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话不存在：{conv_id}",
+        )
+    return conv
+```
+
+📎 实测五种 URL：
+
+```text
+① /v1/conversations/1    -> 200 {"id":1,"title":"现有对话",...}
+② /v1/conversations/999  -> 404 {"detail":"对话不存在：999"}
+③ /v1/conversations/abc  -> 422 int_parsing  loc=["path","conv_id"]
+④ /v1/conversations      -> 200 [{...}]           （1 段 vs 2 段，不冲突）
+⑤ /v1/conversations/-1   -> 404 {"detail":"对话不存在：-1"}
+```
+
+#### ⭐⭐ `/abc` 是 422，`/999` 是 404 —— 谁拒的完全不同
+
+| URL | 状态码 | **谁拒的** | 为什么 |
+|---|---|---|---|
+| `/abc`、`/1.5` | **422** | **FastAPI 的路径参数校验** | `conv_id: int` 转不动 → **你的函数体一行都没跑** |
+| `/999`、`/-1` | **404** | **你的 `if conv is None`** | 是合法整数，只是表里没这行 |
+
+⭐ 判据：**「格式不对」是 422（客户端的锅）；「格式对但没这条」是 404（数据的状态）。**
+⚠️ `-1` 返回 404 不是 422 —— 负数是**合法整数**。
+
+#### ⭐ 不判空的真实后果（📎 实测，只有一种死法）
+
+```text
+  抛 fastapi.exceptions.ResponseValidationError
+  {'type': 'model_attributes_type', 'loc': ('response',),
+   'msg': 'Input should be a valid dictionary or object to extract fields from',
+   'input': None}
+  客户端看到：500 Internal Server Error
+```
+
+链路：
+
+```
+db.get() 找不到 → 返回 None（不抛异常）
+    → return None
+    → response_model 拿 None 去过 ConversationOut
+    → pydantic: "这不是 dict 也不是对象"
+    → ResponseValidationError → 500
+```
+
+⚠️ **不是 `AttributeError`** —— `response_model` 在**读属性之前**先检查"输入是不是对象"。
+
+⭐ 判据：**把 404 的错误伪装成 500，是最容易误导排查的一种** —— 客户端以为服务器坏了。
+
+#### ⚠️ 「固定词」和「路径参数」同层时会冲突
+
+📎 实测：
+
+```text
+场景 A（固定词在前，正确）：  /items/latest -> {"which": "latest"}
+场景 B（固定词在后，错误）：  /items/latest -> 422 int_parsing loc=["path","item_id"]
+                             ⚠️ 永远走不到 /items/latest —— "latest" 被当成 item_id
+```
+
+⭐ 路由**按注册顺序**匹配，先注册的先命中。
+
+但本项目这两个**不冲突**（📎 实测）：`/v1/conversations` 是 1 段、`/v1/conversations/{conv_id}` 是 2 段，URL 结构上撞不到。
+
+⚠️ **加 `/v1/conversations/latest` 时就会撞**（都是 2 段）—— 那时必须写在 `{conv_id}` 之前。项目里已有先例：`/v1/models/latest` 就写在 `/v1/models/{model_name}` 前面。
+
+⭐ 判据：**同层出现「固定词」和「路径参数」时，固定词必须在前；段数不同则无所谓。**
 
 ### 方法速查
 
