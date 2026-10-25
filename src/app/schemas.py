@@ -9,15 +9,17 @@
 
 from datetime import datetime
 
+# Annotated：给一个类型【附加约束】而不新建类型，写法 Annotated[原类型, 约束1, 约束2]
 # Literal：标准库 typing 里的类型，表示"只能是这几个值之一"
-from typing import Literal
+from typing import Annotated, Literal
 
 # BaseModel：pydantic 的【普通】数据模型
 #   对比用过的 BaseSettings —— 后者是它的子类，
 #   额外具备"从环境变量 / .env 读取"的能力；BaseModel 没有，
 #   它只负责【校验和转换数据】
 # Field：给【单个字段】加约束（范围、长度、默认值…）
-from pydantic import BaseModel, ConfigDict, Field
+# StringConstraints：给【字符串类型本身】加约束（去空白、长度…）
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 class Message(BaseModel):
@@ -95,6 +97,21 @@ class ModelListResponse(BaseModel):
     items: list[ModelItem] = Field(description="本页的模型列表")
 
 
+# 对话标题这个「类型」只用一处定义，两个契约共用（改规则只改这一行）
+# strip_whitespace=True：先去掉首尾空白，再做长度校验
+#   ⚠️ 顺序很重要：📎 实测 StringConstraints 是 strip -> 校验，
+#      所以 "   "（3 空格）变成 "" -> 被 min_length=1 拒掉
+#      （不 strip 的话 min_length 只数字符个数，"   " 长度是 3，能通过 ->
+#        库里存进 3 个空格 -> 前端显示空白标题）
+#   ⚠️ 不能用 field_validator 实现：📎 实测 Field(min_length/max_length) 在
+#      field_validator 【之前】执行，所以 " 100 个字符 " 会先被判 string_too_long，
+#      而且报错类型会变成 value_error（客户端要额外处理）
+ConversationTitle = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+]
+
+
 class ConversationIn(BaseModel):
     """
     新建对话的请求体：只让客户端填标题
@@ -104,7 +121,7 @@ class ConversationIn(BaseModel):
         所以长度校验只能靠这里挡
     """
 
-    title: str = Field(min_length=1, max_length=100, description="对话标题")
+    title: Annotated[ConversationTitle, Field(description="对话标题")]
 
 
 class ConversationPatch(BaseModel):
@@ -121,7 +138,7 @@ class ConversationPatch(BaseModel):
         然后写库时违反 NOT NULL —— 错误被拖到运行时，客户端收到 500 而不是 422
     """
 
-    title: str = Field(min_length=1, max_length=100, description="新的对话标题")
+    title: Annotated[ConversationTitle, Field(description="新的对话标题")]
 
 
 class ConversationOut(BaseModel):
