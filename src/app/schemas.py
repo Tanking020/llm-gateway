@@ -7,6 +7,8 @@
   ③ 校验规则集中在这里，而不是散落在各处的 if 判断里
 """
 
+from datetime import datetime
+
 # Literal：标准库 typing 里的类型，表示"只能是这几个值之一"
 from typing import Literal
 
@@ -15,7 +17,7 @@ from typing import Literal
 #   额外具备"从环境变量 / .env 读取"的能力；BaseModel 没有，
 #   它只负责【校验和转换数据】
 # Field：给【单个字段】加约束（范围、长度、默认值…）
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Message(BaseModel):
@@ -91,3 +93,30 @@ class ModelListResponse(BaseModel):
     #   文档层：/docs 能展开每个字段（给使用 API 的人看）
     #   安全层：响应模型是【白名单】：没声明的字段不可能出现在响应里
     items: list[ModelItem] = Field(description="本页的模型列表")
+
+
+class ConversationIn(BaseModel):
+    """
+    新建对话的请求体：只让客户端填标题
+
+    【注意】：这里不含 id 和 created_at —— 它们应该由数据库生成
+    max_length=100 必须写：数据库的 String(100) 在 SQLite 上【不强制】
+        所以长度校验只能靠这里挡
+    """
+
+    title: str = Field(min_length=1, max_length=100, description="对话标题")
+
+
+class ConversationOut(BaseModel):
+    """
+    对话的响应形状（白名单：没声明的字段不会出现在响应里）
+
+    from_attributes=True 让 pydantic 能【读对象属性】而不是只认 dict:
+    路由直接返回 ORM 对象时，靠它才能转换
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(description="数据库生成的唯一编号")
+    title: str = Field(description="对话标题")
+    created_at: datetime = Field(description="创建时间（UTC，读回时 tzinfo 会丢）")

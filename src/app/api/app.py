@@ -30,13 +30,19 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app.api.deps import LlmClientDep, SettingsDep
+from app.api.deps import DbDep, LlmClientDep, SettingsDep
 from app.constants import HEADER_REQUEST_ID
 from app.database import engine
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
-from app.models import Base
-from app.schemas import ChatRequest, ChatResponse, ModelListResponse
+from app.models import Base, Conversation
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ConversationIn,
+    ConversationOut,
+    ModelListResponse,
+)
 
 
 @asynccontextmanager
@@ -275,6 +281,24 @@ async def upstream_models(client: LlmClientDep) -> ModelListResponse:
     # total 由【我们】算：过滤后的条数，不是上游返回的条数
     #   现在还没加过滤，所以暂时等于 len(上游列表)；加了 prefix 过滤后两者就不相等了
     return ModelListResponse(total=len(models), items=models)
+
+
+@app.post("/v1/conversations", response_model=ConversationOut, status_code=201)
+async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversation:
+    """
+    新建一个对话，返回带 id 的完整对象
+
+    为什么必须 flush 而不是只 add：
+        id 由数据库生成，不把 INSERT 打下去就不知道是几，没法返回给客户端。
+        flush 只发 SQL、不提交 —— 提交由 get_db 在路由返回后统一做。
+    """
+    conv = Conversation(title=payload.title)
+    # 登记："我要存这个" —— 一个 SQL 都没发
+    db.add(conv)
+    # 发 INSERT —— 数据库分配 id，这条 INSERT 还在事务里
+    await db.flush()
+    return conv
+    # （路由返回后）get_db 里 await session.commit() ← 真正落盘
 
 
 # 【时序验证】流式必须起真服务；但 curl -w 的 ttfb 量的是"响应头"不是"首帧"

@@ -4989,7 +4989,7 @@ error: Statement is unreachable  [unreachable]
 | ④ §10.3b 连接池补讲 | 连接池原理 / `__aexit__` 关闭时机 / `yield` 位置 | ✅ 2026-10-24 |
 | ⑤ §10.4 前半 · lifespan 集成 | 启动段建表、关闭段 `dispose()` | ✅ 2026-10-24 |
 | ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ✅ 2026-10-25 |
-| ⑦ §10.5 CRUD 四接口 | 创建 / 列表 / 详情 / 删除 + `/docs` 契约 | ⬜ 待做 |
+| ⑦ §10.5 CRUD | POST ✅（10.5a）；GET 列表 / GET 详情 / DELETE 待做 | 🟡 进行中 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
@@ -5485,37 +5485,96 @@ async with SessionMaker() as session:
 | 依赖统一 `commit`（本项目） | 事务边界只有一处，改规则只改一处 |
 | 路由里各自 `commit` | N 个接口 N 处要记得写；且**提交早了，后面的修改就不在同一事务里**（没法整体回滚） |
 
-## 10.5 CRUD（实测通过的写法）
+## 10.5 CRUD（本项目实际写法 + 实测）
+
+### 契约先分家：`ConversationIn` / `ConversationOut`
 
 ```python
-@app.post("/conversations", response_model=ConversationOut, status_code=201)
-async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversation:
-    conv = Conversation(title=payload.title)
-    db.add(conv)              # 放进会话（此时还没发 SQL）
-    await db.flush()          # ① 发 INSERT，拿到自增 id
-    await db.refresh(conv)    # ② 把数据库生成的默认值（如 created_at）读回来
-    return conv
+class ConversationIn(BaseModel):
+    title: str = Field(min_length=1, max_length=100, description="对话标题")
 
 
-@app.get("/conversations", response_model=list[ConversationOut])
-async def list_conversations(db: DbDep) -> list[Conversation]:
-    result = await db.execute(select(Conversation).order_by(Conversation.id))
-    return list(result.scalars().all())      # ③
-
-
-@app.get("/conversations/{conv_id}", response_model=ConversationOut)
-async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
-    conv = await db.get(Conversation, conv_id)      # ④ 按主键取
-    if conv is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
-    return conv
+class ConversationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    title: str
+    created_at: datetime
 ```
+
+⭐ **入参和出参永远不共用一个模型**：
+
+| 契约 | 谁填 | 能不能有 `id` / `created_at` |
+|---|---|---|
+| `ConversationIn` | 用户 | ❌ 数据库生成，用户填了也不该采纳 |
+| `ConversationOut` | 我们 | ✅ 必须（用户要知道新建的是几号） |
+
+- **`max_length=100` 必须写**：📎 10.2 实测 SQLite **不强制** `String(100)`，长度校验只能靠 pydantic。
+- **`from_attributes=True`**：📎 实测两种情况要分清 —— 经 FastAPI `response_model` 返回 ORM 对象时**不加也能工作**（FastAPI 先转 dict）；但**脱离 FastAPI** 用 `Model.model_validate(orm_obj)` 时**必须加**，否则 `ValidationError`。
+
+### POST：`add` → `flush` → `return`
+
+```python
+@app.post("/v1/conversations", response_model=ConversationOut, status_code=201)
+async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversation:
+    conv = Conversation(title=payload.title)   # ⚠️ payload.title，不是 payload
+    db.add(conv)                                # 登记，一个 SQL 都没发
+    await db.flush()                            # 发 INSERT，拿到自增 id
+    return conv                                 # 提交由 get_db 在返回后做
+```
+
+📎 实测：
+
+```text
+  POST {"title":"第一次对话"} → 201 {"id":1,"title":"第一次对话","created_at":"2026-10-25T08:43:49.609945Z"}
+  POST {"title":"第二次对话"} → 201 {"id":2,...}          ← id 由数据库分配，代码里没有 1/2
+  POST {"title":""}          → 422 string_too_short
+  POST {"title":"a"*101}     → 422 string_too_long
+  直接读库： (1, '第一次对话', '2026-10-25 08:43:49.609945')
+```
+
+> ⚠️ **`await db.refresh(conv)` 不是必需的**（本项目没用它）：`id` 由 `flush` 拿到，`created_at` 由 Python 端 `default=lambda` 在 `flush` 时生成 —— 两者都已在内存对象里。
+> **只在用「服务器端默认值」（`server_default`，如 `CURRENT_TIMESTAMP`）时才需要 `refresh`** 把库端算出来的值读回来。
+
+### ⚠️ 坑 1：`Conversation(title=payload)` 会 500，而三道门拦不住
+
+📎 真实异常（学习者踩到）：
+
+```text
+sqlalchemy.exc.ProgrammingError: (sqlite3.ProgrammingError)
+Error binding parameter 1: type 'ConversationIn' is not supported
+[SQL: INSERT INTO conversations (title, created_at) VALUES (?, ?)]
+[parameters: (ConversationIn(title='第一次对话'), '2026-10-25 08:41:13.767766')]
+```
+
+⭐ **为什么 mypy 没报**：`Conversation.__init__` 的签名是 `(self, **kwargs)` —— **参数就是 `Any`**。
+
+| mypy 管 | mypy **不管** |
+|---|---|
+| `conv.title` **读出来**是什么类型 | **构造时传进去**的是什么类型 |
+
+> **判据**：ORM 模型的字段类型标注是给**读取**用的（补全、`conv.title.upper()` 检查），**不保护写入时的取值**。
+> 这和 Step 9 的 `json.loads()` 返回 `Any` 是同一个规律：**`Any` 赋给任何类型都合法**。
+
+### ⚠️ 坑 2：`created_at` 在「API 响应」和「数据库」里格式不同
+
+📎 实测：
+
+```text
+POST 响应：  "2026-10-25T08:43:49.609945Z"        ← 带 Z（内存对象，tzinfo 还在）
+直接读库：    2026-10-25 08:43:49.609945          ← 无时区（SQLite 不存时区）
+```
+
+**后果**：同一个字段，POST 返回带 UTC 标记，GET（重新查库）返回不带 → 前端解析不一致。
+
+**现在不改**。触发修的条件：前端开始用 `created_at` 做时间计算时。修法两种（读回时 `.replace(tzinfo=UTC)` / 自定义 `TypeDecorator`），到那时再定。
+
+### 方法速查
 
 | 方法 | 用途 |
 |------|------|
 | `db.add(obj)` | 加入会话（**不立即执行**） |
 | `await db.flush()` | **执行 SQL**，拿到自增 ID，但**不提交** |
-| `await db.refresh(obj)` | 重新从数据库读该对象 |
+| `await db.refresh(obj)` | 重新从数据库读该对象（服务器端生成值时才需要） |
 | `await db.execute(stmt)` | 执行查询 |
 | `result.scalars().all()` | 取单个实体列的列表 |
 | `await db.get(Model, pk)` | 按主键查（表达直接；若对象已在 identity map 中还可不发 SQL，**不应笼统认为它总比 `select` 快**） |
@@ -5531,9 +5590,8 @@ async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
 > **`flush` 的意义**：让数据库生成的值（自增 ID、默认值）变得可用，同时**保留回滚能力**。
 > 这也是为什么 `get_db` 里统一 `commit`、而路由里只 `flush` —— **事务边界收在一个地方**。
 
-**⚠️ 不用 `ORM 对象` 直接返回行不行？** 实测可以（`response_model` 会做转换），
+**⚠️ 不用 `ORM 对象` 直接返回行不行？** 📎 实测可以（FastAPI 会先转 dict，再交给 `response_model`），
 但要保证会话还活着（`expire_on_commit=False` 或还没 commit）。
-**更稳的做法**是显式转成 pydantic 模型再返回。
 
 ## 10.6 ⚠️ N+1 查询问题
 
