@@ -102,6 +102,10 @@ app = FastAPI(
 # 【注意】：必须写完整 origin，末尾不带斜杠；
 #   "http://localhost:5173/" 与 "http://localhost:5173" 不算同一个
 # 【注意】：这里故意【不写 "*"】：配 allow_credentials=True 时写 "*" 等于对任何网站开放凭证访问
+# 【注意】：allow_methods 必须与【实际注册的路由】保持一致。2026-10-25 实测事故：
+#   加了 PATCH / DELETE 路由但忘了加到这个列表 -> 浏览器预检 OPTIONS 直接 400，
+#   前端完全无法调用这两个接口；而 curl 测不出来（CORS 只在浏览器生效）。
+#   判据：新增一个非 GET/POST 的路由时，必须回头检查这里。
 ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
@@ -111,7 +115,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,  # 只有这些来源的响应才带 CORS 头
     allow_credentials=True,  # 允许浏览器带 Cookie / Authorization
-    allow_methods=["GET", "POST"],  # 只放行实际用到的方法（不要写 "*"）
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],  # 只放行实际用到的方法（不要写 "*"）
     # 请求头全部放行（含 Content-Type / Authorization），若后续进生产环境要考虑收紧
     # 注意：允许所有请求头 ≠ 后端会处理所有请求头，只是不拦截而已
     allow_headers=["*"],
