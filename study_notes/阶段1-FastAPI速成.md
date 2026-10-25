@@ -4988,7 +4988,7 @@ error: Statement is unreachable  [unreachable]
 | ③ §10.3 引擎与会话工厂 | `config.database_url` + `src/app/database.py` + `.gitignore` 忽略 `*.db` | ✅ 2026-10-24 |
 | ④ §10.3b 连接池补讲 | 连接池原理 / `__aexit__` 关闭时机 / `yield` 位置 | ✅ 2026-10-24 |
 | ⑤ §10.4 前半 · lifespan 集成 | 启动段建表、关闭段 `dispose()` | ✅ 2026-10-24 |
-| ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ⬜ 待做 |
+| ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ✅ 2026-10-25 |
 | ⑦ §10.5 CRUD 四接口 | 创建 / 列表 / 详情 / 删除 + `/docs` 契约 | ⬜ 待做 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
@@ -5364,42 +5364,126 @@ async with create_llm_client() as client:
 1. **连接池 = 复用已建好的连接**，省掉每次 60~115ms 握手（📎 实测复用快 **6.28 倍**，20 次请求只开 1 条 TCP）。
 2. **`async with` 的关闭指令在对象的 `__aexit__` 里**，不在 `with` 那一行；它保证**正常结束和抛异常都执行**（📎 两种路径实测都调到了）。
 3. **`yield` 是「启动完成 / 开始关闭」的分界线**：在里面 → 暂停期间池不会被关；在外面 → 清理发生在启动阶段（📎 `client.closed = True`）。
-## 10.4 会话生命周期：`yield` 依赖 + lifespan
+## 10.4 会话生命周期：`yield` 依赖 + `lifespan`
+
+同一个 `yield` 机制，两个**不同时间粒度**的用法：
 
 ```python
+# ① 进程级：整个进程一次
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)   # ① 启动时建表
-    yield
-    await engine.dispose()                              # ② 关闭时释放连接池
+        await conn.run_sync(Base.metadata.create_all)   # 启动时建表
+    async with create_llm_client() as client:
+        app.state.llm_client = client
+        yield                                            # ← 分界线
+    await engine.dispose()                               # 关闭时释放连接池
 
 
+# ② 请求级：每个请求一次
 async def get_db() -> AsyncIterator[AsyncSession]:
     async with SessionMaker() as session:
         try:
-            yield session
-            await session.commit()                      # ③ 正常结束就提交
+            yield session                                # ← 分界线
+            await session.commit()                       # 正常结束就提交
         except Exception:
-            await session.rollback()                    # ④ 出错就回滚
+            await session.rollback()                     # 出错就回滚
             raise
 
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
-app = FastAPI(lifespan=lifespan)                        # ⑤
+app = FastAPI(lifespan=lifespan)
 ```
+
+| | `lifespan` | `get_db` |
+|---|---|---|
+| `yield` 分界 | 「启动完成 / 开始关闭」 | 「路由开始 / 路由结束」 |
+| 执行次数 | **整个进程 1 次** | **每个请求 1 次** |
+| 谁在驱动 | uvicorn 的 LifespanManager | FastAPI 的 `AsyncExitStack` |
+| 收尾代码 | `engine.dispose()` | `commit()` / `rollback()` |
+
+⭐ **判据：看到 `yield` 就问「谁在它外面驱动」** —— 决定它跑几次、什么时候收尾。
 
 | # | 说明 |
 |---|------|
 | ① | `conn.run_sync(...)` 用 **greenlet 在同一个线程内**适配同步风格的 SQLAlchemy API，并把其中的数据库 IO 接到异步驱动。⚠️ **它不是线程池**：回调里做阻塞 IO 或长 CPU 计算照样会卡住事件循环 |
 | ② | 进程退出时释放连接池，否则连接泄漏 |
-| ③ | ⭐ **"路由正常返回才提交"**：路由里抛异常 → 自动回滚，数据不留半截 |
-| ④ | 回滚后**必须 `raise`**，否则异常被吞，客户端收到 200（**非常隐蔽的 bug**） |
+| ③ | ⭐ **"路由正常返回才提交"**：`commit()` 写在 `yield` **之后**，所以只有路由正常结束才走到它 |
+| ④ | 回滚后**必须 `raise`** —— 详见下方「📎 实测订正」 |
 | ⑤ | lifespan 里初始化数据库/连接池，**不是模块顶层**（Step 6.4） |
+
+### 异常是怎么「送」进 `get_db` 的
+
+路由抛异常时**不是** `get_db` 主动发现，而是框架把它**塞回**到 `yield` 那一行：
+
+```python
+async with SessionMaker() as session:
+    try:
+        yield session            ← 路由在跑；异常会在这里被"抛回来"
+        await session.commit()   ← 只有正常路径走到这
+    except Exception:            ← 异常路径从这里进
+        await session.rollback()
+        raise
+```
+
+📎 实测（`/ok` 正常 + `/boom` 抛异常，然后直接读库）：
+
+```text
+  /ok   -> 200 {"msg":"ok"}
+  /boom -> 500
+  库里行数 = 1
+    id=1 title='提交我'          ← 正常路由的数据留下了，'回滚我' 没留下
+```
+
+⭐ **同一个函数、两条路径，结果是「只提交成功的那个」** —— 这是把事务边界收在一处的直接收益。
+
+### 📎 实测订正：少了 `raise` 到底会怎样（原写法是**错的**）
+
+本笔记原先写「不 `raise` → 客户端收到 200（非常隐蔽的 bug）」。**2026-10-25 实测推翻了这条**：
+
+```text
+❌ 少写 raise（FastAPI 0.143.0）：
+   客户端 status=500
+   body={"error":{"code":"INTERNAL_ERROR","message":"服务内部错误","request_id":"d2b074e21167"}}
+   日志：fastapi.exceptions.FastAPIError: Response not awaited.
+        There's a high chance that the application code is raising an exception
+        and a dependency with yield has a block with ... except Exception,
+        and is not raising the exception again.
+   异常链：FastAPIError.__cause__ = None      ← ★ 原始 RuntimeError 彻底没了
+```
+
+| 版本 | 客户端 | 日志里能看到 |
+|---|---|---|
+| ✅ 有 `raise` | 500 + 统一形状 + `request_id` | **真实根因**：`RuntimeError: 故意失败：这是业务根因` |
+| ❌ 少 `raise` | 500 + 统一形状 + `request_id`（**看起来一模一样**） | 只有 `FastAPIError: Response not awaited...`，**根因 / 类型 / 行号全丢** |
+
+⭐ **结论不变（`raise` 必须有），但理由要改写**：
+
+> 不是「客户端会收到 200」，而是「**日志里从此查不到真正出了什么事**」。
+> 更阴险的是：**客户端看到的响应完全一样**，只有去翻日志的人才会发现不对劲。
 
 > ⭐ **`try/except/raise` 这个模式值得记死**：
 > **清理动作可以吞异常，但业务异常必须重新抛出**。
-> 忘了 `raise` 的表现是"接口返回成功但数据没存上"——极难排查。
+
+### 📎 同一个会话 `commit()` 两次会怎样
+
+📎 实测：**不报错，第二次是无害的空提交**（SQLAlchemy 会自动开启一个新事务再提交）。
+
+```text
+  路由里 commit 一次后：status=200  body={"msg":"ok"}
+  库里行数 = 1                                  ← 数据只有一份，没有重复插入
+
+  === 同一个 session 连 commit 两次 ===
+    第 1 次 commit 成功
+    第 2 次 commit 成功（不报错，因为会自动开启新事务）
+```
+
+⚠️ 但**不要**因此在路由里也写 `commit()`：
+
+| 做法 | 问题 |
+|---|---|
+| 依赖统一 `commit`（本项目） | 事务边界只有一处，改规则只改一处 |
+| 路由里各自 `commit` | N 个接口 N 处要记得写；且**提交早了，后面的修改就不在同一事务里**（没法整体回滚） |
 
 ## 10.5 CRUD（实测通过的写法）
 

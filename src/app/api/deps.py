@@ -11,11 +11,14 @@
     放 api/ 里，services/ 就永远不会反向 import 到它
 """
 
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, settings
+from app.database import SessionMaker
 from app.llm_client import LlmClient
 
 
@@ -46,3 +49,27 @@ def get_llm_client(request: Request) -> LlmClient:
 # 路由代码里拿到的对象物理上只有 LlmClient 的方法
 # 没有 .get / .stream 这些 httpx 原生方法可调，从类型层面就杜绝了"绕过错误翻译直接调上游"的可能
 LlmClientDep = Annotated[LlmClient, Depends(get_llm_client)]
+
+
+async def get_db() -> AsyncIterator[AsyncSession]:
+    """
+    一次请求一个对话：正常结束自动提交，由异常自动回滚
+
+    为什么用 yield 而不是 return：
+        会话和事务的生命周期必须【跨整个路由函数】—— 路由要先用会话查数据、
+        再改数据、最后才返回。所以框架只能在【路由跑完之后】收尾，
+        这正是 yield 依赖提供的能力
+
+    ⚠️ except 里必须 raise：不写不会让客户端出错（响应看起来完全一样），
+       但日志里原始异常会被 FastAPIError 顶替 —— 根因、类型、行号全丢
+    """
+    async with SessionMaker() as session:
+        try:
+            yield session  # 路由在跑；异常会在这里被"抛回来"
+            await session.commit()  # 提交
+        except Exception:
+            await session.rollback()  # 回滚
+            raise
+
+
+DbDep = Annotated[AsyncSession, Depends(get_db)]
