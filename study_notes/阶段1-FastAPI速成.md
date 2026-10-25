@@ -6081,6 +6081,178 @@ for key, value in data.items():
 
 ⭐ `PATCH` 幂等、`POST` 不幂等（发两次创建两条）—— 这是两者最实用的分界。
 
+#### ⭐ 一个 PATCH 请求长什么样，以及六种「被拒」的完整对照
+
+> 这一节回答一个具体的困惑：「body 为空」到底指什么？请求里不是只有标题吗？
+
+##### 先看清一个完整请求的三块
+
+```http
+PATCH /v1/conversations/1 HTTP/1.1
+Host: 127.0.0.1:8000
+Content-Type: application/json
+Content-Length: 24
+
+{"title": "改后标题"}
+```
+
+| 块 | 内容 | 装着什么 |
+|---|---|---|
+| ① 请求行 | `PATCH /v1/conversations/1 HTTP/1.1` | 方法 + 路径，**id `1` 在这里** |
+| ② 头部 | `Content-Type: application/json` … | 「我发的 body 是什么格式」 |
+| ③ body（空行之后） | `{"title": "改后标题"}` | **只有新标题** |
+
+⭐⭐ **「请求只有标题」是错的：标题在 body 里，id 在 URL 里** —— 两套独立的参数通道（Step 3 的「三段参数」）。
+
+##### 「body 为空」其实有**两种**，报的错不一样
+
+**形态 A：完全没有 body**（0 字节，连 `Content-Type` 都没发）
+
+```text
+PATCH /v1/conversations/1 HTTP/1.1
+Host: 127.0.0.1:8000
+（空行后无内容）
+```
+
+📎 实测：
+
+```text
+422 {"type":"missing","loc":["body"],"input":null}
+```
+
+⭐ `loc` 只有 **一层** `["body"]` = 「**整个 body 都没有**」
+
+**形态 B：body 是 `{}`**（4 个字节）
+
+```text
+PATCH /v1/conversations/1 HTTP/1.1
+Content-Type: application/json
+Content-Length: 2
+
+{}
+```
+
+📎 实测：
+
+```text
+422 {"type":"missing","loc":["body","title"],"input":{}}
+```
+
+⭐ `loc` 有 **两层** = 「**body 在，但里面没有 title**」
+
+##### ⭐⭐ 六种情形：请求长啥样 / 怎么处理 / 为什么
+
+| # | body 的原始字节 | `title` 出现了吗 | 状态 | `type` | `loc` | 人话 |
+|---|---|---|---|---|---|---|
+| A | （0 字节） | 连 body 都没有 | 422 | `missing` | `["body"]` | 你什么都没发 |
+| B | `{}` | ❌ | 422 | `missing` | `["body","title"]` | 你发了个空盒子 |
+| C | `{"title":""}` | ✅ | 422 | `string_too_short` | `["body","title"]` | 你要改成空白文本 |
+| D | `{"title":null}` | ✅ | 422 | `string_type` | `["body","title"]` | 你要改成空无一物 |
+| E | `{"title":"   "}` | ✅ | **200** ⚠️ | — | — | 原缺口，已修 |
+| F | `{"title":"a…101"}` | ✅ | 422 | `string_too_long` | `["body","title"]` | 超长 |
+
+⭐⭐ **A/B 和 C/D 是两个层次**：
+
+> **A、B 是「没说要改什么」（信息缺失）；C、D 是「说了，但要改成非法的东西」（内容非法）。**
+
+⭐ `""` 和 `null` 是两回事：`""` 是**长度 0 的文本**（是字符串）；`null` 是**什么都没有**（根本不是字符串）。
+
+##### 还有两种「body 根本不是 JSON」
+
+📎 实测：
+
+| body | `type` | 说明 |
+|---|---|---|
+| `hello` | `json_invalid` `loc:["body",0]` | 第 0 个字符就错，`ctx.error: "Expecting value"` |
+| `{` | `json_invalid` `loc:["body",1]` | 第 1 个字符错，`ctx.error`: 期望属性名 |
+| `[]` | `model_attributes_type` | 要对象（`{...}`），你给了数组 |
+| `{"title":"ok"}` 但**没发 `Content-Type`** | `model_attributes_type`，`input` 是**带转义的整段字符串** | ⭐ body 被当纯文本了 |
+
+⭐⭐ **`Content-Type: application/json` 不是装饰，是协议开关** —— 没有它就**不解析 JSON**，整个 body 变成一个 `str` 塞给 pydantic。这解释了为什么所有 curl 都必须带 `-H "Content-Type: application/json"`。
+
+##### 请求要过四道关口
+
+```text
+原始字节
+  ↓ ① 有没有 body？
+  ↓ ② 是不是合法 JSON？（靠 Content-Type 才知道要按 JSON 解析）
+  ↓ ③ JSON -> 对象，字段对不对？（类型 / 长度 / 缺不缺）
+  ↓ ④ 你的代码：查库、改值
+响应
+```
+
+📎 实测：**A~D 全部「函数被调用 = 否」** —— 前面一挡，你的代码一行都没跑。
+
+⭐ 收益：**凡能走到函数里的 `payload.title`，一定是非空、≤100 字符、已 strip 的字符串**。不用再写任何 `if not ...` 判断。
+
+##### ⭐⭐ 为什么「不需要查库就能判断的错」全部放第③关
+
+| 检查项 | 放哪一关 | 为什么 |
+|---|---|---|
+| body 存在 | ① | 没有它后面全无意义 |
+| 是合法 JSON | ② | 解析不了就什么都不是 |
+| `title` 存在 | ③ | 缺了就没法往下走 |
+| 是字符串 | ③ | 类型不对赋值会出错 |
+| 长度 1~100 | ③ | 数据库**不强制**，是最后能拦的地方 |
+| **id 存在于库里** | **④（你的代码）** | ⭐ **必须查库才知道** |
+
+⭐⭐ 判据：**「不查库就能判断的错」→ 入口 422；「必须查库才知道的错」→ 业务代码 404**（或 409 等）。
+
+##### 读 422 的三步法
+
+1. **看 `input`** → 「我到底发了什么」
+2. **看 `type`** → 「错在哪一类」
+3. **看 `loc`** → 「哪一层、哪个字段」（`loc[0]` 是 `body` / `path` / `query`）
+
+##### ⚠️ 原缺口：`{"title":"   "}` 曾经返回 200（已修）
+
+📎 修前实测：
+
+```text
+{"title": ""}     -> 422 string_too_short
+{"title": "   "}  -> 200  ⚠️ 库里存进 3 个空格，前端显示空白标题
+{"title": "\t\n"} -> 200  ⚠️
+{"title": "\u3000\u3000"}（全角空格）-> 200  ⚠️
+```
+
+⭐ 根因：**`min_length=1` 只数字符个数，不看内容** —— `"   "` 长度是 3。
+
+**修法（本项目实际采用的）**：
+
+```python
+ConversationTitle = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+]
+```
+
+📎 修后实测（`POST` 与 `PATCH` 共用同一个 `ConversationTitle`）：
+
+```text
+POST  "  首尾有空格  "  -> 201  存进去是 "首尾有空格"（strip 了）
+POST  "   "            -> 422  string_too_short
+POST  "\t\n"          -> 422  string_too_short
+POST  "\u3000\u3000"  -> 422  string_too_short
+PATCH "  改后  "        -> 200  存进去是 "改后"
+PATCH "   "            -> 422  string_too_short
+PATCH " " + 100个a + " " -> 200  ⭐ strip 后正好 100，合法
+PATCH 101个a           -> 422  string_too_long
+```
+
+##### ⭐ 为什么不用 `field_validator`（📎 实测对比）
+
+| 输入 | `Field(min_length=1)` + `field_validator` strip | `StringConstraints(strip_whitespace=True)` |
+|---|---|---|
+| `"   "` | 422 **`value_error`** | 422 **`string_too_short`** |
+| `" " + 100个a + " "`（102 字符） | **422 `string_too_long`** ⚠️ 误拒 | **200** ✅ strip 后 100 |
+| `"  新标题  "` | OK `"新标题"` | OK `"新标题"` |
+
+⭐⭐ 根因：**`Field(min_length/max_length)` 在 `field_validator` 之前执行** —— 所以先按原始长度（含空格）判超长，validator 根本没机会 strip。
+
+⭐⭐ 判据：**「先 strip 再判长度」必须用 `StringConstraints`**；`field_validator` 只能做长度之外的自定义校验（而且报错类型会变成 `value_error`，客户端要额外分支）。
+
+⭐ 附带收益：`Annotated[ConversationTitle, Field(description="…")]` 可以叠加，OpenAPI 里 `description` + `minLength` + `maxLength` 三样都在。
+
 ### 方法速查
 
 | 方法 | 用途 |
