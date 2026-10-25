@@ -56,8 +56,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         退出 async with 时会自动 await client.aclose()（LlmClient 的 __aexit__）
         写成 yield 之后的普通语句，异常时那行会被跳过 → 连接池泄漏
 
-    ⚠️ yield 只能出现一次，而且它【必须在 async with 里面】。
-        放在外面不会报错（📎 实测），但清理会发生在【启动阶段】：
+    【注意】：yield 只能出现一次，而且它【必须在 async with 里面】。
+        放在外面不会报错（实测），但清理会发生在【启动阶段】：
         with 先退出 → client 先被关掉 → 然后才交给服务使用，
         于是整个运行期间每个请求拿到的都是一个已关闭的客户端。
         判据：async with 的作用域 = 【它被使用的那段时间】。
@@ -81,7 +81,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 # 日志配置：默认 root 级别是 WARNING 且没有 handler, info 会被静默丢弃
 #   format 四段：时间 | 级别（左对齐 7 位）| 模块名 | 消息
-# ⚠️ basicConfig 只在 root 还没有 handler 时生效；Step 11 会换成 dictConfig(force=True) 做正式配置
+# 【注意】：basicConfig 只在 root 还没有 handler 时生效；
+#   Step 11 会换成 dictConfig(force=True) 做正式配置
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s | %(message)s")
 
 logger = logging.getLogger(__name__)
@@ -98,8 +99,9 @@ app = FastAPI(
 
 
 # 允许跨域的前端来源（浏览器里的"源" = 协议 + 域名 + 端口，三者全同才算同源）
-# ⚠️ 必须写完整 origin，末尾不带斜杠；"http://localhost:5173/" 与 "http://localhost:5173" 不算同一个
-# ⚠️ 这里故意【不写 "*"】：配 allow_credentials=True 时写 "*" 等于对任何网站开放凭证访问
+# 【注意】：必须写完整 origin，末尾不带斜杠；
+#   "http://localhost:5173/" 与 "http://localhost:5173" 不算同一个
+# 【注意】：这里故意【不写 "*"】：配 allow_credentials=True 时写 "*" 等于对任何网站开放凭证访问
 ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
@@ -198,7 +200,7 @@ async def list_models(
 
 @app.get("/v1/models/latest")
 async def latest_model() -> dict[str, str]:
-    """固定路径。⚠️ 必须写在下面 /v1/models/{model_name} 的【前面】"""
+    """固定路径。【注意】：必须写在下面 /v1/models/{model_name} 的【前面】"""
     return {"model_name": KNOWN_MODELS[0]}
 
 
@@ -221,13 +223,13 @@ def ensure_last_message_is_user(request: ChatRequest) -> None:
 
     规则分工：形状归 pydantic（schemas.py），语义归业务代码（本函数）
 
-    ⚠️ 为什么抽成函数，而不是在每条路由里各写一遍：
+    【注意】：为什么抽成函数，而不是在每条路由里各写一遍：
         /v1/chat 与 /v1/chat/stream 共用同一个 ChatRequest 契约，
         同一条业务规则就必须只有一份实现 —— 否则新加路由时一定会漏
         （本项目已经漏过一次：/v1/chat/stream 曾放过 assistant 收尾的请求，
           还真的把那段话发给上游、拿回一整段回答，且白花一次 token）
 
-    ⚠️ 这条规则【对当前这个问答接口正确】，但不是绝对正确：
+    【注意】：这条规则【对当前这个问答接口正确】，但不是绝对正确：
         有些场景允许以 assistant 收尾（例如"续写/补全上一句"），后续需要时可以放开
     """
     last = request.messages[-1]
@@ -244,7 +246,7 @@ def _as_dict(value: object) -> dict[str, Any]:
 
     为什么需要它：上游字段可能是 null / 字符串 / 数组（json.loads 可返回任意 JSON 类型），
         直接 .get() 会抛 AttributeError，而那时响应头早已发出 —— 一个坏帧会打断整条流。
-        （📎 实测 "usage": "oops" 会让整条流 STREAM_FAILED，尽管回答内容本来能正常送达）
+        （实测 "usage": "oops" 会让整条流 STREAM_FAILED，尽管回答内容本来能正常送达）
 
     为什么不在这里记 warning：usage 在多数帧里就是 null（正常现象），记了会刷屏。
         真正需要人看的"零内容"由 content_frames == 0 那条 error 兜住。
@@ -401,7 +403,7 @@ async def chat_stream(
     """真模型流式：逐帧解析上游，转发回答文字 + 结束原因 + token 用量（思维链按产品要求丢弃）"""
 
     # 与 /v1/chat 完全同一条业务规则，所以调同一个函数
-    # ⚠️ 必须放在 pre-flight 之前：否则会白花一次上游调用（真金白银）
+    # 【注意】：必须放在 pre-flight 之前：否则会白花一次上游调用（真金白银）
     ensure_last_message_is_user(request)
 
     # 上游请求体的字段名由 OpenAI 兼容协议规定
@@ -607,7 +609,7 @@ async def chat_stream(
             yield "data: [DONE]\n\n"
 
         finally:
-            # ⚠️ finally 只做清理，绝不 yield
+            # 【注意】：finally 只做清理，绝不 yield
             # 【必须手动关】： open_chat_stream 没有 async with 帮我们关
             # 三条路都会走到这里：正常读完 / 流内异常 / 客户端断开（CancelledError）
             # 读完再关 = 连接归还池可复用；没读完就关 = 连接直接被销毁

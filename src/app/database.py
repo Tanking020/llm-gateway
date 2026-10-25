@@ -6,7 +6,7 @@
     app.py 是 HTTP 层，不该关心连接池
     把"连接"这件事集中在这里，将来换 PostgreSQL 只改这一个文件。
 
-⚠️ 引擎是【模块级单例】，不是每请求新建：连接池要跨请求复用。
+【注意】：引擎是【模块级单例】，不是每请求新建：连接池要跨请求复用。
    它的释放（dispose）放在 app.py 的 lifespan 关闭段，与进程同生命周期。
 """
 
@@ -19,7 +19,7 @@ from app.config import settings
 engine = create_async_engine(settings.database_url)
 
 # 会话工厂：一个"造会话的模具"。SessionMaker() 每次调用产出一个新的 AsyncSession
-# ⚠️ expire_on_commit=False：commit 之后对象的属性仍然可读
+# 【注意】：expire_on_commit=False：commit 之后对象的属性仍然可读
 #   如果保持默认 True，commit 后访问 conv.title 会触发一次隐式查询，
 #   而异步下如果发生在同步序列化阶段（如 response_model 处理时）就无法 await → 报错
 SessionMaker = async_sessionmaker(engine, expire_on_commit=False)

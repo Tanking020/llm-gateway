@@ -60,7 +60,7 @@ async def get_db() -> AsyncIterator[AsyncSession]:
         再改数据、最后才返回。所以框架只能在【路由跑完之后】收尾，
         这正是 yield 依赖提供的能力
 
-    ⚠️ except 里必须 raise：不写不会让客户端出错（响应看起来完全一样），
+    【注意】：except 里必须 raise：不写不会让客户端出错（响应看起来完全一样），
        但日志里原始异常会被 FastAPIError 顶替 —— 根因、类型、行号全丢
     """
     async with SessionMaker() as session:

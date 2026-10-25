@@ -31,7 +31,7 @@ class Conversation(Base):
     # 两边分别是"列类型注解"和"列配置"
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # ⚠️ SQLite 不强制这个上限（实测塞 200 字符能存进去），真正的长度校验要在
+    # 【注意】：SQLite 不强制这个上限（实测塞 200 字符能存进去），真正的长度校验要在
     # pydantic 层做；写在这里是为了换 PostgreSQL 时语义正确、也便于生成文档
     title: Mapped[str] = mapped_column(String(100))
 
