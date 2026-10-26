@@ -4991,6 +4991,7 @@ error: Statement is unreachable  [unreachable]
 | ⑥ §10.4 后半 · `get_db` + `DbDep` | `deps.py`：一次请求一个会话 + 正常提交 / 异常回滚 | ✅ 2026-10-25 |
 | ⑦ §10.5 conversations 接口 | POST ✅ / GET 列表 ✅ / GET 详情 ✅ / DELETE ✅ / PATCH ✅ | ✅ 2026-10-25 |
 | ⑧ §10.5f 公共规则抽取 | `ConversationTitle`（`StringConstraints(strip_whitespace=True)`），POST/PATCH 共用；堵住纯空格标题（修前 200 → 修后 422） | ✅ 2026-10-25 |
+| ⑨ §10.6a `LlmCall` 表 | 外键 + `relationship` + `cascade` + `index=True`；📎 索引实测 25 倍 | ✅ 2026-10-26 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
@@ -6293,6 +6294,331 @@ CORS 的 `allow_methods` 必须与实际注册的路由一致。📎 2026-10-25 
 | **阶段 2** | #3 #32 #34 #35 | `KNOWN_MODELS` 硬编码 / 并发控制 / 软删除 / **消息未落库** |
 
 ⚠️ **#35 是最该记住的一条**：现在的 `conversations` 表只有标题，`/v1/chat/stream` 完全不落库 ——**「对话管理」目前只是「标题管理」**，聊天内容一行都没存。
+## 10.6a `LlmCall` 表 + 一对多关系（含索引原理实测）
+
+项目里第一次出现**外键**、**两张表的关联**、**relationship**、**索引**。
+
+### 两张表的分工
+
+| 表 | 作用 | 关键列 |
+|---|---|---|
+| `conversations` | 对话的**元信息** | `id` / `title` / `created_at` |
+| `llm_calls` | 每次 LLM 调用的**账单** | `conversation_id` / `model` / 三种 token / `created_at` |
+
+⭐ `conversation_id` **可空** —— 允许「不属于任何对话的调用」（客户端没传 `conversation_id` 时）。
+
+### ⭐ `ForeignKey` 与 `relationship` 是两个不同层面
+
+| | `ForeignKey("conversations.id")` | `relationship(...)` |
+|---|---|---|
+| 在哪一层 | **数据库**（建表语句里的 `FOREIGN KEY` 约束） | **Python**（`conv.calls` 这个属性） |
+| 产生列吗 | **产生** `conversation_id` 列 | **不产生任何列** |
+| 管什么 | 「这个值必须存在于另一张表」 | 「`conv.calls` 能取到那批对象」 |
+| 删父行时谁生效 | `ondelete=`（**只在原生 SQL 删时**） | `cascade=`（**ORM 删时**） |
+
+⭐⭐ 判据：**`ForeignKey` 管数据完整性，`relationship` 管代码好不好写。**
+
+⚠️ `ForeignKey` 里写的是 **`__tablename__` 的值**（`"conversations"`），**不是类名**（`Conversation`）。
+
+📎 实测表名写错：
+
+```text
+NoReferencedTableError: Foreign key associated with column 'l3.cid'
+  could not find table 'c_typo' with which to generate a foreign key
+```
+
+✅ 这个错**建表时立刻报**，不会静默。
+
+### ⭐⭐ 删父行时子行怎么办：两层各管一段（📎 五种写法实测）
+
+删掉一个有 2 条调用记录的对话：
+
+| 写法 | `llm_calls` 剩几行 | 子行 `conversation_id` |
+|---|---|---|
+| 不写 `cascade`（`session.delete`） | **2 行** | 变成 `NULL`（孤儿留下） |
+| **`cascade="all, delete-orphan"`**（`session.delete`） | **0 行** ✅ | 行没了 |
+| `passive_deletes=True` 单用（`session.delete`） | 2 行 | 变成 `NULL` ⚠️ **单用不够** |
+| 默认 relationship + **原生 `DELETE`** | 0 行 | 行没了（`ondelete` 生效） |
+| `passive_deletes=True` + 原生 `DELETE` | 0 行 | 行没了 |
+
+⭐⭐ 判据：
+
+> **走 ORM（`session.delete`）→ 靠 `relationship(cascade=...)`**
+> **走原生 SQL → 靠 `ForeignKey(ondelete=...)`**
+> **两个层次，别混。** ⚠️ 即使写了 `ondelete="CASCADE"`，`session.delete()` 仍然只把 FK 置 `NULL`（📎 实测）。
+
+⚠️ **`cascade="all, delete-orphan"` 是业务判断，不是唯一正确答案**：
+
+| 选择 | 语义 | 适合 |
+|---|---|---|
+| `cascade="all, delete-orphan"`（本项目） | 对话没了，账单也没了 | 教学清晰、数据一体 |
+| 不写 `cascade` | 账单保留、FK 置 `NULL`（匿名账单） | **真实财务 / 审计（记录不能删）** |
+
+⭐⭐ **「子记录该不该跟着父记录消失」是业务问题，不是技术问题。**
+
+### ⭐ 为什么 `"LlmCall"` 要加引号（前向引用）
+
+```python
+class Conversation(Base):
+    calls: Mapped[list["LlmCall"]] = relationship(...)   # LlmCall 还没定义！
+
+class LlmCall(Base):                                      # 到这里才定义
+    ...
+```
+
+📎 实测不写引号：
+
+```text
+NameError: name 'LlmCall' is not defined
+```
+
+⭐ 原因：**Python 从上往下执行** —— 执行到 `Conversation` 类体时 `LlmCall` 这个名字还不存在。
+
+⭐ 引号的作用：把它变成**字符串**（不做名字查找），等所有类定义完再回来解析。📎 实测写引号后：`ORM 已自动解析 'L2' -> <class '__main__.L2'>`。
+
+⭐⭐ 判据：**引号 = 「先记下这个名字，等会儿再找」；不加引号 = 「现在就找」。**
+
+### `back_populates` vs `backref`
+
+| | `back_populates`（本项目） | `backref`（旧写法） |
+|---|---|---|
+| 写法 | **两端各写一次**，互指 | **只写一端**，另一端自动生成 |
+| 可读性 | ⭐ 两个类都能一眼看到关系 | ❌ 另一端"凭空出现" |
+| 推荐 | ✅ SQLAlchemy 2.0 后推荐 | ⚠️ 遗留写法 |
+
+📎 实测名字写错：
+
+```text
+InvalidRequestError: Mapper 'Mapper[L4(l4)]' has no property 'conversation'.
+```
+
+✅ 报错里**点名了是哪个属性找不到**，好查。
+
+### ⚠️ `async` 里直接读 `conv.calls` 会炸（📎 实测）
+
+```text
+conv.calls -> StatementError: (sqlalchemy.exc.MissingGreenlet)
+              greenlet_spawn has not been called; can't call ...
+```
+
+原因：`relationship` 默认**懒加载** —— 访问 `conv.calls` 那一刻才发 SQL。但异步下「访问属性」是**同步动作**，没法 `await`。
+
+解法（10.6c 细讲）：`select(Conversation).options(selectinload(Conversation.calls))`。📎 实测加完之后 `conv.calls -> 2 条`，反向 `call.conversation.title` 也能取到。
+
+### 📎 建表结果（本项目实际跑出来的）
+
+```sql
+CREATE TABLE llm_calls (
+    id INTEGER NOT NULL,
+    conversation_id INTEGER,
+    model VARCHAR(100) NOT NULL,
+    prompt_tokens INTEGER NOT NULL,
+    completion_tokens INTEGER NOT NULL,
+    total_tokens INTEGER NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    FOREIGN KEY(conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
+)
+
+CREATE INDEX ix_llm_calls_conversation_id ON llm_calls (conversation_id)
+```
+
+⭐ 注意 `conversation_id INTEGER`（**没有 `NOT NULL`**）—— 这是 `Mapped[int | None]` 的效果。
+
+⭐ `PRAGMA foreign_keys = 0` —— **SQLite 默认不强制外键**，10.6b 打开它。
+
+### ⚠️ `create_all` 只建缺失的表，不改已有表
+
+所以**不用删 `app.db`** —— 启动时发现 `llm_calls` 不存在就建，`conversations` 和里面的数据都不动。📎 实测连续跑两次 `create_all` 不报错、不影响已有数据。
+
+⚠️ 反过来说：**给已有的表加列（如待办 #31 的 `updated_at`）`create_all` 不会做** —— 那时必须删库重建或写迁移。
+
+---
+
+## 10.6b 索引原理：为什么 `index=True` 不写就会全表扫
+
+### 一句话结论
+
+> **表里的行是「乱序堆放」的。没有索引，数据库只知道"有这 5 万行"，不知道"哪一行 `conv_id=500`，只能一行一行看。索引是一份额外维护的「排好序的目录」。**
+
+📎 实测（5 万行，同一条查询各跑 200 次）：
+
+| | 单次耗时 | 相对 |
+|---|---|---|
+| **无索引** | **2985.9 µs** | 1x |
+| **有索引** | **119.6 µs** | **快 25 倍** |
+
+### 一、表的物理存储：为什么「必须」全表扫
+
+表在磁盘上就是**一堆 4096 字节的页**，页里装着行。行按**插入顺序（id 顺序）**排，`conv_id` 的值**完全没规律**：
+
+```text
+页 1:  [id=1, conv=37]  [id=2, conv=912]  [id=3, conv=4]   ...
+页 2:  [id=59, conv=88] [id=60, conv=500] [id=61, conv=17] ...
+...
+页 860: ...
+```
+
+| 问题 | 答案 |
+|---|---|
+| 数据库知道 `conv_id=500` 在**第几页**吗 | **不知道** |
+| 怎么知道某行满不满足条件 | **只能把行读出来看** |
+| 所以必须做什么 | **把所有 860 页读完** |
+
+📎 查询计划说的就是这个：`SCAN no_idx`（SCAN = 逐行检查）。
+
+⭐ **SCAN 不是"它想慢"，是"它没有别的办法"**。
+
+### 二、`index=True` 建的是什么
+
+一张**额外的、隐藏的表**（B-Tree 索引），内容**按被索引的列排序**，每项记 `(列值, rowid)`：
+
+```text
+ix_llm_calls_conversation_id（按 conv_id 升序）：
+
+conv_id=1    -> rowid=1004, 2071, 3105 ...
+conv_id=500  -> rowid=60, 415, 729, ...        ← 想找的在这
+conv_id=1000 -> rowid=13, 888, 1993 ...
+```
+
+⭐⭐ **索引 = 把某一列的值排好序另外存一份，每项记录「这个值在原始表的哪一行」。**
+
+### 三、有索引时怎么查：B-Tree 逐层缩小
+
+📎 5 万行 / 每页约 200 项 → 树高 3 层：
+
+```text
+        根节点（1 页）：1 ... 250 ... 500 ... 750 ... 1000
+                            ↓ 找 500 → 落在 [250,500]
+        中间节点（2 页）：250 ... 375 ... 500 ... 625
+                            ↓ 找 500 → 落在 [500,625]
+        叶子节点（约 250 页）：500 -> rowid=60, 415, 729, ...
+```
+
+⭐ 一次查询只走 **约 3 页**：
+
+```text
+SEARCH with_idx USING INDEX ix_with_idx_conv_id (conv_id=?)
+```
+
+⭐ **`SCAN` vs `SEARCH` = 「逐页翻」vs「按目录找」。**
+
+### 四、为什么是 O(log n) 不是 O(1)（📎 规模实测）
+
+| 行数 | 无索引 | 有索引 | 倍数 |
+|---|---|---|---|
+| 5 000 | 0.716 ms | 0.145 ms | 4.9x |
+| 10 000 | 1.101 ms | 0.413 ms | 2.7x |
+| 20 000 | 0.889 ms | 0.078 ms | 11.4x |
+| 40 000 | **7.085 ms** | 0.165 ms | 43.0x |
+| 80 000 | **17.352 ms** | **0.216 ms** | **80.4x** |
+
+看**行数翻倍时耗时怎么变**：
+
+| | 4 万 → 8 万 | 复杂度 |
+|---|---|---|
+| **无索引** | 7.085 → 17.352 ms ≈ **2.4 倍** | ⭐ **线性 O(n)** |
+| **有索引** | 0.165 → 0.216 ms ≈ **1.3 倍** | ⭐ **对数 O(log n)** |
+
+⭐ **为什么不是 O(1)**：索引本身**也要一层层找**。树高怎么算：
+
+```text
+每页约 200 项
+50000 行 → 叶子 50000/200 = 250 页 → 中间 250/200 = 2 页 → 根 1 页
+```
+
+⭐ **行数翻倍时树高最多多 1 层（200 倍才多一层）**：
+
+| 数据量 | 树高 |
+|---|---|
+| 200 | 1 层 |
+| 40 000（200²） | 2 层 |
+| 8 000 000（200³） | 3 层 |
+| 1 600 000 000 | 4 层 |
+
+⭐⭐ 所以「800 万行」和「40 万行」的索引查询**几乎一样快** —— 这就是 0.165 → 0.216 ms 的原因。
+
+**理论 vs 实测**：
+
+| 方式 | 读的页数（5 万行） |
+|---|---|
+| 全表扫 | **约 860 页**（5万 × 70 字节 / 4096） |
+| 索引查找 | **约 3 页** |
+| 理论比 | **287 倍** |
+
+📎 实测只有 25 倍 —— 因为 SQLite 有 **page cache**（页缓存在内存）。真实磁盘上差距大得多。
+
+### 五、为什么有索引还是读了 42 行：回表
+
+📎 实测三种查询的计划：
+
+| 查询 | 计划 | 要不要回表 |
+|---|---|---|
+| `SELECT id FROM t WHERE conv_id=500` | `SEARCH t USING **COVERING** INDEX ix` | ❌ 不用 |
+| `SELECT conv_id FROM t WHERE ...` | `SEARCH t USING **COVERING** INDEX ix` | ❌ 不用 |
+| `SELECT pad FROM t WHERE ...` | `SEARCH t USING INDEX ix` | ✅ **要** |
+
+⭐⭐ 差别在「**要的列在不在索引里**」：
+
+| 查询要的列 | 索引里有吗 | 结果 |
+|---|---|---|
+| `id`, `conv_id` | ✅（`INTEGER PRIMARY KEY` 就是 rowid） | **COVERING INDEX**（覆盖索引）—— 全靠索引 |
+| `model`, `total` | ❌ | **要回表**：拿 rowid 逐行回原表取 |
+
+⭐ 所以 `conv_id=500` 命中 42 行时：索引层 **3 页** + 回表层 **42 次**。这解释了 119.6 µs —— 不是 0。
+
+⭐⭐ 判据：**`SELECT *` 一定要回表。** 想全靠索引，就得只选索引里有的列（**覆盖索引**）。
+
+### 六、索引不免费：三个代价（📎 实测）
+
+**代价 1：写入变慢**（各插 5 万行）
+
+| | 耗时 |
+|---|---|
+| 无索引 | 156.6 ms |
+| 有索引 | **216.0 ms**（慢 **38%**） |
+
+⭐ 每插一行，除了写表还要**把这一项插进 B-Tree 的正确位置**（可能分裂页）。
+
+**代价 2：占空间**
+
+| | 库文件 |
+|---|---|
+| 只有表 | 3056 KB |
+| 表 + 索引 | **3612 KB**（多 **18%**） |
+
+**代价 3：⚠️ 索引可能「不被使用」**
+
+📎 如果条件是 `WHERE conv_id > 0`（几乎命中全部行），数据库会判断「走索引要回表 5 万次，不如全表扫」，于是**放弃索引**。
+
+⭐ 判据：**索引擅长「找少数几行」，不擅长「找我大半张表」。**
+
+### 七、什么时候建 / 不建
+
+| ✅ 该建 | 为什么 |
+|---|---|
+| **外键列**（本项目 `conversation_id`） | 「按外键查子记录」是这关系存在的唯一理由 |
+| 常在 `WHERE` 的列 | 过滤条件 |
+| 常在 `ORDER BY` 的列 | 索引本身有序，省掉排序 |
+| 常在 `JOIN` 的列 | 连接时要按它匹配 |
+| 需要 `UNIQUE` 的列 | 唯一约束就是靠索引实现 |
+
+| ❌ 不该建 | 为什么 |
+|---|---|
+| 表很小（几百行） | 全表扫本来就快 |
+| **选择性很低的列**（如布尔 `is_deleted`） | 命中一半的行，不如全表扫 |
+| 频繁写入的列 | 每次写都要维护 B-Tree |
+| 已有复合索引的前缀列 | 有 `(a,b)` 就够查 `a` |
+
+### 八、判断有没有用上索引
+
+> ⭐ 看 `EXPLAIN QUERY PLAN`：`SCAN`（全表扫）vs `SEARCH ... USING INDEX`（走索引）。
+
+### 一句话判据
+
+> **没有索引 = 逐页翻书找某个词；有索引 = 先查书后的索引表，按页码直接翻过去。**
+> **代价是：书加印了索引页（占空间），每次改内容都要同步更新索引（写变慢）。**
+
 ### 方法速查
 
 | 方法 | 用途 |
