@@ -4992,6 +4992,7 @@ error: Statement is unreachable  [unreachable]
 | ⑦ §10.5 conversations 接口 | POST ✅ / GET 列表 ✅ / GET 详情 ✅ / DELETE ✅ / PATCH ✅ | ✅ 2026-10-25 |
 | ⑧ §10.5f 公共规则抽取 | `ConversationTitle`（`StringConstraints(strip_whitespace=True)`），POST/PATCH 共用；堵住纯空格标题（修前 200 → 修后 422） | ✅ 2026-10-25 |
 | ⑨ §10.6a `LlmCall` 表 | 外键 + `relationship` + `cascade` + `index=True`；📎 索引实测 25 倍 | ✅ 2026-10-26 |
+| ⑩ §10.6b-1 外键强制 | `connect` 事件 + `PRAGMA foreign_keys=ON`；📎 孤儿插入被拒 | ✅ 2026-10-26 |
 | ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
 | ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
 
@@ -6341,11 +6342,35 @@ NoReferencedTableError: Foreign key associated with column 'l3.cid'
 | 默认 relationship + **原生 `DELETE`** | 0 行 | 行没了（`ondelete` 生效） |
 | `passive_deletes=True` + 原生 `DELETE` | 0 行 | 行没了 |
 
-⭐⭐ 判据：
+#### 实测订正：完整的 10 组矩阵（2026-10-26，原结论不够准确）
 
-> **走 ORM（`session.delete`）→ 靠 `relationship(cascade=...)`**
-> **走原生 SQL → 靠 `ForeignKey(ondelete=...)`**
-> **两个层次，别混。** ⚠️ 即使写了 `ondelete="CASCADE"`，`session.delete()` 仍然只把 FK 置 `NULL`（📎 实测）。
+原结论写的是「走 ORM 用 `cascade=`、走原生 SQL 用 `ondelete=`」—— **这不够准确**。
+补测了 `PRAGMA foreign_keys` 开 / 关两种情形后，真相是**两层，但不是那两层**：
+
+| 写法 | FK **OFF**（SQLite 默认） | FK **ON** |
+|---|---|---|
+| A 无 `relationship` + `session.delete` | 2 行 `[(1,1),(2,1)]` 孤儿留原 FK | **0 行** ✅ |
+| B 有 `relationship`、无 `cascade` + `session.delete` | 2 行 `[(1,None),(2,None)]` | 2 行 `[(1,None),(2,None)]` ⚠️ |
+| C 有 `relationship` + `delete-orphan` + `session.delete` | **0 行** ✅ | **0 行** ✅ |
+| D 无 `relationship` + 原生 `DELETE` | 2 行 `[(1,1),(2,1)]` | **0 行** ✅ |
+| E 有 `relationship`、无 `cascade` + 原生 `DELETE` | 2 行 `[(1,1),(2,1)]` | **0 行** ✅ |
+
+⭐⭐ 真正的规则：
+
+> **第一层：`ondelete=` 必须先有 `PRAGMA foreign_keys=ON` 才起作用** —— SQLite 默认是关的。
+> **第二层：ORM 会不会「抢先」把外键置 NULL。**
+> 有 `relationship` 且 `cascade` 不含 `delete` → ORM **先发 `UPDATE ... SET conversation_id=NULL`**
+> → 外键不再指向父行 → **数据库层的 CASCADE 无事可做**。
+
+| 情形 | 谁删的子行 |
+|---|---|
+| 有 `relationship` + `delete-orphan` | **ORM 显式删**（两层都开也行） |
+| 无 `relationship` / 原生 SQL + FK ON | **数据库 CASCADE** |
+| 有 `relationship` 无 `cascade` | ⚠️ **谁都不删**，FK 置 `NULL`（哪怕 FK 开着） |
+
+⚠️ **B 那一格最容易踩**：有 `relationship`、忘了写 `cascade`，即使外键开着，子行也不会被删。
+
+⭐ 判据：**要可靠级联，`PRAGMA foreign_keys=ON` 和 `cascade="all, delete-orphan"` 至少要有一个，且不能被 B 那种写法抵消。**
 
 ⚠️ **`cascade="all, delete-orphan"` 是业务判断，不是唯一正确答案**：
 
@@ -6821,6 +6846,96 @@ INSERT 后 lastrowid = 4      ← 这就是返回给客户端的 id
 > **`1,2,3,4` 是 `rowid`（行号），不是索引。索引项 = `(列值, rowid)`，所以它的顺序可能是 `1,1,1,3,3,4,4`。**
 > **新行的索引位置由「那一列的值」决定，不需要计算 —— 填 7 就是 7。**
 > **客户端用 `id` 查，不用标题查。**
+
+## 10.6b-1 打开 SQLite 的外键强制
+
+`models.py` 里写了 `ForeignKey(..., ondelete="CASCADE")`，但 📎 实测 `PRAGMA foreign_keys = 0` —— **SQLite 默认不强制外键**，插一个不存在的 `conversation_id` 也会成功。
+
+### 做法：给引擎挂 `connect` 事件
+
+```python
+@event.listens_for(engine.sync_engine, "connect")
+def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) -> None:
+    """每条新连接建立时执行：打开 SQLite 的外键强制开关"""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+```
+
+### ⭐ 为什么必须挂事件，不能启动时执行一次
+
+`PRAGMA` 是**每条连接**的开关，而且**不持久化到数据库文件**（断开重连就恢复默认）。
+
+```text
+连接池里有 5 条连接
+只在启动时执行一次 PRAGMA：
+  -> 只有当时那 1 条被打开
+  -> 另外 4 条仍然是不强制的
+```
+
+📎 实测（挂事件之后，取 3 条连接）：
+
+```text
+连接1: PRAGMA foreign_keys = 1
+连接2: PRAGMA foreign_keys = 1
+连接3: PRAGMA foreign_keys = 1
+```
+
+### 三个参数的选择
+
+| 写法 | 为什么这么写 |
+|---|---|
+| `engine.sync_engine` | `event.listens_for` 认不出异步引擎；连接池和 DBAPI 都在同步引擎那层 |
+| 事件名 `"connect"` | 每条新连接**刚建立**时触发（进池之前）。对比 `"checkout"` 是每次从池里取出，同一连接会触发多次 |
+| `dbapi_connection: Any` | 见下 |
+
+#### 📎 为什么注解是 `Any`（三种写法实测）
+
+| 写法 | 结果 |
+|---|---|
+| `dbapi_connection: object` | ❌ mypy：`object` 没有 `cursor` 属性 -> 要加 `# type: ignore` |
+| `dbapi_connection: aiosqlite.Connection` | ❌ mypy：`"Result[Cursor]" has no attribute "execute"`（原生 `cursor()` 是 awaitable） |
+| **`dbapi_connection: Any`** | ✅ 三道门全绿 |
+
+⭐ 原因：运行时拿到的**不是**原生 `aiosqlite.Connection`，而是 SQLAlchemy 的**适配连接** —— 📎 实测类型是：
+
+```text
+sqlalchemy.dialects.sqlite.aiosqlite.AsyncAdapt_aiosqlite_connection
+```
+
+它在 greenlet 上下文里把异步驱动包装成**同步风格**（所以 `cursor()` 能直接调）。注解成 `aiosqlite.Connection` 是**说谎**。
+
+### 📎 游标（cursor）为什么需要
+
+游标是 DBAPI 里「**发语句 + 持有一个结果集位置**」的载体：连接对象本身不保存执行状态，游标才保存"这次查询走到第几行了"。
+
+📎 实测三种写法**都能生效、都无警告**：
+
+| 写法 | foreign_keys |
+|---|---|
+| 显式 `cursor()` + `execute()` + `close()`（本项目） | `1` |
+| `dbapi_connection.execute(...)`（便捷捷径） | `1` |
+| `cursor()` 但不 `close()` | `1` |
+
+⭐ 保留显式游标的理由：**`connection.execute()` 内部偷偷建了个游标且不还给你关闭**；显式 `cursor + close()` 是 SQLAlchemy 官方 recipe 的写法，**释放时机明确**。
+
+⚠️ 这里发的是 `PRAGMA` 而不是 SQL 查询，所以**不需要读结果**，用完直接 `close()`。
+
+### ⭐⭐ 打开外键后，级联删除的完整规则（📎 10 组矩阵）
+
+打开外键只是**第一层**。完整结论见 §10.6a 的「10 组矩阵」—— 最关键的坑是：
+
+> **有 `relationship` 却没写 `cascade` 时，ORM 会先抢着把外键置成 `NULL`，
+> 数据库层的 `CASCADE` 就无事可做 —— 即使外键已经开着，子行照样留下。**
+
+### 📎 打开后的行为变化（端到端实测）
+
+```text
+连接1/2/3: foreign_keys = 1
+插 conversation_id=999（不存在） -> IntegrityError: FOREIGN KEY constraint failed
+插合法的 conversation_id        -> 成功
+删掉那个对话                    -> llm_calls 剩 0 行（子行跟着消失）
+```
 
 ### 方法速查
 
