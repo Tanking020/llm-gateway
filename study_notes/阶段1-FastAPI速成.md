@@ -6619,6 +6619,209 @@ SEARCH with_idx USING INDEX ix_with_idx_conv_id (conv_id=?)
 > **没有索引 = 逐页翻书找某个词；有索引 = 先查书后的索引表，按页码直接翻过去。**
 > **代价是：书加印了索引页（占空间），每次改内容都要同步更新索引（写变慢）。**
 
+### 10.6b-补 索引到底怎么建的（2026-10-26 追问后补）
+
+> 学习者的原问题：「行 id 是新行自增，索引到底咋建的？给我一个新行我咋知道它对应的索引值是多少？」
+
+#### ⭐⭐ 先分清三个东西（混在一起就全乱了）
+
+| # | 东西 | 是 1,2,3,4 递增吗 | 长什么样 |
+|---|---|---|---|
+| **1** | **`rowid`（行号 / 主键）** | ✅ **是** | 每行的物理编号 |
+| **2** | **表本身** | — | **一棵按 `rowid` 排序的 B-Tree** |
+| **3** | **二级索引** | ❌ **不是** | **另一棵按「某一列的值」排序的 B-Tree** |
+
+⭐⭐ 关键概念：**表自己就是一本书，按 `rowid` 页码排好。索引是「另一本薄薄的目录」，按某一列的值排序，每项写着「这个值在原始表的哪一行」。**
+
+#### ⭐⭐ 索引项 = `(被索引列的值, 该行的 rowid)`，没有第三个编号
+
+**这就是「不用算」的原因** —— 索引的"键"**直接就是那一列的值**。
+
+| 新行 | 它在索引里的项 |
+|---|---|
+| `rowid=17, conversation_id=7` | **`(7, 17)`** |
+| `rowid=18, conversation_id=7` | **`(7, 18)`** |
+| `rowid=19, conversation_id=3` | **`(3, 19)`** |
+
+⭐ 所以「新行的索引值是多少」= **看它 `conversation_id` 那一列填了什么**，填 7 就是 7。**不需要计算。**
+
+📎 实测 `PRAGMA index_xinfo(ix)` —— 索引里只有两列：
+
+```text
+seqno=0  name='conv_id'   key=1     ← 排序键（就是那一列）
+seqno=1  name=None        key=0     ← 隐含的 rowid（指向原始行）
+```
+
+⭐⭐ 判据：**索引只存「列值 + rowid」，不存 `model` 等其它列** —— 所以要其它列必须**回表**。
+
+#### 📎 插入一行时，SQLite 内部多做三步（字节码证据）
+
+**无索引的表**：
+
+```text
+OpenWrite      ← 打开表
+NewRowid       ← 分配新 rowid
+MakeRecord     ← 组装行记录
+Insert         ← 写进表
+```
+
+**有索引的表**：
+
+```text
+OpenWrite      ← 打开表
+OpenWrite      ← 【额外】打开索引        ★
+NewRowid       ← 分配新 rowid
+SCopy / IntCopy← 取出 conv_id 的值     ★
+MakeRecord     ← 组装行记录
+MakeRecord     ← 【额外】组装索引项      ★
+IdxInsert      ← 【额外】写进索引        ★
+Insert         ← 写进表
+```
+
+**删一行时**同样多一步 `IdxDelete`：
+
+```text
+无索引： SeekRowid → Rowid → Delete
+有索引： SeekRowid → Rowid → Column → Rowid → 【IdxDelete】→ Delete
+```
+
+⭐⭐ 这就是「索引让写变慢」的**具体机制**：📎 每次写要动 **2 个 B-Tree**（表 + 索引）；有 5 个索引就是 **6 个**。
+
+#### ⭐ 新行的插入位置由「列值」决定（📎 手工模拟）
+
+索引必须**始终保持有序**，所以插入时要先**找到正确位置**。用 `bisect`（二分）模拟，📎 实测：
+
+```text
+INSERT rowid=1, conv_id=3
+       -> 索引项 = (3, 1)
+       -> 插到第 0 位
+       -> 索引 = [(3, 1)]
+
+INSERT rowid=2, conv_id=1          ← 注意：rowid 更大，但 conv_id 更小
+       -> 索引项 = (1, 2)
+       -> 插到第 0 位              ← 排到最前面
+       -> 索引 = [(1, 2), (3, 1)]
+
+INSERT rowid=3, conv_id=3
+       -> 索引项 = (3, 3)
+       -> 插到第 2 位
+       -> 索引 = [(1, 2), (3, 1), (3, 3)]
+```
+
+⭐⭐ **判据：索引里的顺序和 `rowid` 顺序完全无关 —— 只看列值。** 📎 真 SQLite 对比验证：
+
+```text
+真表按 rowid 看：            走索引按 conv_id 看：
+  rowid=2  conv_id=1           conv_id=1  ->  rowid=2   ← 排到最前
+  rowid=1  conv_id=3           conv_id=3  ->  rowid=1
+  rowid=3  conv_id=3           conv_id=3  ->  rowid=3
+```
+
+#### 删一行，索引怎么变（📎 实测三步）
+
+```text
+删之前（7 条）：
+  conv_id=1 -> rowid=1
+  conv_id=1 -> rowid=2
+  conv_id=1 -> rowid=3
+  conv_id=3 -> rowid=4
+  conv_id=3 -> rowid=5
+  conv_id=4 -> rowid=6
+  conv_id=4 -> rowid=7
+
+删掉 rowid=2 -> 剩 6 条（只有那一项消失，其余顺序不变）：
+  conv_id=1 -> rowid=1
+  conv_id=1 -> rowid=3       ← rowid=2 那项没了
+  conv_id=3 -> rowid=4
+  ...
+
+再删掉整个对话 3（它的 2 条）-> 剩 4 条（3,3 整块消失）：
+  conv_id=1 -> rowid=1
+  conv_id=1 -> rowid=3
+  conv_id=4 -> rowid=6
+  conv_id=4 -> rowid=7
+```
+
+⭐ 判据：**删一行 = 从表里删一行 + 从每个索引里删一项。**
+
+#### ⭐ 为什么主键不用额外建索引
+
+📎 实测：`conversations.id` **没有任何**索引条目，但按 id 查依然走 `SEARCH`：
+
+```text
+按主键 id 查              -> SEARCH conversations USING INTEGER PRIMARY KEY (rowid=?)
+按外键 conversation_id 查 -> SEARCH llm_calls USING INDEX ix_calls_conversation_id
+按没索引的 model 查        -> SCAN llm_calls                                    ← 全表扫
+```
+
+⭐ 原因：**表本身就是按 `rowid` 排的 B-Tree**，按主键查 = 直接在这棵树上找，**不需要第二棵树**。
+
+⚠️ 而 `llm_calls.conversation_id` 这一列在表里是**乱序**的 → 所以要为它**再建一棵按它排序的树**。
+
+| 列 | 在表里有序吗 | 需要额外索引吗 |
+|---|---|---|
+| `id`（主键 = rowid） | ✅ 天生有序 | ❌ 不需要 |
+| `conversation_id` | ❌ 乱序 | ✅ **要** |
+| `model` | ❌ 乱序 | 要按它查才需要 |
+
+#### ⭐ rowid 自增不复用已删的号（📎 实测）
+
+```text
+插入 3 个：rowid=1, 2, 3
+删掉 rowid=2，再插一个：
+  rowid=1  对话一
+  rowid=3  对话三
+  rowid=4  对话四      ← 新行是 4，不是 2
+```
+
+⭐ 为什么必须这样：**如果复用 2，那所有「记住 id=2」的客户端都会指向一个新对象** —— 灾难。
+
+#### 客户端怎么知道 id：`POST` 响应里返回
+
+📎 实测 `lastrowid`：
+
+```text
+INSERT 后 lastrowid = 4      ← 这就是返回给客户端的 id
+```
+
+完整流程：
+
+```text
+① 客户端：POST /v1/conversations  {"title": "第一次对话"}
+② 服务端：db.add(conv); await db.flush()   ← flush 后 conv.id 被填成 4
+③ 响应：  201 {"id": 4, "title": "第一次对话", ...}
+                 ↑ 客户端记住这个 4
+```
+
+⭐ 客户端存哪：网页存 `localStorage` / URL 参数 / 组件 state；App 存本地库；命令行自己抄。
+
+#### ⭐⭐ 客户端不需要「按标题查」
+
+📎 完整交互（本项目已实现并实测的接口）：
+
+```text
+第一轮：POST /v1/conversations {"title":"第一次对话"}
+        -> 201 {"id": 1, ...}                  ← 拿到 id=1
+
+第二轮：GET  /v1/conversations/1                ← 用 id 查，O(log n)
+第三轮：PATCH /v1/conversations/1 {"title":"改名"}
+```
+
+⭐⭐ **判据：「按标题查」是人类思维，不是程序思维。**
+
+| 谁 | 用什么标识一个对话 |
+|---|---|
+| **人** | 「那个叫'第一次对话'的」 |
+| **程序** | `id = 1` —— 精确、唯一、O(log n) |
+
+⭐ 只有当产品里有**搜索框**（用户输标题找对话）时，才需要给 `title` 建索引 —— 否则**那时才真的会全表扫**。本项目现在没有这个接口（属于产品决策）。
+
+### 一句话判据（索引部分总收尾）
+
+> **`1,2,3,4` 是 `rowid`（行号），不是索引。索引项 = `(列值, rowid)`，所以它的顺序可能是 `1,1,1,3,3,4,4`。**
+> **新行的索引位置由「那一列的值」决定，不需要计算 —— 填 7 就是 7。**
+> **客户端用 `id` 查，不用标题查。**
+
 ### 方法速查
 
 | 方法 | 用途 |
