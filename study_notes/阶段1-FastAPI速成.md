@@ -4993,8 +4993,11 @@ error: Statement is unreachable  [unreachable]
 | ⑧ §10.5f 公共规则抽取 | `ConversationTitle`（`StringConstraints(strip_whitespace=True)`），POST/PATCH 共用；堵住纯空格标题（修前 200 → 修后 422） | ✅ 2026-10-25 |
 | ⑨ §10.6a `LlmCall` 表 | 外键 + `relationship` + `cascade` + `index=True`；📎 索引实测 25 倍 | ✅ 2026-10-26 |
 | ⑩ §10.6b-1 外键强制 | `connect` 事件 + `PRAGMA foreign_keys=ON`；📎 孤儿插入被拒 | ✅ 2026-10-26 |
-| ⑧ §10.6 N+1 + usage 落库 | `selectinload` 预加载；调用记录表保存上游 `usage` | ⬜ 待做 |
-| ⑨ §10.8 自检 | 本节自检 7+ 题 | ⬜ 待做 |
+| ⑪ §10.6b-2 `conversation_id` + pre-flight | `ChatRequest` 加可选字段；对话不存在 → 404（流开始前拦） | ⬜ 待做 |
+| ⑫ §10.6b-3 usage 落库 | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫 | ⬜ 待做 |
+| ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ⬜ 待做 |
+| ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
+| ⑮ §10.8 自检 | 本节自检 37 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -6257,44 +6260,7 @@ PATCH 101个a           -> 422  string_too_long
 ⭐ 附带收益：`Annotated[ConversationTitle, Field(description="…")]` 可以叠加，OpenAPI 里 `description` + `minLength` + `maxLength` 三样都在。
 
 
-## 10.9 阶段审计：已做步骤里的缺口（2026-10-25）
 
-对 Step 1~10.5f 的全部代码做了一遍边界 / 业务规则 / 异常处理审计，结论见 `学习档案与路线图.md` 待办表 **#24~#40**。下面只展开两条**当前就坏**或**影响最大**的。
-
-### 【注意】：CORS 的 `allow_methods` 漏了新方法 —— 浏览器完全用不了 PATCH / DELETE
-
-CORS 的 `allow_methods` 必须与实际注册的路由一致。📎 2026-10-25 实测事故：10.5d / 10.5e 加了 `PATCH` / `DELETE` 路由，但 `allow_methods` 还是 `["GET", "POST"]` → 浏览器预检 `OPTIONS` 直接 **400**，前端完全无法调用这两个接口。
-
-| 请求 | 预检结果（修前） | 实际请求 |
-|---|---|---|
-| `GET` | 200 放行 | 200 + `ACAO` 头 |
-| `POST` | 200 放行 | 201 + `ACAO` 头 |
-| `PATCH` | **400 被拒** | 200 + `ACAO` 头 ⚠️ |
-| `DELETE` | **400 被拒** | 204 + `ACAO` 头 ⚠️ |
-
-⭐⭐ **为什么 `curl` 测不出来**：CORS 是**浏览器**的限制，`curl` 没有同源策略。所以「curl 全对」证明不了「前端能用」。
-⭐ 判据：**新增任何非 GET/POST 的路由，必须回头检查 `allow_methods`**。修后 📎 复测四种方法预检全 200，`PUT` 仍正确拒绝。
-
-### 列表接口没有上界：`GET /v1/conversations` 无分页
-
-📎 2026-10-25 审计：`GET /v1/conversations` **没有任何分页**（无 `limit` / `offset` / 游标），直接 `.all()` 返回全表。与 `/v1/models`（有 `?limit=`）风格不一致。
-
-⭐ 什么时候必须修：**数据量上千之后**。SQLite 全表读进内存 + JSON 序列化，响应体会到 MB 级，且客户端无法渐进加载。
-⭐ 判据：**列表接口默认就该有上界** —— 没有上界的列表接口迟早会被数据量撞死。
-
-### 审计出的其余缺口（按处理时机分组）
-
-| 时机 | 待办编号 | 内容摘要 |
-|---|---|---|
-| **随时** | #27 | `.env.example` 缺 `DATABASE_URL` |
-| **10.6a** | #33 | `llm_calls.conversation_id` 需要索引 |
-| **10.7**（Step 10 收尾） | #25 #26 #31 #39 | 分页 / `/health` 探库 / `updated_at` / 两个 models 接口形状统一 |
-| **Stage 11** | #6 #7 #28 | 三种错误形状统一 / `dictConfig` / `settings.debug` 没传给 FastAPI |
-| **Stage 12** | #40 | 没有 `tests/` 目录 |
-| **Stage 13** | #29 #36 #37 #38 | `host/port` 配置漂移 / 鉴权 / 限流 / body 大小 |
-| **阶段 2** | #3 #32 #34 #35 | `KNOWN_MODELS` 硬编码 / 并发控制 / 软删除 / **消息未落库** |
-
-⚠️ **#35 是最该记住的一条**：现在的 `conversations` 表只有标题，`/v1/chat/stream` 完全不落库 ——**「对话管理」目前只是「标题管理」**，聊天内容一行都没存。
 ## 10.6a `LlmCall` 表 + 一对多关系（含索引原理实测）
 
 项目里第一次出现**外键**、**两张表的关联**、**relationship**、**索引**。
@@ -6962,7 +6928,7 @@ sqlalchemy.dialects.sqlite.aiosqlite.AsyncAdapt_aiosqlite_connection
 **⚠️ 不用 `ORM 对象` 直接返回行不行？** 📎 实测可以（FastAPI 会先转 dict，再交给 `response_model`），
 但要保证会话还活着（`expire_on_commit=False` 或还没 commit）。
 
-## 10.6 ⚠️ N+1 查询问题
+## 10.6c ⚠️ N+1 查询问题
 
 > ⚠️ 下面的 `conv.messages` 是**关系模型的教学伪代码** —— 当前 `Conversation` 还没有 `messages` 关系，复制过去跑不起来。这段只用来解释「查询次数」。
 
@@ -8372,3 +8338,44 @@ uv add --dev pytest pytest-asyncio httpx2
 46. 500 错误要同时满足哪两个目标？怎么做到？
 47. 为什么 LLM 应用的限流比普通接口更紧急？
 
+
+
+
+## 10.9 阶段审计：已做步骤里的缺口（2026-10-25）
+
+对 Step 1~10.5f 的全部代码做了一遍边界 / 业务规则 / 异常处理审计，结论见 `学习档案与路线图.md` 待办表 **#24~#40**。下面只展开两条**当前就坏**或**影响最大**的。
+
+### 【注意】：CORS 的 `allow_methods` 漏了新方法 —— 浏览器完全用不了 PATCH / DELETE
+
+CORS 的 `allow_methods` 必须与实际注册的路由一致。📎 2026-10-25 实测事故：10.5d / 10.5e 加了 `PATCH` / `DELETE` 路由，但 `allow_methods` 还是 `["GET", "POST"]` → 浏览器预检 `OPTIONS` 直接 **400**，前端完全无法调用这两个接口。
+
+| 请求 | 预检结果（修前） | 实际请求 |
+|---|---|---|
+| `GET` | 200 放行 | 200 + `ACAO` 头 |
+| `POST` | 200 放行 | 201 + `ACAO` 头 |
+| `PATCH` | **400 被拒** | 200 + `ACAO` 头 ⚠️ |
+| `DELETE` | **400 被拒** | 204 + `ACAO` 头 ⚠️ |
+
+⭐⭐ **为什么 `curl` 测不出来**：CORS 是**浏览器**的限制，`curl` 没有同源策略。所以「curl 全对」证明不了「前端能用」。
+⭐ 判据：**新增任何非 GET/POST 的路由，必须回头检查 `allow_methods`**。修后 📎 复测四种方法预检全 200，`PUT` 仍正确拒绝。
+
+### 列表接口没有上界：`GET /v1/conversations` 无分页
+
+📎 2026-10-25 审计：`GET /v1/conversations` **没有任何分页**（无 `limit` / `offset` / 游标），直接 `.all()` 返回全表。与 `/v1/models`（有 `?limit=`）风格不一致。
+
+⭐ 什么时候必须修：**数据量上千之后**。SQLite 全表读进内存 + JSON 序列化，响应体会到 MB 级，且客户端无法渐进加载。
+⭐ 判据：**列表接口默认就该有上界** —— 没有上界的列表接口迟早会被数据量撞死。
+
+### 审计出的其余缺口（按处理时机分组）
+
+| 时机 | 待办编号 | 内容摘要 |
+|---|---|---|
+| **随时** | #27 | `.env.example` 缺 `DATABASE_URL` |
+| **10.6a** | #33 | `llm_calls.conversation_id` 需要索引 |
+| **10.6d**（Step 10 收尾） | #25 #26 #31 #39 | 分页 / `/health` 探库 / `updated_at` / 两个 models 接口形状统一 |
+| **Stage 11** | #6 #7 #28 | 三种错误形状统一 / `dictConfig` / `settings.debug` 没传给 FastAPI |
+| **Stage 12** | #40 | 没有 `tests/` 目录 |
+| **Stage 13** | #29 #36 #37 #38 | `host/port` 配置漂移 / 鉴权 / 限流 / body 大小 |
+| **阶段 2** | #3 #32 #34 #35 | `KNOWN_MODELS` 硬编码 / 并发控制 / 软删除 / **消息未落库** |
+
+⚠️ **#35 是最该记住的一条**：现在的 `conversations` 表只有标题，`/v1/chat/stream` 完全不落库 ——**「对话管理」目前只是「标题管理」**，聊天内容一行都没存。
