@@ -74,7 +74,7 @@
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
-  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅；下一步 **10.6b-2 `ChatRequest` 加 `conversation_id` + pre-flight 校验**，然后 10.6b-3 生成器里落库
+  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅；下一步 **10.6b-3 生成器里把 usage 写进 `llm_calls`**（`except BaseException` 回滚守卫）
 
 ### 阶段 2：LLM 原生 API（2 周）
 
@@ -217,7 +217,7 @@
 | 10.5f | **抽出公共规则 `ConversationTitle`**：`StringConstraints(strip_whitespace=True)` 堵住「纯空格标题」 | ✅ 2026-10-25 完成（测试中发现缺口）；📎 修前 `"   "` / `"\t\n"` / 全角空格全部返回 200 并入库空白标题；📎 修后全部 422；📎 顺带修掉「空格+100字符+空格」被误判超长的旧行为；POST/PATCH 共用一处定义 |
 | 10.6a | `LlmCall` 表 + `Conversation.calls` 一对多（外键 / `cascade` / `conversation_id` 索引） | ✅ 2026-10-26 完成；📎 建表语句含 `ON DELETE CASCADE` + `ix_llm_calls_conversation_id`；📎 索引实测 25 倍（5 万行）+ 规模曲线证明 O(log n)；📎 五种删父子写法对比；⚠️ 批改订正一处理解错误（`ondelete=` 不能解决 ORM 置 NULL） |
 | 10.6b-1 | 打开 SQLite 外键强制（`engine.sync_engine` 的 `connect` 事件 + `PRAGMA foreign_keys=ON`） | ✅ 2026-10-26 完成；📎 池内 3 条连接全为 1；孤儿 `conversation_id=999` 被 `IntegrityError` 拒；📎 **订正 10.6a 的旧结论**：10 组矩阵证明 `ondelete` 依赖 `PRAGMA`，且「有 relationship 无 cascade」会抵消级联 |
-| 10.6b-2 | `ChatRequest` 加 `conversation_id` + pre-flight（不存在 → 404，流开始前拦） | ⬜ 待做 |
+| 10.6b-2 | `ChatRequest` 加 `conversation_id` + pre-flight（不存在 → 404，流开始前拦） | ✅ 2026-10-27 完成；📎 六项验证 200 / 404 / 404 / 422 / 200 / 400×2；⭐ 顺带把「对话不存在」的 5 处重复抽成 `require_conversation`，并统一两条 chat 的校验顺序 |
 | 10.6b-3 | 生成器里写 `LlmCall`（`except BaseException` 回滚守卫） | ⬜ 待做 |
 | 10.6c | N+1 原理 + `selectinload` 实测 | ⬜ 待做 |
 | 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39） | ⬜ 待做 |
@@ -277,13 +277,12 @@
 | 步骤 | 这一步要解决的待办 | 关联编号 |
 |---|---|---|
 | **10.6a** | `LlmCall` 表 + `Conversation.calls` 一对多（外键 + `cascade` + `conversation_id` 索引） | #33（索引） |
-| **10.6b-2** | `ChatRequest` 加 `conversation_id` + pre-flight 校验 | — |
-| **10.6b-3** | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫 | — |
+| **10.6b-1** | 打开 SQLite 外键强制（`connect` 事件 + `PRAGMA foreign_keys=ON`） | — |
+| **10.6b-2** | `ChatRequest` 加 `conversation_id` + pre-flight 校验（`require_conversation` 一处实现） | #41（`LlmCall` 出参 schema 要提前定形状） |
+| **10.6b-3** | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫 | #35（`messages` 表要同样思路） |
 | **10.6c** | N+1 原理 + `selectinload` 实测 | — |
-| **10.6b** | usage 落库（流式生成器里自己守 `BaseException` 回滚） | #35（messages 表要同样思路） |
-| **10.6c** | N+1 与 `selectinload` 实测 | — |
 | **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #39** |
-| **10.8** | Step 10 自检（37 题） | — |
+| **10.8** | Step 10 自检（40 题） | — |
 | **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |

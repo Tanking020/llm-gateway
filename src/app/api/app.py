@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep
 from app.constants import HEADER_REQUEST_ID
@@ -244,6 +245,26 @@ def ensure_last_message_is_user(request: ChatRequest) -> None:
         )
 
 
+async def require_conversation(db: AsyncSession, conv_id: int) -> Conversation:
+    """
+    按 id 取对话：不存在就抛 404
+
+    【注意】：db.get 找不到时返回 None（不抛异常），所以必须判空 ——
+        不判返回 None 会流到 response_model → ResponseValidationError（input=None）→ 500。
+        实测【不是】AttributeError
+
+    【注意】：五处路由共用这一份实现（两条 chat + GET/PATCH/DELETE），
+        改文案或改状态码只改这里 —— 否则一定会漏
+    """
+    conv = await db.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话不存在：{conv_id}",
+        )
+    return conv
+
+
 def _as_dict(value: object) -> dict[str, Any]:
     """
     把上游可能给的任意 JSON 值收窄成 dict；不是 dict 就给空 dict
@@ -259,12 +280,16 @@ def _as_dict(value: object) -> dict[str, Any]:
 
 
 @app.post("/v1/chat")
-async def chat(request: ChatRequest, config: SettingsDep) -> ChatResponse:
+async def chat(request: ChatRequest, config: SettingsDep, db: DbDep) -> ChatResponse:
     """
     request 是【请求体】—— 类型是 pydantic 模型，所以 FastAPI 从 JSON body 里面取；
     config 是【依赖】—— FastAPI 调 get_settings() 后注入
     """
-    ensure_last_message_is_user(request)
+    ensure_last_message_is_user(request)  # 便宜的语义检查在前，与 chat_stream 保持同一顺序
+
+    if request.conversation_id is not None:
+        await require_conversation(db, request.conversation_id)
+
     last = request.messages[-1]
     return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
 
@@ -314,20 +339,9 @@ async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversatio
 @app.get("/v1/conversations/{conv_id}", response_model=ConversationOut)
 async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
     """
-    按 id 查一个对话：不存在返回 404
-
-    db.get 找不到时返回 None（不抛异常），所以必须判空 ——
-    不判返回 None 流到 response_model → ResponseValidationError（input=None）→ 500。
-    实测【不是】AttributeError。用户应该看到的是 404（你要的东西不存在）。
+    按 id 查一个对话：不存在返回 404（判空与 404 文案都在 require_conversation 里）
     """
-    # 数据库的 .get(model, id)方法，model 对应哪张表，id 对应主键名，查不到会返回 None
-    conv = await db.get(Conversation, conv_id)
-    if conv is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"对话不存在：{conv_id}",
-        )
-    return conv
+    return await require_conversation(db, conv_id)
 
 
 @app.delete("/v1/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -341,12 +355,7 @@ async def delete_conversation(conv_id: int, db: DbDep) -> None:
     AssertionError: Status code 204 must not have a response body
     （服务根本起不来，不是运行时才报）
     """
-    conv = await db.get(Conversation, conv_id)
-    if conv is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"对话不存在：{conv_id}",
-        )
+    conv = await require_conversation(db, conv_id)
     await db.delete(conv)  # AsyncSession.delete 是异步方法，必须 await
     # 不写 return: -> None 的函数隐式返回 None
 
@@ -366,12 +375,7 @@ async def update_conversation(
     本项目只有 title 一个可改字段，所以两者行为暂时相同
     接口名写 PATCH 是为将来加字段时留的余地
     """
-    conv = await db.get(Conversation, conv_id)
-    if conv is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"对话不存在：{conv_id}",
-        )
+    conv = await require_conversation(db, conv_id)
     conv.title = payload.title
     # 不写 commit: 由 get_db 依赖统一提交（事务边界只在一处）
     return conv
@@ -403,12 +407,18 @@ async def chat_stream(
     request: ChatRequest,
     client: LlmClientDep,
     config: SettingsDep,
+    db: DbDep,
 ) -> StreamingResponse:
     """真模型流式：逐帧解析上游，转发回答文字 + 结束原因 + token 用量（思维链按产品要求丢弃）"""
 
     # 与 /v1/chat 完全同一条业务规则，所以调同一个函数
     # 【注意】：必须放在 pre-flight 之前：否则会白花一次上游调用（真金白银）
     ensure_last_message_is_user(request)
+
+    # pre-flight：对话存在性必须在【打开上游流之前】查。放后面的话
+    #   会白花一次上游调用，而且响应头已经发出，改不了 404
+    if request.conversation_id is not None:
+        await require_conversation(db, request.conversation_id)
 
     # 上游请求体的字段名由 OpenAI 兼容协议规定
     body: dict[str, object] = {

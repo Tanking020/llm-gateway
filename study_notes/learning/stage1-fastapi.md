@@ -4993,11 +4993,11 @@ error: Statement is unreachable  [unreachable]
 | ⑧ §10.5f 公共规则抽取 | `ConversationTitle`（`StringConstraints(strip_whitespace=True)`），POST/PATCH 共用；堵住纯空格标题（修前 200 → 修后 422） | ✅ 2026-10-25 |
 | ⑨ §10.6a `LlmCall` 表 | 外键 + `relationship` + `cascade` + `index=True`；📎 索引实测 25 倍 | ✅ 2026-10-26 |
 | ⑩ §10.6b-1 外键强制 | `connect` 事件 + `PRAGMA foreign_keys=ON`；📎 孤儿插入被拒 | ✅ 2026-10-26 |
-| ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测 | 🟡 步骤卡已发 |
+| ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
 | ⑫ §10.6b-3 usage 落库 | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫 | ⬜ 待做 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ⬜ 待做 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
-| ⑮ §10.8 自检 | 本节自检 37 题 | ⬜ 待做 |
+| ⑮ §10.8 自检 | 本节自检 40 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -7043,8 +7043,55 @@ call.conversation.title -> AttributeError: 'NoneType' object has no attribute 't
 
 ⭐ 判据：**id 从 1 开始 → 用 `gt=0`**。这样在**最外层**就挡掉，也把"非法输入"和"不存在"两种语义分开。
 
----
-## 10.7 迁移（了解，阶段 1 不急）
+### ⭐ 校验顺序：按代价从低到高（10.6b-2 收尾订正）
+
+📎 改之前两条接口的顺序是**反的**：
+
+| 接口 | 实际顺序 |
+|---|---|
+| `/v1/chat` | 查库（270 行）→ 语义（276 行） |
+| `/v1/chat/stream` | 语义（421 行）→ 查库（426 行） |
+
+于是「`conversation_id=999` + 最后一条是 `assistant`」这个**同一种**坏请求：
+
+| 接口 | 改前 | 改后 |
+|---|---|---|
+| `/v1/chat` | **404** | **400** `LAST_MESSAGE_NOT_USER` |
+| `/v1/chat/stream` | 400 | 400 |
+
+⭐ 判据：**四层校验按「代价从低到高」排**
+
+| 层 | 代价 |
+|---|---|
+| pydantic 形状校验 | 纯内存（函数调用级） |
+| 业务语义（最后一条必须是 user） | 纯内存 |
+| 查库（对话是否存在） | **一次数据库往返** |
+| 调用上游 API | **真金白银 + 秒级延迟** |
+
+⚠️ 顺序反了的两个后果：① 非法消息白白查一次库；② 同一种坏请求两条接口给不同答案（客户端没法统一处理）。
+
+### ⭐ 5 处重复 → `require_conversation`（10.6b-2 收尾订正）
+
+📎 实测：`detail=f"对话不存在：…"` 这一行原本出现在 **273 / 337 / 357 / 382 / 429** 五个位置。
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| `/v1/chat` pre-flight | 6 行（判空 + raise） | `await require_conversation(db, request.conversation_id)` |
+| `/v1/chat/stream` pre-flight | 6 行 | 同上 |
+| `GET /v1/conversations/{id}` | 6 行 | `return await require_conversation(db, conv_id)` |
+| `DELETE` | 6 行 | `conv = await require_conversation(db, conv_id)` |
+| `PATCH` | 6 行 | 同上 |
+
+⭐⭐ **最容易搞错的一点**：两条 chat 的**成功**响应形状完全不同（`ChatResponse` 的 JSON vs `StreamingResponse` 的流）—— 但这**不能**作为「不抽公共函数」的理由。
+
+| 路径 | 两条接口是否一致 |
+|---|---|
+| 成功 | ❌ 完全不同（JSON vs 流） |
+| **失败**（校验不通过） | ✅ **完全一致**，都是 `application/json` 的 404 |
+
+⭐ 判据：**抽不抽公共代码看「失败路径」不看「成功路径」** —— 失败路径通常比成功路径一致得多。
+
+---## 10.7 迁移（了解，阶段 1 不急）
 
 **问题**：`create_all` 只会在**表不存在时**建表，**不会修改已有表结构**。
 加一个字段后，老数据库不会自动更新。

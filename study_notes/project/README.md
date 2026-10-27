@@ -8,8 +8,8 @@
 
 | 文件 | 内容 | 什么时候看 |
 |---|---|---|
-| [roadmap.md](roadmap.md) | 学习路线 / 阶段划分 / **进度** / **待办清单（#1~#40）** | 开工前、想知道「还剩几步」 |
-| [decisions.md](decisions.md) | 业务与架构决策（ADR，18 条 + 待定清单） | 要改数据结构 / 接口形状 / 部署形态**之前** |
+| [roadmap.md](roadmap.md) | 学习路线 / 阶段划分 / **进度** / **待办清单（#1~#41）** | 开工前、想知道「还剩几步」 |
+| [decisions.md](decisions.md) | 业务与架构决策（ADR，19 条 + 待定清单） | 要改数据结构 / 接口形状 / 部署形态**之前** |
 
 ## ⚠️ 改代码或改结构前，先查 `decisions.md`
 
@@ -22,6 +22,7 @@
 | 让 `PATCH` 接受空 body | [decisions #12](decisions.md#12-patch-而不是-put且空-body-直接拒绝) | ⛔ 必填字段是免费的 bug 探测器 |
 | 把引擎改成每请求新建 | [decisions #14](decisions.md#14-引擎用模块级单例并在-lifespan-里释放) | ⛔ 连接池就没意义了 |
 | 给 `LlmCall` 写 `conversation_id: int` | [decisions #16](decisions.md#16-计费记录不能跟着对话一起删) | 必须 `int \| None` —— 📎 写 `int` 就是 500 |
+| 在每条路由里各写一遍「对话不存在 → 404」 | [decisions #8](decisions.md#8-业务规则抽成函数由多条路由共用) | ⛔ 抽成 `require_conversation`，5 处共用 |
 
 ## 两个文件的边界
 
