@@ -2,7 +2,7 @@
 
 > **用途**：用最短路径掌握**能交付 LLM 应用后端**的 FastAPI 核心能力（含 SSE 流式、依赖注入、数据库、测试、部署）。
 > **写法约定**：术语后面跟一句 🧒「人话解释」，公式用 LaTeX，坑点用 ⚠️ 单独标出，重点用 ⭐。
-> **目标读者**：已完成阶段 0（[阶段0-工程基础.md](./阶段0-工程基础.md)），会 pydantic 与 async 基础。
+> **目标读者**：已完成阶段 0（[stage0-engineering-basics.md](stage0-engineering-basics.md)），会 pydantic 与 async 基础。
 > **实践产出**：跟随本笔记从空目录亲手搭建一个可流式返回的聊天后端；仓库不附带预配置项目。
 > **同系列**：ML 阶段笔记（房价预测，同一套写法）—— *该笔记不在本仓库*。
 
@@ -99,7 +99,7 @@ Resolved 31 packages | Installed 11 packages
 
 ## 学习进度
 
-**两列含义不同，别混**：`笔记状态` = 这份笔记该节内容是否已写好；`实操状态` = **本仓库是否真的动手做过**（对应 [学习过程记录.md](学习过程记录.md) 的流水编号）。
+**两列含义不同，别混**：`笔记状态` = 这份笔记该节内容是否已写好；`实操状态` = **本仓库是否真的动手做过**（对应 [learning-log.md](learning-log.md) 的流水编号）。
 
 | Step | 主题 | 笔记状态 | 实操状态 |
 |------|------|------|------|
@@ -411,11 +411,11 @@ async def app(scope, receive, send):
 
 ## 1.5 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 1 HTTP 与 ASGI）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 1 HTTP 与 ASGI）。
 
 ### 1.5b 自检批改（2026-10-14 学习者作答后订正）⭐
 
-> 📋 **批改结论与三处订正已并入 [自检题清单.md](自检题清单.md)**（阶段 1 · Step 1 里标 🟡 的三题）。
+> 📋 **批改结论与三处订正已并入 [self-check-questions.md](self-check-questions.md)**（阶段 1 · Step 1 里标 🟡 的三题）。
 > 📎 订正所用的实测数据仍在上面 §1.4b / §1.4c（并发三种命运、报文与状态码）—— 复习时值得回看。
 
 ---
@@ -502,7 +502,7 @@ async def get_user(user_id: str): ...
 
 ## 2.5 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 2 最小应用与文档）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 2 最小应用与文档）。
 
 ---
 
@@ -664,7 +664,7 @@ async def list_items(limit: LimitParam = 10): ...
 
 ### 3.6b 本仓库实测：1.3 的 4 条路由（2026-10-15）
 
-> ✅ **代码在 [`src/app/api/app.py`](../src/app/api/app.py)**（本项目真实文件，非临时演示）。
+> ✅ **代码在 [`src/app/api/app.py`](../../src/app/api/app.py)**（本项目真实文件，非临时演示）。
 > 验证方式：用 `httpx.ASGITransport` 直接打 `app`（不启服务、不占端口）。
 
 **实装的 4 条路由**：
@@ -727,7 +727,7 @@ POST /v1/chat {"messages":[...], "extra":1}  ->  200  ✅（没报错！）
 ⭐ **这意味着**：客户端把 `max_token`（少个 `s`）发过来，服务端会**默默用默认值**，两边都以为没问题 —— 又一处**静默失效**。
 **要不要改成 `forbid` 是真实取舍**（严格能挡拼写错误，但客户端多传就 422），Step 4 正式讨论。
 
-**⭐ 顺便：`mypy` 在本步抓到了一个会变成 500 的 bug**（详见 [学习过程记录](../study_notes/学习过程记录.md)）：
+**⭐ 顺便：`mypy` 在本步抓到了一个会变成 500 的 bug**（详见 [learning-log](learning-log.md)）：
 
 ```text
 src\app\api\app.py:65: error: "ChatRequest" has no attribute "message"; maybe "messages"?  [attr-defined]
@@ -855,7 +855,7 @@ src\app\api\app.py:65: error: "ChatRequest" has no attribute "message"; maybe "m
 
 ### 3.6f `Annotated` 与 `Query` 分别干嘛（2026-10-15 实测）⭐
 
-> **完整实测与对照表见 [工具与依赖速查.md](工具与依赖速查.md) §7「`Annotated` 与 `Query` 的分工」**
+> **完整实测与对照表见 [tools-reference.md](tools-reference.md) §7「`Annotated` 与 `Query` 的分工」**
 > —— 这里只留"必须记住"的部分，避免同一事实抄两遍（规范 §12.1）。
 
 **一句话分工**：`Annotated` 是**信封**（`typing` 标准库，只会"装"，不解释任何元数据）；
@@ -884,7 +884,7 @@ limit: Annotated[int, Query(ge=1, le=100, description="最多返回几条")] = 2
 
 ## 3.7 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 3 三段参数）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 3 三段参数）。
 
 ---
 
@@ -1114,7 +1114,7 @@ ModelListResponse 必填: ['total', 'items']
 
 ## 4.6 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 4 pydantic 契约）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 4 pydantic 契约）。
 
 ---
 
@@ -1323,7 +1323,7 @@ async def client_bad() -> AsyncIterator[httpx.AsyncClient]:
 
 ### 5.4d 三组补充实测（2026-10-16，回答自检题做的）⭐
 
-> 📋 这三组实验回答的**题目与简要答案**在 [自检题清单.md](自检题清单.md)（阶段 1 · Step 5 第 6~8 题）。
+> 📋 这三组实验回答的**题目与简要答案**在 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 5 第 6~8 题）。
 > **本节保留的是完整实验数据**（清单里只放要点级答案）。
 
 #### ① 依赖被"声明"就会执行 —— 哪怕路由函数体完全不用它
@@ -1558,7 +1558,7 @@ FastAPI 会：
 
 ## 5.8 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 5 依赖注入）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 5 依赖注入）。
 
 ---
 
@@ -2143,7 +2143,7 @@ shutdown 后 is_closed: True          ← async with 自动 aclose
 
 ## 6.5 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 6 错误处理与 lifespan）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 6 错误处理与 lifespan）。
 
 ---
 
@@ -2676,7 +2676,7 @@ headers["Access-Control-Allow-Origin"] = origin   # allow_explicit_origin()
 
 ## 7.5 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 7 中间件与 CORS）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 7 中间件与 CORS）。
 
 ---
 
@@ -2868,7 +2868,7 @@ async def items_fast():
 
 ## 8.6 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 8 异步的正确姿势）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 8 异步的正确姿势）。
 
 ---
 
@@ -2879,7 +2879,7 @@ async def items_fast():
 > **这是"普通后端"和"LLM 应用后端"的分水岭。**
 > 不做流式，你的产品在用户眼里就是"卡住不动"；做了流式，同样的模型、同样的耗时，**体验完全不同**。
 >
-> 🔁 **复习入口：[§9.9 一条流式请求的全生命周期](阶段1-FastAPI速成.md)（三张全景图）** —— 先看图，再查细节。
+> 🔁 **复习入口：[§9.9 一条流式请求的全生命周期](stage1-fastapi.md)（三张全景图）** —— 先看图，再查细节。
 
 ## 9.1 为什么 LLM 应用**必须**流式
 
@@ -4262,7 +4262,7 @@ usage.prompt_cache_miss_tokens                       int  = 44
 ⭐ 两个关键发现：
 
 1. **`reasoning_tokens` 会占大头**（实测 56 / 66 = 85%）→ 输出成本主要花在思维链上，不是回答本身
-2. **`prompt_cache_hit_tokens` 是可观测指标** → 固定 system prompt 前缀后能到 85%（详见[学习过程记录](学习过程记录.md) 专题 6）
+2. **`prompt_cache_hit_tokens` 是可观测指标** → 固定 system prompt 前缀后能到 85%（详见[learning-log](learning-log.md) 专题 6）
 
 ⚠️ `usage` 在**流式**下默认可能不返回（OpenAI 需要显式开 `stream_options.include_usage`）；
 **DeepSeek 实测默认就带**，且是和 `finish_reason` **同一帧**。不同上游行为不同 → 必须两种位置都处理。
@@ -4384,7 +4384,7 @@ DONE × 1
 
 > 起因：学习者质疑「岂不是每个路由都要单独写完整的异常上抛？这会不会太复杂了，这是正常写法吗」
 > —— 质疑成立，之前的步骤卡设计错了**两次**。完整复盘见
-> [学习过程记录.md](学习过程记录.md) 专题 9；硬约束见[规范](../工程规范与协作约定.md) §14.7 / §14.8。
+> [learning-log.md](learning-log.md) 专题 9；硬约束见[规范](../../工程规范与协作约定.md) §14.7 / §14.8。
 
 ### ① 三个版本：错在哪一步
 
@@ -4497,7 +4497,7 @@ select = ["E", "F", "I", "UP", "B", "TID"]
 
 ## 9.8f 流式静默失败与三层防线（9b-4b-1，2026-10-22）
 
-> 完整实测与七种异常逐条对照见[学习过程记录.md](学习过程记录.md)专题 12。
+> 完整实测与七种异常逐条对照见[learning-log.md](learning-log.md)专题 12。
 > 这里是**复习入口**：记住三层的分工和那条判据就够了。
 
 ### ① 流式独有的失败形态：`200` + 空
@@ -4966,7 +4966,7 @@ error: Statement is unreachable  [unreachable]
    协议设计决定了你能不能流。
 ## 9.11 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 9 SSE 流式）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 9 SSE 流式）。
 > **第 57~59 题专门考 §9.9 的三张图**（走完整路径 / 断开的三个问题 / 守卫放错位置）。
 
 ---
@@ -6969,7 +6969,7 @@ for conv in convs.scalars():
 
 ## 10.8 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 10 数据库）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 10 数据库）。
 
 ---
 
@@ -7149,7 +7149,7 @@ async def chat_stream(req: ChatRequest, user: CurrentUserDep, db: DbDep): ...
 
 ## 11.7 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 11 工程化）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 11 工程化）。
 
 ---
 
@@ -7336,7 +7336,7 @@ def override_deps() -> Iterator[None]:
 
 ## 12.8 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 12 测试 FastAPI）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 12 测试 FastAPI）。
 
 ---
 
@@ -7470,7 +7470,7 @@ flowchart LR
 
 ## 13.6 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 1 · Step 13 部署）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 13 部署）。
 
 ---
 
@@ -8343,7 +8343,7 @@ uv add --dev pytest pytest-asyncio httpx2
 
 ## 10.9 阶段审计：已做步骤里的缺口（2026-10-25）
 
-对 Step 1~10.5f 的全部代码做了一遍边界 / 业务规则 / 异常处理审计，结论见 `学习档案与路线图.md` 待办表 **#24~#40**。下面只展开两条**当前就坏**或**影响最大**的。
+对 Step 1~10.5f 的全部代码做了一遍边界 / 业务规则 / 异常处理审计，结论见 `project/roadmap.md` 待办表 **#24~#40**。下面只展开两条**当前就坏**或**影响最大**的。
 
 ### 【注意】：CORS 的 `allow_methods` 漏了新方法 —— 浏览器完全用不了 PATCH / DELETE
 

@@ -1,7 +1,7 @@
 # 决策记录（ADR）
 
 > **这个文件回答一个问题：为什么这个项目长成现在这样。**
-> 只记**业务 / 架构层面**的决定，不记语法知识点（那些在 [阶段1-FastAPI速成.md](阶段1-FastAPI速成.md)）。
+> 只记**业务 / 架构层面**的决定，不记语法知识点（那些在 [learning/stage1-fastapi.md](../learning/stage1-fastapi.md)）。
 >
 > **什么时候该往这里写**（判据）：
 > ① 有**多个合理方案**、我们选了其中一个 —— 记下**放弃了什么、为什么**
@@ -52,7 +52,7 @@
 | **代价** ⚠️ | **学习笔记会进简历仓库**。将来要单独发代码仓库时，必须先拆分（拆起来不难，但要记住这件事） |
 | **重审条件** | 准备把仓库公开写进简历时 → 执行拆分（把 `study_notes/` 移出或加 `.gitignore` 到另一个仓库） |
 
-> 📍 原始位置：[工程规范与协作约定.md](../工程规范与协作约定.md) §13.1 #1（保留，因为它是**协作约定**的一部分）
+> 📍 原始位置：[工程规范与协作约定.md](../../工程规范与协作约定.md) §13.1 #1（保留，因为它是**协作约定**的一部分）
 
 ---
 
@@ -66,7 +66,7 @@
 | **代价** ⚠️ | 每次跑命令都必须 `uv run`（因为要安装后才有 `app` 包）；不能直接 `python xxx.py` 就 import |
 | **重审条件** | 不会变。这是 Python 打包的通行做法 |
 
-> 📍 原始位置：[工程规范与协作约定.md](../工程规范与协作约定.md) §13.1 #2；[阶段0-工程基础.md](阶段0-工程基础.md) 有详细原理
+> 📍 原始位置：[工程规范与协作约定.md](../../工程规范与协作约定.md) §13.1 #2；[learning/stage0-engineering-basics.md](../learning/stage0-engineering-basics.md) 有详细原理
 
 ---
 
@@ -80,7 +80,7 @@
 | **代价** ⚠️ | 阶段 0 的验收项**至今未完**（记在路线图里） |
 | **重审条件** | 阶段 1 结束时（Step 13 部署）必须补上 |
 
-> 📍 原始位置：[学习档案与路线图.md](学习档案与路线图.md) 阶段 0 状态行（⚠️ 验收中的两项未做，已顺延）
+> 📍 原始位置：[roadmap.md](roadmap.md) 阶段 0 状态行（⚠️ 验收中的两项未做，已顺延）
 
 ---
 
@@ -94,7 +94,7 @@
 | **代价** ⚠️ | client 是**全局可变状态**：如果一个请求改了它的配置（如 timeout），会影响其它请求。所以 client 必须设计成**无状态**的 |
 | **重审条件** | 需要"每个用户用不同的上游密钥"时 → 改成按 key 分组的 client 池 |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §6.4b；[学习过程记录.md](学习过程记录.md) 流水 1.14
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §6.4b；[learning/learning-log.md](../learning/learning-log.md) 流水 1.14
 > ⚠️ **原待办 #5 已定案**
 
 ---
@@ -109,7 +109,7 @@
 | **代价** ⚠️ | 客户端要为**三种错误形状写三份解析代码**；而且 404 和 500 的字段名不同（`detail` vs `error`） |
 | **重审条件** | **Step 11 必须处理**（已记入待办 #6） |
 
-> 📍 原始位置：[学习档案与路线图.md](学习档案与路线图.md) 待办 #6
+> 📍 原始位置：[roadmap.md](roadmap.md) 待办 #6
 
 ---
 
@@ -123,8 +123,8 @@
 | **代价** ⚠️ | ⚠️ **路由层不许 `import httpx`** —— 用 `ruff` 的 `TID251`（banned-api）机械保证。这限制了"临时在路由里直接调上游"这种快速写法 |
 | **重审条件** | 接入第二家上游、且错误语义不同时 → 需要抽象出 provider 接口 |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §9 系列；[学习档案与路线图.md](学习档案与路线图.md) 待办 #19（已解决）
-> 📌 **关键文件**：[src/app/llm_client.py](../src/app/llm_client.py) 是唯一 import httpx 的地方
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §9 系列；[roadmap.md](roadmap.md) 待办 #19（已解决）
+> 📌 **关键文件**：[src/app/llm_client.py](../../src/app/llm_client.py) 是唯一 import httpx 的地方
 
 ---
 
@@ -138,7 +138,7 @@
 | **代价** ⚠️ | ① **不能中途"回传"**（用户想在上游生成时打断，只能靠断开连接）；② 一旦响应头发出，**状态码就改不了了** —— 所以错误必须在**流开始前**（pre-flight）发现，或编码进流内 |
 | **重审条件** | 需要"用户边说边发、模型边听边答"（语音对话）→ 换 WebSocket |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §9.1~§9.11（整章）
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §9.1~§9.11（整章）
 
 ---
 
@@ -153,7 +153,7 @@
 | **重审条件** | —— |
 | 📎 **为什么是硬规则** | **本项目已经漏过一次**：`/v1/chat/stream` 曾经放过以 `assistant` 结尾的请求，还真的把那段话发给上游、拿回一整段回答、白花一次 token |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §6 系列；[src/app/api/app.py](../src/app/api/app.py) 的 `ensure_last_message_is_user`
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §6 系列；[src/app/api/app.py](../../src/app/api/app.py) 的 `ensure_last_message_is_user`
 
 ---
 
@@ -167,7 +167,7 @@
 | **代价** ⚠️ | ① 路由**不能提前提交**（想在中间提交一次、后面还能回滚，做不到）；② 需要 `flush()` 才能拿到自增 id<br>③ ⚠️ **`CancelledError`（客户端断开）会绕过 `except Exception`** → 依赖走 commit 路径，可能提交半截数据。流式接口必须自己守 `except BaseException`（见 [16](#计费记录不能跟着对话一起删) 的相关说明） |
 | **重审条件** | 需要"一个请求内多个独立事务"时 → 引入 `async with session.begin()` 分段 |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §10.4；[src/app/api/deps.py](../src/app/api/deps.py) 的 `get_db`
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.4；[src/app/api/deps.py](../../src/app/api/deps.py) 的 `get_db`
 
 ---
 
@@ -181,7 +181,7 @@
 | **代价** ⚠️ | 现在 `In` 和 `Patch` 的字段**完全一样**，看起来重复。这个"重复"是**故意的**，不是能合并的冗余 |
 | **重审条件** | —— |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §10.5；[src/app/schemas.py](../src/app/schemas.py)
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.5；[src/app/schemas.py](../../src/app/schemas.py)
 
 ---
 
@@ -196,7 +196,7 @@
 | **重审条件** | 如果将来标题规则和别的字段规则分化 → 拆开 |
 | 📎 **起因** | 测试中发现 `{"title": "   "}` 返回 **200** 并把 3 个空格存进了库（前端显示空白标题） |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §10.5、§10.5f
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.5、§10.5f
 
 ---
 
@@ -212,7 +212,7 @@
 | **重审条件** | 字段多到需要"客户端只传变化项"时 → 必须换成 `exclude_unset` 写法 |
 | 📎 **为什么严格更好** | ⭐ **「必填字段」是免费的 bug 探测器**：前端把 `title` 拼成 `titel` 时，`title: str`（必填）会报 422 立刻暴露；改成"可选 + 默认 None"就变成 **200 但一个字没改**（静默成功） |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §10.5「PATCH」小节
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.5「PATCH」小节
 
 ---
 
@@ -226,7 +226,7 @@
 | **代价** ⚠️ | SQLite 有**三个方言差异**必须记住：<br>① **不强制 `String(100)`** —— 实测塞 200 字符能存进去，长度校验只能靠 pydantic<br>② **默认不强制外键** —— 必须挂 `connect` 事件执行 `PRAGMA foreign_keys=ON`<br>③ **不存时区** —— `DateTime(timezone=True)` 也丢 `tzinfo`，存 UTC 读回来是 `naive` |
 | **重审条件** | 需要并发写 / 全文检索 / JSON 查询 → 切 PostgreSQL（改 `database_url` + 装 `asyncpg`） |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §10.1~§10.3
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.1~§10.3
 
 ---
 
@@ -241,7 +241,7 @@
 | **重审条件** | 需要多租户 / 多库时 → 改成工厂函数 + `app.state` 字典 |
 | 📎 **为什么不选 B** | 四条理由见笔记 §10.3：① `deps.py` 要 import 它，lifespan 里创建时序太晚；② mypy 拿不到类型；③ 测试替换更麻烦；④ 引擎本身不是"请求级资源" |
 
-> 📍 原始位置：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §10.3；[src/app/database.py](../src/app/database.py)
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.3；[src/app/database.py](../../src/app/database.py)
 
 ---
 
@@ -256,7 +256,7 @@
 | **重审条件** | —— |
 | 📎 **连带发现** | README 第 6 行写"全部完成"、第 37 行写"CRUD 未做" —— **同一份文件自相矛盾**，因为我只改了一处 |
 
-> 📍 原始位置：[学习过程记录.md](学习过程记录.md) 流水 1.53；[README.md](../README.md) 状态行
+> 📍 原始位置：[learning/learning-log.md](../learning/learning-log.md) 流水 1.53；[README.md](../../README.md) 状态行
 
 ---
 
@@ -273,8 +273,8 @@
 | ⭐⭐ **判据（这条是本决策的核心）** | **「子记录该不该跟着父记录消失」取决于「谁有权删父记录」。<br>用户能删的东西，它下面不能挂不可再生的记录。** |
 | ⭐ 补充 | `LlmCall` 本身是**自足**的（`model` / 三种 token / `created_at` 都不依赖父表），只有「归属哪个对话」依赖父表 —— 所以断关联只丢这一项，**账本身还在** |
 
-> 📍 原始位置：[src/app/models.py](../src/app/models.py) 的 `Conversation.calls` 与 `LlmCall.conversation_id`
-> ⚠️ 相关知识：`ondelete` 与 `cascade` 的两层分工、10 组矩阵实测 → [阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) §10.6a
+> 📍 原始位置：[src/app/models.py](../../src/app/models.py) 的 `Conversation.calls` 与 `LlmCall.conversation_id`
+> ⚠️ 相关知识：`ondelete` 与 `cascade` 的两层分工、10 组矩阵实测 → [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6a
 
 ---
 
@@ -290,7 +290,7 @@
 | ⭐ 判据 | **删掉这句注释，读者会不会写错代码？会 → 留；不会 → 挪走。**<br>**注释是「防错」，不是「教学」** —— 代码里塞教学内容的后果是学习者反而不读了 |
 | 📌 硬约束 | 单块连续注释 **≤ 4 行**；docstring 的「为什么」段 **≤ 3 行** |
 
-> 📍 原始位置：[工程规范与协作约定.md](../工程规范与协作约定.md) §4.4c
+> 📍 原始位置：[工程规范与协作约定.md](../../工程规范与协作约定.md) §4.4c
 
 ---
 
@@ -305,7 +305,7 @@
 | **重审条件** | —— |
 | ⭐ 为什么分家 | **代码注释的读者在编辑器里**（等宽字体下彩色 emoji 宽度不齐、干扰对齐）；**md 的读者在渲染视图里**（emoji 是有效的层级扫读提示） |
 
-> 📍 原始位置：[工程规范与协作约定.md](../工程规范与协作约定.md) §4.4b；[.github/copilot-instructions.md](../.github/copilot-instructions.md) §三 6b
+> 📍 原始位置：[工程规范与协作约定.md](../../工程规范与协作约定.md) §4.4b；[.github/copilot-instructions.md](../../.github/copilot-instructions.md) §三 6b
 
 ---
 
@@ -332,8 +332,8 @@
 | **要改某个已定的决策** | 先读这一条的「代价」和「重审条件」；满足条件才改，改完**新增一条记录**（不要直接改旧条目） |
 | **要做新的业务/架构决定** | 按五段格式追加一条，编号递增，更新顶部「最后更新」和索引表 |
 | **查「为什么当时这么定」** | 用索引表按关键词扫 |
-| **查语法 / 实测数据** | **不看这个文件** → [阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) / [工具与依赖速查.md](工具与依赖速查.md) |
+| **查语法 / 实测数据** | **不看这个文件** → [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) / [learning/tools-reference.md](../learning/tools-reference.md) |
 
-⚠️ **和路线图的关系**：路线图（[学习档案与路线图.md](学习档案与路线图.md)）记的是**「做到哪了」**，本文件记的是**「为什么这么做」**。两者互补，**不要互相搬内容**。
+⚠️ **和路线图的关系**：路线图（[roadmap.md](roadmap.md)）记的是**「做到哪了」**，本文件记的是**「为什么这么做」**。两者互补，**不要互相搬内容**。
 
 ⚠️ **和学习笔记的关系**：笔记记**「知识点 + 实测数据」**（如"索引为什么是 O(log n)"），本文件**只记决定**（"我们决定给外键建索引"）。决定里引用笔记，笔记里不用反向引用决定。

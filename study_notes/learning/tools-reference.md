@@ -7,13 +7,13 @@
 >
 > | 想知道 | 去哪看 |
 > |---|---|
-> | **为什么**要这样设计、原理推演 | [阶段0-工程基础.md](阶段0-工程基础.md) / [阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) |
-> | 我**做过什么**、踩过什么坑 | [学习过程记录.md](学习过程记录.md) |
-> | 我现在在哪、下一步做什么 | [学习档案与路线图.md](学习档案与路线图.md) |
-> | **自检题与简要答案**（复习用） | [自检题清单.md](自检题清单.md) |
+> | **为什么**要这样设计、原理推演 | [stage0-engineering-basics.md](stage0-engineering-basics.md) / [stage1-fastapi.md](stage1-fastapi.md) |
+> | 我**做过什么**、踩过什么坑 | [learning-log.md](learning-log.md) |
+> | 我现在在哪、下一步做什么 | [project/roadmap.md](../project/roadmap.md) |
+> | **自检题与简要答案**（复习用） | [self-check-questions.md](self-check-questions.md) |
 > | **这个包怎么用**（速查） | **本文件** |
 >
-> ⚠️ **更新规则（硬约束，已写入 [工程规范与协作约定.md](../工程规范与协作约定.md) §12.2）**：
+> ⚠️ **更新规则（硬约束，已写入 [工程规范与协作约定.md](../../工程规范与协作约定.md) §12.2）**：
 > **每给项目加一个新依赖或新工具，同一轮内必须**：① 在本文件新增一节；② 更新下面 §0 总览表。
 > **只装不记 = 这一步没完成。**
 >
@@ -460,7 +460,7 @@ to ensure it is visible by default"* —— **Python 默认隐藏内置 `Depreca
 
 ### 练习脚本
 
-- [playground/httpx_demo.py](../playground/httpx_demo.py) —— 第一个真实 HTTP 请求（步骤 0.27b）
+- [playground/httpx_demo.py](../../playground/httpx_demo.py) —— 第一个真实 HTTP 请求（步骤 0.27b）
 
 ---
 

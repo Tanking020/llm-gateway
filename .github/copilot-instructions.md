@@ -17,14 +17,18 @@
 
 ## 二、开工前必读（顺序固定，不要跳）
 
+> **`study_notes/` 分成两个文件夹**（2026-10-27）：
+> **`project/`** = 本项目的台账（进度 / 决策）；**`learning/`** = 换个项目照样有用的纯知识。
+> 判据：**「换个项目，这条还对吗？」** 对 → `learning/`；不对 → `project/`。
+
 | 顺序 | 文件 | 为什么要读 |
 |---|---|---|
-| 1 | `工程规范与协作约定.md` | 最高优先级准则。尤其 §7 步骤卡格式、§10 踩坑与环境纪律、§11 AI 的边界 |
-| 2 | `study_notes/学习档案与路线图.md` | 当前进度、已知待办表、阶段规划 |
-| 3 | `study_notes/学习过程记录.md` | **已踩过的坑 + 已确认的结论**。动手前先查，别重复踩 |
-| 4 | `study_notes/阶段1-FastAPI速成.md` 对应 Step | 本轮要讲的内容（多数已提前整理好） |
-| 5 | `study_notes/自检题清单.md` | 出题与批改都从这里取，题目**只在这一处** |
-| 6 | `study_notes/决策记录.md` | **业务/架构决策台账**。动手改数据结构 / 接口形状 / 部署形态前先查有没有已定决策 |
+| 1 | `工程规范与协作约定.md` | 最高优先级准则。尤其 §4.4d 四类文件分工、§7 步骤卡格式、§10 踩坑与环境纪律、§11 AI 的边界 |
+| 2 | `study_notes/project/roadmap.md` | 当前进度、已知待办表（#1~#40）、阶段规划 |
+| 3 | `study_notes/project/decisions.md` | **业务/架构决策台账**。动手改数据结构 / 接口形状 / 部署形态前**先查有没有已定决策**，别重新发明 |
+| 4 | `study_notes/learning/learning-log.md` | **已踩过的坑 + 已确认的结论**。动手前先查，别重复踩 |
+| 5 | `study_notes/learning/stage1-fastapi.md` 对应 Step | 本轮要讲的内容（多数已提前整理好） |
+| 6 | `study_notes/learning/self-check-questions.md` | 出题与批改都从这里取，题目**只在这一处** |
 
 ---
 
@@ -68,8 +72,8 @@
 ### 4.3 每轮收口（缺一不可）
 
 1. 跑质量门：`uv run ruff check . ; uv run ruff format --check . ; uv run mypy .`
-2. 更新 `study_notes/学习过程记录.md`：**流水表加一行**；有新踩坑/新结论就各加一行
-3. 新增自检题 → 写进 `study_notes/自检题清单.md`（**不要**在阶段笔记里复制一份）
+2. 更新 `study_notes/learning/learning-log.md`：**流水表加一行**；有新踩坑/新结论就各加一行
+3. 新增自检题 → 写进 `study_notes/learning/self-check-questions.md`（**不要**在阶段笔记里复制一份）
 4. 更新进度标记（路线图 / 规范 §7.0b / 阶段笔记）——**同一事实记在多处时要全部更新**
 5. 提交并 push（见 4.5）
 

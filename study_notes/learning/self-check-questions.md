@@ -8,8 +8,8 @@
 > | 想知道 | 去哪看 |
 > |---|---|
 > | **题目与简要答案**（复习用） | **本文件** |
-> | 某题的**深度原理与实测过程** | [阶段0-工程基础.md](阶段0-工程基础.md) / [阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) |
-> | 我做过什么、踩过什么坑 | [学习过程记录.md](学习过程记录.md) |
+> | 某题的**深度原理与实测过程** | [stage0-engineering-basics.md](stage0-engineering-basics.md) / [stage1-fastapi.md](stage1-fastapi.md) |
+> | 我做过什么、踩过什么坑 | [learning-log.md](learning-log.md) |
 >
 > ⚠️ **怎么用**：**先自己答，再对照**。只读答案 = 没学会。
 > 答案只写要点，**展开要能自己讲出来**才算过。
@@ -429,7 +429,7 @@
 30. `choices[0]` 和"index 为 0 的候选"是一回事吗？如果上游真支持 `n>1` 会怎样？
     > **不是一回事**。`choices[0]` = "**本帧**数组的第一个元素"。📎 模拟 `n=2` 的交织帧（`index` 0/1 交替、每帧只含一个候选）→ 现在的代码逐帧取 `[0]` 会把两路文字**搅成 `'答另案一A段'`**，不是"丢弃一个"。按 `index` 聚合才得到 `0:'答案A'` / `1:'另一段'`。⭐ 防御写法 1 行：`if choice.get("index", 0) != 0: continue`。判据：**列表取 `[0]` 前先问"这个 0 代表什么"**。
 31. 「语义缓存」这个想法在业界存在吗？自己想到 ACL 隔离算不算创新？
-    > **存在且成熟**，叫 **semantic cache**。📎 官方页面原文：GPTCache 仓库标题 `A Library for Creating Semantic Cache for LLM Queries`；RedisVL `SemanticCache` 文档"What You'll Learn" 里直接写着 `Configure TTL policies` 与 `Implement access controls with tags and filters for multi-user scenarios`。⭐ 所以 ACL 进键、TTL 失效都是**库里的现成参数，不是创新**。真正的分水岭是**能不能用数据证明该缓存（命中率 / 误命中率 / 省多少钱）并设计出不越权的失效机制**。详见[学习过程记录](学习过程记录.md)专题 7。
+    > **存在且成熟**，叫 **semantic cache**。📎 官方页面原文：GPTCache 仓库标题 `A Library for Creating Semantic Cache for LLM Queries`；RedisVL `SemanticCache` 文档"What You'll Learn" 里直接写着 `Configure TTL policies` 与 `Implement access controls with tags and filters for multi-user scenarios`。⭐ 所以 ACL 进键、TTL 失效都是**库里的现成参数，不是创新**。真正的分水岭是**能不能用数据证明该缓存（命中率 / 误命中率 / 省多少钱）并设计出不越权的失效机制**。详见[学习过程记录](learning-log.md)专题 7。
 32. `async with client.stream(...)` 退出代码块时的「关闭连接」，到底关的是什么？TCP 会断吗？
     > 取决于**流有没有读完**。📎 三种情形实测（读 `client._transport._pool.connections`）：① **读完**整个 body → 连接**归还连接池**、TCP **不断**（3 次请求池内恒为 `1`、`is_idle=True is_closed=False`）② **中途 break** → 连接**被销毁**（池内 `0`）③ 退出 `AsyncClient` 的 `async with` → 池清空。⚠️ 这说的是**「我们的服务器 → 上游」**，与「浏览器 → 我们的服务」是两条独立连接。⭐ 判据：**「关闭」≠「断 TCP」**，读完只是归还。
 33. 我们的代码在 `[DONE]` 处 `break`，会带来什么后果？
@@ -787,7 +787,7 @@
 
 | 日期 | 变更 |
 |---|---|
-| 2026-10-16 | 初版：从 [阶段0-工程基础.md](阶段0-工程基础.md)（10 节）与 [阶段1-FastAPI速成.md](阶段1-FastAPI速成.md)（13 节）汇总全部自检题并配简要答案；阶段1 Step 1 的批改订正（🟡 三处）并入答案；阶段1 Step 5 补入本会话新增的 3 道（依赖执行时机 / 覆盖表全局性 / 参数默认值） |
+| 2026-10-16 | 初版：从 [stage0-engineering-basics.md](stage0-engineering-basics.md)（10 节）与 [stage1-fastapi.md](stage1-fastapi.md)（13 节）汇总全部自检题并配简要答案；阶段1 Step 1 的批改订正（🟡 三处）并入答案；阶段1 Step 5 补入本会话新增的 3 道（依赖执行时机 / 覆盖表全局性 / 参数默认值） |
 | 2026-10-17 | 阶段 1 · Step 5 补 7 题（第 9~15 题）：1.4d-1 抽取共用工厂 4 题（改动点数量 / 为何不 yield / 重构验收标准 / 模块放哪层）+ 1.4d-2 真实调上游 3 题（硬编码 vs 真实、上游 401 为何变 500、怎么不联网测试） |
 | 2026-10-17 | 阶段 0 · Step 2 补 2 题（第 5~6 题）：editable 安装的本质（只写指针不复制代码，怕路径变化不怕代码变化）/ 既然 `.venv` 里存着绝对路径为何还能随便删（配方 vs 成品）。来源：改名时踩到 `.venv` 指针悬空的实测 |
 | 2026-10-17 | **订正**阶段 1 · Step 6 第 3 题答案：`lifespan` 的 `yield` dict 进的是 `request.state`，**不是** `app.state`（`TestClient` 实测）；同批实测：不用 `with TestClient(...)` 时 lifespan **完全不执行** |

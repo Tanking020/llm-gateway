@@ -52,7 +52,7 @@
 
 ## 学习进度
 
-**两列含义不同**：`笔记状态` = 该节内容是否已写好；`实操状态` = 本仓库是否真的动手做过（对应 [学习过程记录.md](学习过程记录.md) 的流水编号）。
+**两列含义不同**：`笔记状态` = 该节内容是否已写好；`实操状态` = 本仓库是否真的动手做过（对应 [learning-log.md](learning-log.md) 的流水编号）。
 
 | Step | 主题 | 笔记状态 | 实操状态 |
 |------|------|------|------|
@@ -71,7 +71,7 @@
 > ⚠️ 状态含义：**✅ 已整理** = 笔记写完了；**不代表学会了**。
 > 学会的判据是 **附录 E 的题能不看笔记口头讲清**。
 > **阶段 0 整体**：核心（2 / 4 / 5 / 6 / 7 / 9）已完成，Step 8 与 Step 10 顺延 —— 详见
-> [学习档案与路线图.md](学习档案与路线图.md) 第六节。
+> [project/roadmap.md](../project/roadmap.md) 第六节。
 
 ---
 
@@ -180,7 +180,7 @@ v5  train_v2_final_fix.py       # 修了个 bug，但只改了其中一份
 
 ## 1.5 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 1 可复现）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 1 可复现）。
 
 ---
 
@@ -343,7 +343,7 @@ select = ["E", "F", "I", "UP", "B"]   # 启用哪些规则集
 
 ## 2.9 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 2 uv 与依赖）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 2 uv 与依赖）。
 
 ---
 
@@ -533,7 +533,7 @@ git --no-pager log --oneline
 
 ## 3.10 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 3 Git）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 3 Git）。
 
 ---
 
@@ -607,11 +607,11 @@ src.__path__ = _NamespacePath(['...\llm-app-engineering\src'])  ← 命名空间
 
 ```text
 学习资料仓库/
-├── 学习档案与路线图.md
+├── project/roadmap.md
 ├── study_notes.md
 └── notes/
-    ├── 阶段0-工程基础.md
-    └── 阶段1-FastAPI速成.md
+    ├── stage0-engineering-basics.md
+    └── stage1-fastapi.md
 
 自己的练习项目/                  # 学习时从空目录创建，不要复制现成骨架
 ├── pyproject.toml
@@ -660,7 +660,7 @@ settings = Settings()          # 从环境变量 / .env 读取
 
 ## 4.4 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 4 项目结构）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 4 项目结构）。
 
 ---
 
@@ -802,7 +802,7 @@ settings = Settings()   # ⑤ 模块级单例
 | `llm_api_key` | `APP_LLM_API_KEY` |
 
 > ⚠️ **本节是「早期设计快照」，不是当前 `config.py` 的实况**（2026-10-14 校订）。
-> 本项目最终做了三处不同选择，**以 [`src/app/config.py`](../src/app/config.py) 为准**：
+> 本项目最终做了三处不同选择，**以 [`src/app/config.py`](../../src/app/config.py) 为准**：
 > ① **不再用 `env_prefix`** —— 环境变量名 = 字段名转大写（`app_name` ← `APP_NAME`、`llm_api_key` ← `LLM_API_KEY`）；
 > ② `extra="forbid"` 而非 `ignore` —— 换来"拼错键名立刻报错"（代价见下面那段说明）；
 > ③ 字段名是 `app_env`（不是 `env`），并新增 `host` / `port` / `llm_model` / `request_timeout`。
@@ -865,7 +865,7 @@ def chat(req: ChatRequest):     # 进来时已经是干净的
 
 ## 5.7 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 5 pydantic）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 5 pydantic）。
 
 ---
 
@@ -996,7 +996,7 @@ result = do_something()  # type: ignore     # ❌ 无理由、无错误码，掩
 
 ## 6.6 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 6 类型注解与 mypy）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 6 类型注解与 mypy）。
 
 ---
 
@@ -1214,11 +1214,11 @@ def echo(request: ChatRequest) -> ChatResponse:
 所以这个占位实现**语义上是对的**，阶段 1 换成真模型时逻辑不用改。
 
 > ⚠️ 但如果最后一条是 `system` 角色呢？`echo` 会把系统提示词当成用户问题回显。
-> **真实实现里必须检查 `request.messages[-1].role == "user"`** —— 这类"边界情况"正是测试该覆盖的地方（已列为项目待办，见 [自检题清单.md](自检题清单.md) 阶段 0 · Step 7 第 6 题）。
+> **真实实现里必须检查 `request.messages[-1].role == "user"`** —— 这类"边界情况"正是测试该覆盖的地方（已列为项目待办，见 [self-check-questions.md](self-check-questions.md) 阶段 0 · Step 7 第 6 题）。
 
 ## 7.8 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 7 异步）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 7 异步）。
 
 ---
 
@@ -1493,7 +1493,7 @@ uv run pytest --cov=src --cov-report=term-missing
 
 ## 8.8 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 8 测试）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 8 测试）。
 
 ---
 
@@ -1610,7 +1610,7 @@ uv run ruff format . ; uv run ruff check . ; uv run mypy . ; uv run pytest -q
 
 ## 9.6 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 9 lint/format）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 9 lint/format）。
 
 ---
 
@@ -1775,7 +1775,7 @@ USER appuser
 
 ## 10.7 自检
 
-> 本节自检题与简要答案已移入 [自检题清单.md](自检题清单.md)（阶段 0 · Step 10 Docker）。
+> 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 0 · Step 10 Docker）。
 
 ---
 

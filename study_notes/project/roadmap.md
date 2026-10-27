@@ -40,10 +40,10 @@
 
 | 缺口 | 表现 | 补齐位置 | 状态 |
 |---|---|---|---|
-| **生成器 / 迭代协议**（`yield` / `__anext__` / 谁在推进） | 连续三轮问"到底谁在推进 yield"、"循环外的 yield 会不会推进"、"我代码里没有 `async for`" | [阶段1](阶段1-FastAPI速成.md) **§9.3a 六层**（冻结证据 / 状态机 / 谁在拉）+ **§9.2d ③b**（调用栈指向 `starlette/responses.py:253`） | 🟡 已讲解，待自检题 12~16、21~24 自测确认 |
-| **字面量语义**（f-string / 转义 `\n`） | 问"`f"data: {payload}\n\n"` 和 `"data: [DONE]\n\n"` 是啥" | [阶段1](阶段1-FastAPI速成.md) **§9.2b**（`f` 前缀 / `{}` 插槽 / `\n` 是一个字符 / 双写 `{{}}`） | ✅ 已补齐 |
-| **"帧" vs "时间"两个维度** | 问"既然有帧了为啥还要手动 sleep" | [阶段1](阶段1-FastAPI速成.md) **§9.2c**（帧是数据边界 / 帧数与时长无关 / sleep 是上游延迟的替身） | ✅ 已补齐 |
-| **生成器 vs 框架的分工** | 问"`StreamingResponse` 干了啥，不是生成器都干完了" | [阶段1](阶段1-FastAPI速成.md) **§9.2d**（同一生成器三种用法 / SR 六项职责 / 手写 ASGI 对比） | ✅ 已补齐 |
+| **生成器 / 迭代协议**（`yield` / `__anext__` / 谁在推进） | 连续三轮问"到底谁在推进 yield"、"循环外的 yield 会不会推进"、"我代码里没有 `async for`" | [阶段1](../learning/stage1-fastapi.md) **§9.3a 六层**（冻结证据 / 状态机 / 谁在拉）+ **§9.2d ③b**（调用栈指向 `starlette/responses.py:253`） | 🟡 已讲解，待自检题 12~16、21~24 自测确认 |
+| **字面量语义**（f-string / 转义 `\n`） | 问"`f"data: {payload}\n\n"` 和 `"data: [DONE]\n\n"` 是啥" | [阶段1](../learning/stage1-fastapi.md) **§9.2b**（`f` 前缀 / `{}` 插槽 / `\n` 是一个字符 / 双写 `{{}}`） | ✅ 已补齐 |
+| **"帧" vs "时间"两个维度** | 问"既然有帧了为啥还要手动 sleep" | [阶段1](../learning/stage1-fastapi.md) **§9.2c**（帧是数据边界 / 帧数与时长无关 / sleep 是上游延迟的替身） | ✅ 已补齐 |
+| **生成器 vs 框架的分工** | 问"`StreamingResponse` 干了啥，不是生成器都干完了" | [阶段1](../learning/stage1-fastapi.md) **§9.2d**（同一生成器三种用法 / SR 六项职责 / 手写 ASGI 对比） | ✅ 已补齐 |
 
 > 规律：**这几项都属于"Python 语言层"而非"框架层"** —— 框架文档不会讲，但读框架源码时必须先有。
 > 后续进入 RAG/Agent 若再出现同类卡壳（如装饰器、上下文管理器、`Protocol`），继续往这张表加行。
@@ -59,7 +59,7 @@
 - **内容**：Git（branch / PR 规范）、conda 或 uv 环境管理、类型注解、`pydantic`、`async/await`、Docker 基础
 - **产出**：从空目录搭建一个规范的 Python 项目（含 `pyproject.toml`、`.gitignore`、虚拟环境；Dockerfile 作为后续练习）
 - **验收**：能用 Git 提交 PR、能用 Docker 跑起一个 Python 服务
-- **笔记**：[阶段0-工程基础.md](阶段0-工程基础.md)
+- **笔记**：[learning/stage0-engineering-basics.md](../learning/stage0-engineering-basics.md)
 - **状态**：✅ **已完成**（2026-10-07 ~ 10-14，步骤 `0.1 ~ 0.30`）
   - 实际产出：`uv` + `src` 布局 + Git/GitHub + pydantic 配置与数据契约 + 异步原理实验 + httpx 真实请求 + CLI 入口（`ping` 已实测调通上游 API）+ 三条质量门（ruff / mypy strict）
   - ⚠️ **验收中的两项未做，已顺延**：`Dockerfile`（留到有服务之后）、`git branch / PR` 实际演练（目前直接提交 `main`）
@@ -69,7 +69,7 @@
 - **内容**：路由、依赖注入、`pydantic` 请求/响应模型、中间件、异常处理、**SSE 流式响应**、SQLite/PostgreSQL CRUD、SQLAlchemy
 - **产出**：一个可运行的「聊天接口后端」（业务逻辑先用 echo 占位）
 - **验收**：能用 curl / Swagger 调通接口，能流式返回内容
-- **笔记**：[阶段1-FastAPI速成.md](阶段1-FastAPI速成.md)（13 步 + 10 个难点拓展 + 5 个附录）
+- **笔记**：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md)（13 步 + 10 个难点拓展 + 5 个附录）
 - **状态**：🟡 **进行中**（2026-10-14 起，Step 1~9 已完成）
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
@@ -147,7 +147,7 @@
 
 > 状态图例：⬜ 未开始 / 🟡 进行中 / ✅ 已完成 / ⛔ 阻塞
 
-**阶段 0 子进度（2026-10-07 ~ 10-14，明细见 [学习过程记录.md](学习过程记录.md) 第一节）**：
+**阶段 0 子进度（2026-10-07 ~ 10-14，明细见 [learning/learning-log.md](../learning/learning-log.md) 第一节）**：
 
 | 区间 | 内容 | 状态 |
 |---|---|---|
@@ -166,7 +166,7 @@
 
 > ⚠️ **编号规则在 Step 6 处变过一次，别按一种规则去读全部**：
 > - `1.1` ~ `1.4l`：**按发生顺序**编的流水号，**不等于 Step 号**。映射：`1.1`→Step 2、`1.2`→Step 1、`1.3`→Step 3、**`1.4`~`1.4l`→Step 5（依赖注入）**；`1.5`~`1.7` 是支线（改名 / 会话恢复 / copilot-instructions），不属于任何 Step
-> - `6.1` 起：改用**笔记小节号**（`6.1` = Step 6 的第 1 小步），与 [阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) 的章节一一对应
+> - `6.1` 起：改用**笔记小节号**（`6.1` = Step 6 的第 1 小步），与 [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) 的章节一一对应
 
 | 编号 | 内容 | 状态 |
 |---|---|---|
@@ -180,7 +180,7 @@
 | 1.4c | `yield` 依赖：把 HTTP 客户端的生命周期交给框架（**Step 5 完成**） | ✅ 提交 `82db843`（实测复现反面写法 `is_closed=False`） |
 | 1.4d-1 | 抽共用模块：新增 `src/app/llm_client.py`（`create_llm_client()`），`deps.py` 与 `main.py` 改用它，删掉重复的三行构造 | ✅ 提交 `f53c6dc` |
 | 1.4d-2 | 把 client 真的接进 `/v1/chat`，发一次真实上游请求（验证 `Bearer` 拼写） | ✅ 提交 `af6cdbf`（实测 200 + 真实模型列表） |
-| 1.5 ~ 1.7 | 支线（不属于任何 Step）：项目改名 / 找回改名后消失的会话 / 固化 copilot-instructions | ✅ 见 [学习过程记录.md](学习过程记录.md) |
+| 1.5 ~ 1.7 | 支线（不属于任何 Step）：项目改名 / 找回改名后消失的会话 / 固化 copilot-instructions | ✅ 见 [learning/learning-log.md](../learning/learning-log.md) |
 | 4a | `schemas.py` 新增 `ModelItem`（3 字段白名单）+ `ModelListResponse`（**Step 4 输出契约**） | ✅ 实测上游 10 键 → 3 字段 |
 | 4b | `/v1/upstream/models` 改用 `ModelListResponse` 返回注解，`fetch_upstream_models` 返回 `list[ModelItem]`（**Step 4 收口**） | ✅ 实测 200 结构化 / 502 回归 / OpenAPI 指向 `ModelListResponse` |
 | 6.1 | 未知模型返回 404（`HTTPException` + `status`，修待办 #1） | ✅ 提交 `600264b`；实测 200 / 404 |
@@ -306,14 +306,16 @@
 llm-app-engineering\                       # 项目根
 ├── 工程规范与协作约定.md        # 协作规范（开新对话第一个读）
 ├── README.md                    # 面向使用者的说明（含架构决策与路线图）
-├── study_notes\                 # 学习笔记集中存放
-│   ├── 学习档案与路线图.md      # 本文档：长期上下文来源，随进度更新
-│   ├── 学习过程记录.md          # 过程与收获：流水 / 踩坑 / 结论 / 专题
-│   ├── 工具与依赖速查.md        # 第三方包与工程工具速查
-│   ├── 自检题清单.md            # 全部自检题 + 简要答案（按阶段，复习用）
-│   ├── 决策记录.md              # 业务/架构决策（为什么项目长成这样）
-│   ├── 阶段0-工程基础.md
-│   └── 阶段1-FastAPI速成.md
+├── study_notes\                 # 学习笔记集中存放（2026-10-27 分两个文件夹）
+│   ├── project\                 # 【项目业务】这个项目自己的台账
+│   │   ├── roadmap.md           # 本文档：进度 / 路线 / 待办清单
+│   │   └── decisions.md         # 业务与架构决策（为什么项目长成这样）
+│   └── learning\                # 【纯学习笔记】换个项目照样有用的知识
+│       ├── stage0-engineering-basics.md   # 阶段 0：工程基础
+│       ├── stage1-fastapi.md              # 阶段 1：FastAPI 速成
+│       ├── tools-reference.md             # 第三方包与工程工具速查
+│       ├── self-check-questions.md        # 全部自检题 + 简要答案
+│       └── learning-log.md                # 过程与收获：流水 / 踩坑 / 结论
 ├── pyproject.toml / uv.lock / .python-version / .gitignore / .gitattributes
 ├── .env.example（提交） / .env（不提交）
 ├── src\app\                     # 应用代码
@@ -335,17 +337,17 @@ llm-app-engineering\                       # 项目根
 
 | 笔记 | 规模 | 覆盖内容 |
 |---|---|---|
-| [阶段0-工程基础.md](阶段0-工程基础.md) | 2457 行 | uv / Git / pydantic / 类型注解 / 异步 / 测试 / lint / Docker + 11 个难点拓展 |
-| [阶段1-FastAPI速成.md](阶段1-FastAPI速成.md) | 4375 行 | HTTP/ASGI → SSE 流式 → 数据库 → 测试 → 部署，共 13 步 + 10 个难点拓展；**Step 6 后有「前半程回顾」**（复习入口） |
-| [学习过程记录.md](学习过程记录.md) | 884 行 | 步骤流水 / 踩坑 / 重要结论 / 重点专题（每步自动追加） |
-| [工具与依赖速查.md](工具与依赖速查.md) | 914 行 | 每个依赖与工具的定位、安装、常用语法与命令、实测默认值、易错点（§9 起含标准库 logging） |
-| [自检题清单.md](自检题清单.md) | 415 行 | **全部自检题 + 简要答案**，按阶段/步骤排列；⭐ 标高频、🟡 标答错过、📎 标有配套实测 |
-| [工程规范与协作约定.md](../工程规范与协作约定.md) | 1486 行 | 协作节奏、步骤卡模板、质量门、目录与命名、安全约定 |
+| [learning/stage0-engineering-basics.md](../learning/stage0-engineering-basics.md) | 2457 行 | uv / Git / pydantic / 类型注解 / 异步 / 测试 / lint / Docker + 11 个难点拓展 |
+| [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) | 4375 行 | HTTP/ASGI → SSE 流式 → 数据库 → 测试 → 部署，共 13 步 + 10 个难点拓展；**Step 6 后有「前半程回顾」**（复习入口） |
+| [learning/learning-log.md](../learning/learning-log.md) | 884 行 | 步骤流水 / 踩坑 / 重要结论 / 重点专题（每步自动追加） |
+| [learning/tools-reference.md](../learning/tools-reference.md) | 914 行 | 每个依赖与工具的定位、安装、常用语法与命令、实测默认值、易错点（§9 起含标准库 logging） |
+| [learning/self-check-questions.md](../learning/self-check-questions.md) | 415 行 | **全部自检题 + 简要答案**，按阶段/步骤排列；⭐ 标高频、🟡 标答错过、📎 标有配套实测 |
+| [工程规范与协作约定.md](../../工程规范与协作约定.md) | 1486 行 | 协作节奏、步骤卡模板、质量门、目录与命名、安全约定 |
 
 > ⭐ 两篇阶段笔记的代码**全部在真实环境实测过**（本仓库实测版本：fastapi **0.143.0** / starlette **1.8.0** /
 > uvicorn **0.54.0** / pydantic 2.13.5 / httpx 0.28.1），并标注了 2026 年的废弃写法（`on_event`、`TestClient` 的 httpx 依赖等）。
 >
-> 📋 **复习入口**：阶段笔记里的"自检"小节只保留标题 + 指向 [自检题清单.md](自检题清单.md) 的指针；
+> 📋 **复习入口**：阶段笔记里的"自检"小节只保留标题 + 指向 [learning/self-check-questions.md](../learning/self-check-questions.md) 的指针；
 > **题目与答案只存在一处**（避免两处不一致，规则见规范 §12.1）。深度原理与实测数据仍在各阶段笔记正文里。
 
 
@@ -355,7 +357,7 @@ llm-app-engineering\                       # 项目根
 
 1. **每次新对话开始时**，先让 AI 阅读本文档，再继续讨论，避免重复交代背景。
 2. 说「**更新进度**」时 → 修改第六节的日期与状态。
-3. 说「**记笔记**」时 → 在 [工具与依赖速查.md](工具与依赖速查.md) 里新增/更新对应工具或依赖的小节（维护规则见规范 §12.2），并在本文档登记。
+3. 说「**记笔记**」时 → 在 [learning/tools-reference.md](../learning/tools-reference.md) 里新增/更新对应工具或依赖的小节（维护规则见规范 §12.2），并在本文档登记。
 4. 说「**做项目 X**」时 → 先从空目录开始，按阶段产出推进。
 5. 技术原则：
    - 先原生 API，后框架
