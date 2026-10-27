@@ -748,6 +748,28 @@
     > 📎 实测反例：改之前 `/v1/chat` 先查库(270 行)后语义(276 行)，`/v1/chat/stream` 先语义(421)后查库(426) —— 对「`conversation_id=999` + 最后一条是 assistant」这个请求，两条接口分别回 **404 / 400**（同一种坏请求两个答案）。统一成「先语义后查库」后两条都回 **400**。
     > ⭐ 附带收益：非法消息**零 IO** 就被拒，数据库白省一次往返。
 
+41. 流式接口里 `flush()` 过一条数据之后客户端断开，`get_db` 会怎么处理？为什么「在 `except` 里 `raise`」拦不住？
+    > `get_db` 的 `yield session` 之后是 `await session.commit()` —— 流结束后 FastAPI 认为依赖**正常结束**，这一行照常执行。而 `except Exception` 抓不到 `CancelledError`（它继承 `BaseException`）。
+    > 📎 实测 D 组（只 `raise` 不回滚）：断开后库里**多 1 行**半截账单。A 组（完全无守卫）同样 1 行。
+    > ⭐ **真正让 commit 失效的不是「抛异常」，而是 `rollback()` 把活动事务清掉了**（`in_tx` 从 `True` 变 `False`），之后 `commit()` 变成空操作。
+
+42. 流式落库时 `except Exception` 和 `except BaseException` 分别覆盖什么？两个分支的顺序能反吗？
+    > | 分支 | 覆盖 |
+    > |---|---|
+    > | `except Exception` | 上游给坏帧 / `flush` 失败等普通异常 |
+    > | `except BaseException` | 客户端断开（`CancelledError`）、生成器被关闭（`GeneratorExit`） |
+    > ⚠️ **顺序不能反**：`BaseException` 写在前面会把所有普通异常也吃掉，`except Exception` 分支永远不执行。
+    > ⭐ 两个分支都要 `await db.rollback()` —— 漏掉任一条都有一类场景会留下半截账单。
+
+43. `usage` 在 DeepSeek 和 OpenAI 的流式响应里出现的位置有什么不同？只处理一处会怎样？
+    > | 上游 | 位置 |
+    > |---|---|
+    > | DeepSeek | 和 `finish_reason` 挤在**同一帧** |
+    > | OpenAI（`stream_options.include_usage`） | **单独一帧**，且 `choices` 是空列表 |
+    > ⭐ 只处理一处 → **有一半上游记不上账**（而且不报错，静默漏账）。
+    > ⭐ 另外要防重复：上游可能在多帧重复给 `usage`，不设开关会**一次调用记成两行 = 重复收费**。
+    > 📎 强化验证用假上游造两种帧序，两种都落 1 行（`conv=1 / prompt=33 / completion=46 / total=79`）。
+
 ### Step 11 · 工程化：配置 / 日志 / 安全
 
 1. 为什么"前端直连 LLM API"必然泄露 Key？F12 能看到吗？

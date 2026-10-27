@@ -74,7 +74,8 @@
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
-  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅；下一步 **10.6b-3 生成器里把 usage 写进 `llm_calls`**（`except BaseException` 回滚守卫）
+  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅；下一步 **10.6c N+1 与 `selectinload`**
+  - ⚠️ **已知的小瑕疵**：笔记里 `§10.6c`（N+1）的物理位置排在 `§10.6b-2` **之前** —— 编号与顺序不一致，下次整理笔记时再挪（不影响阅读，因为都有编号）
 
 ### 阶段 2：LLM 原生 API（2 周）
 
@@ -218,7 +219,7 @@
 | 10.6a | `LlmCall` 表 + `Conversation.calls` 一对多（外键 / `cascade` / `conversation_id` 索引） | ✅ 2026-10-26 完成；📎 建表语句含 `ON DELETE CASCADE` + `ix_llm_calls_conversation_id`；📎 索引实测 25 倍（5 万行）+ 规模曲线证明 O(log n)；📎 五种删父子写法对比；⚠️ 批改订正一处理解错误（`ondelete=` 不能解决 ORM 置 NULL） |
 | 10.6b-1 | 打开 SQLite 外键强制（`engine.sync_engine` 的 `connect` 事件 + `PRAGMA foreign_keys=ON`） | ✅ 2026-10-26 完成；📎 池内 3 条连接全为 1；孤儿 `conversation_id=999` 被 `IntegrityError` 拒；📎 **订正 10.6a 的旧结论**：10 组矩阵证明 `ondelete` 依赖 `PRAGMA`，且「有 relationship 无 cascade」会抵消级联 |
 | 10.6b-2 | `ChatRequest` 加 `conversation_id` + pre-flight（不存在 → 404，流开始前拦） | ✅ 2026-10-27 完成；📎 六项验证 200 / 404 / 404 / 422 / 200 / 400×2；⭐ 顺带把「对话不存在」的 5 处重复抽成 `require_conversation`，并统一两条 chat 的校验顺序 |
-| 10.6b-3 | 生成器里写 `LlmCall`（`except BaseException` 回滚守卫） | ⬜ 待做 |
+| 10.6b-3 | 生成器里写 `LlmCall`（`except BaseException` 回滚守卫） | ✅ 2026-10-27 完成；📎 真上游落 1 行 `conv=1 / 33+46=79`；📎 六组守卫矩阵证明「只 raise 不回滚」会被 `get_db` 提交半截账单；📎 强化验证 C vs D（同一场景 0 行 / 1 行） |
 | 10.6c | N+1 原理 + `selectinload` 实测 | ⬜ 待做 |
 | 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39） | ⬜ 待做 |
 

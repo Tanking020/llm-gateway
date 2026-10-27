@@ -40,6 +40,7 @@
 | [17](#17-代码注释只留防错教学进笔记) | 注释边界 | **注释防错，笔记教学** | 2026-10-26 |
 | [18](#18-标记符号md-用-emoji代码不用) | 标记符号 | **md 用 emoji，py 用【注意】** | 2026-10-26 |
 | [19](#19-一次对话由谁定义服务端无状态-vs-有状态) | 「一次对话」的定义 | **保持无状态，messages 表列阶段 2** | 2026-10-27 |
+| [20](#20-流式接口落库必须在断开路径上显式-rollback) | 流式落库的事务边界 | **`except BaseException` + `rollback`** | 2026-10-27 |
 
 ---
 
@@ -331,6 +332,23 @@
 | ⚠️ 别混淆 | 现阶段的 `conversation_id`（10.6b-2）**只能解决「这次调用属于哪个对话」，不能解决「前几轮说了什么」** —— 后者必须等 `messages` 表。不要以为加了 `conversation_id` 就有会话了。 |
 
 ---
+## 20. 流式接口落库：必须在断开路径上显式 `rollback`
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 10.6b-3 要在 `event_source` 里把 `usage` 写进 `llm_calls`。但流式响应里，路由函数**早就 return 了**（返回的是 `StreamingResponse` 对象），`get_db` 的 `commit()` 会在流结束后执行。客户端中途断开时会发生什么？ |
+| **方案对比** | A 无守卫<br>**B `except BaseException: await db.rollback(); raise`**<br>C 正常路径自己 `commit()`<br>D `except BaseException: raise`（只抛不回滚） |
+| **决定** | **B**。`except Exception` 分支也加 `rollback()` |
+| **代价** ⚠️ | ① 断开时 `rollback()` 的 `await` 会被二次取消（服务端多一条 `ERROR sqlalchemy.pool ... CancelledError` 噪音，不是 bug）；② 与 [9](#9-请求级数据库会话由依赖统一提交) 的「事务边界收在一处」有张力 —— 但那是**正常路径**的约定，断开路径必须自己兜 |
+| **重审条件** | 若将来给流式接口单独做 `get_db_stream`（不自动 commit），可去掉这里的 rollback |
+| 📎 **实测矩阵** | A 无守卫 → 断开后 **1 行**（半截账单被提交）；B → **0 行**；C → 0 行；**D 只 raise → 1 行**；S `asyncio.shield` → 0 行但 `in_tx=True`；K `close` → 0 行 |
+| ⭐⭐ **根因** | **D 组是钥匙**：光抛异常没用。`get_db` 的 `commit()` 在 `yield` 恢复后照常执行。真正让 commit 失效的是 `rollback()` 把**活动事务清掉**（`in_tx` 从 `True` 变 `False`）→ 之后 `commit()` 成空操作 |
+| ⭐ **判据** | **流式接口里凡是 `flush` 过的数据，都必须在「客户端断开」这条路径上显式 `rollback`** —— 因为框架会把它当成「正常完成」来提交 |
+
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6b-3；[src/app/api/app.py](../../src/app/api/app.py) `event_source` 的两个 `except` 分支
+
+---
+
 ## 待定 / 需要以后拍板的
 
 > 这些**还没定**，列在这里避免忘。定了之后移到上面。

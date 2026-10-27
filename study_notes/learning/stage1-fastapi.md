@@ -4994,7 +4994,7 @@ error: Statement is unreachable  [unreachable]
 | ⑨ §10.6a `LlmCall` 表 | 外键 + `relationship` + `cascade` + `index=True`；📎 索引实测 25 倍 | ✅ 2026-10-26 |
 | ⑩ §10.6b-1 外键强制 | `connect` 事件 + `PRAGMA foreign_keys=ON`；📎 孤儿插入被拒 | ✅ 2026-10-26 |
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
-| ⑫ §10.6b-3 usage 落库 | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫 | ⬜ 待做 |
+| ⑫ §10.6b-3 usage 落库 | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫；📎 六组守卫矩阵（D 组证明「只 raise 没用」）+ 四格强化验证（C vs D 是同一场景 0 行 / 1 行） | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ⬜ 待做 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
 | ⑮ §10.8 自检 | 本节自检 40 题 | ⬜ 待做 |
@@ -7091,7 +7091,90 @@ call.conversation.title -> AttributeError: 'NoneType' object has no attribute 't
 
 ⭐ 判据：**抽不抽公共代码看「失败路径」不看「成功路径」** —— 失败路径通常比成功路径一致得多。
 
----## 10.7 迁移（了解，阶段 1 不急）
+---
+
+## 10.6b-3 ⚠️ 流式接口里落库：`usage` 记账 + 断开守卫
+
+### 这一步做了什么
+
+`event_source` 里两处拿到 `usage` 的地方，把这次调用写进 `llm_calls` 一行；并且保证「客户端中途断开」时**不留半截账单**。
+
+### 📎 六组守卫实测（真 uvicorn + 项目的 `get_db`，4 种守卫 × 2 种结束方式）
+
+| 守卫写法 | 正常读完 | **中途断开** | 断开后事务状态 |
+|---|---|---|---|
+| **A 无守卫** | 1 行 ✅ | **1 行** ❌ 半截账单被提交 | `in_tx=True` |
+| **B `except BaseException: await db.rollback(); raise`** | 1 行 ✅ | **0 行** ✅ | `in_tx=False` |
+| C 正常路径自己 `commit()` | 1 行 ✅ | 0 行 ✅ | `in_tx=False` |
+| **D 只 `raise` 不回滚** | 1 行 ✅ | **1 行** ❌ | `in_tx=True` |
+| S `asyncio.shield(db.rollback())` | 1 行 ✅ | 0 行 | ⚠️ `in_tx=True`（状态没清干净） |
+| K `await db.close()` | 1 行 ✅ | 0 行 ✅ | `in_tx=False` |
+
+⭐⭐ **D 组是理解整件事的钥匙**：光抛异常没用。因为 `get_db` 长这样——
+
+```python
+async with SessionMaker() as session:
+    try:
+        yield session
+        await session.commit()   # 流结束后 FastAPI 认为依赖「正常结束」，这一行照常执行
+    except Exception:            # CancelledError 不是 Exception，抓不到
+        await session.rollback()
+```
+
+⭐ **真正让 commit 失效的不是「抛异常」，而是 `rollback()` 把活动事务清掉了**（`in_tx` 从 `True` 变 `False`）—— 之后 `get_db` 的 `commit()` 变成**空操作**。
+
+⚠️ 实测 B 的 `await db.rollback()` 那一行**自身**会被二次取消（trace 显示 `清理动作被二次取消: CancelledError`），但事务状态在 await 被取消**之前**就已经切换好了 —— 所以结果正确。这不是巧合：SQLAlchemy 把事务状态切换放在同步段。
+
+### 📎 强化验证：让断开真的发生在「flush 之后」
+
+普通 curl 测不出来 —— 因为断开通常发生在第一帧 `status: thinking`，那时**还没 flush 任何东西**，「没多行」是必然的。
+
+必须用假上游把帧序改成「先给 usage 帧，再故意慢 5 秒」：
+
+| 场景 | 期望 | 实测 |
+|---|---|---|
+| A DeepSeek 风格（usage 与 `finish_reason` 同帧）正常读完 | 1 行 | ✅ `[(1, 'deepseek-flash', 33, 46, 79)]` |
+| B OpenAI 风格（usage 单独一帧、`choices` 为空）正常读完 | 1 行 | ✅ `[(1, 'deepseek-flash', 33, 46, 79)]` |
+| **C usage 已 flush 后断开** | **0 行** | ✅ `[]` |
+| **D 反证：把 `rollback` 换成空操作，同样断开** | **1 行** | ✅ `[(1, ..., 33, 46, 79)]` |
+
+⭐⭐ **C 与 D 才是真证据**：同一场景、只改守卫，0 行 vs 1 行。没有 D，C 的 0 行可能只是「碰巧没 flush 到」。
+
+### 为什么 `usage` 要处理两处
+
+| 上游 | `usage` 出现位置 |
+|---|---|
+| DeepSeek | 和 `finish_reason` 挤在最后一帧 |
+| OpenAI（`stream_options.include_usage`） | 单独一帧，`choices` 是空列表 |
+
+⚠️ **只写一处就有一半上游记不上账**。所以两处 `if usage:` 分支都要调 `record_usage`。
+
+### 为什么 `record_usage` 里要有 `recorded` 开关
+
+上游可能在多帧里重复给 `usage`（尤其带 `include_usage` 时）。
+
+⚠️ 不设开关 → 一次调用记成两行账单 = **重复收费**。
+
+### `_as_int` 为什么必需
+
+`usage.get("prompt_tokens")` 的静态类型是 `object`。
+
+| 写法 | 上游给 `"12"`（字符串）时 |
+|---|---|
+| `usage.get("prompt_tokens") or 0` | 字符串 `"12"` 原样存进 INTEGER 列（SQLite 类型不严格，**不报错**） |
+| **`_as_int(...)`** | 转不成 int 就记 `0` |
+
+⭐ 判据：**存进数据库的值，类型必须在边界处收窄一次** —— SQLite 不会帮你挡。
+
+### 一句话判据
+
+⭐⭐ **流式接口里凡是 `flush` 过的数据，都必须在「客户端断开」这条路径上显式 `rollback` —— 因为框架会把它当成「正常完成」来提交。**
+
+⚠️ 顺带：断开时服务端日志会出现 `ERROR sqlalchemy.pool ... CancelledError: Cancelled via cancel scope` —— 这是连接池被强制 terminate 的**噪音**，不是 bug（连接没法优雅归还，只能销毁）。要消掉这个噪音就得在 `finally` 里用 `asyncio.shield` 包 `aclose()`，收益不大，暂不处理。
+
+---
+
+## 10.7 迁移（了解，阶段 1 不急）
 
 **问题**：`create_all` 只会在**表不存在时**建表，**不会修改已有表结构**。
 加一个字段后，老数据库不会自动更新。

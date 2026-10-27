@@ -37,7 +37,7 @@ from app.constants import HEADER_REQUEST_ID
 from app.database import engine
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
-from app.models import Base, Conversation
+from app.models import Base, Conversation, LlmCall
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -279,6 +279,11 @@ def _as_dict(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _as_int(value: object) -> int:
+    """把上游的 token 计数收窄成 int：不是 int 就记 0（上游可能给字符串 / None / 浮点）"""
+    return value if isinstance(value, int) else 0
+
+
 @app.post("/v1/chat")
 async def chat(request: ChatRequest, config: SettingsDep, db: DbDep) -> ChatResponse:
     """
@@ -420,9 +425,11 @@ async def chat_stream(
     if request.conversation_id is not None:
         await require_conversation(db, request.conversation_id)
 
+    actual_model = request.model or config.llm_model
+
     # 上游请求体的字段名由 OpenAI 兼容协议规定
     body: dict[str, object] = {
-        "model": request.model or config.llm_model,
+        "model": actual_model,
         # Message 是 pydantic 模型，必须先 model_dump() 转成纯 dict 才能序列化
         "messages": [m.model_dump() for m in request.messages],
         "temperature": request.temperature,
@@ -457,6 +464,25 @@ async def chat_stream(
         raw_chunks = 0  # 收到的原始 SSE 帧数量
         content_frames = 0  # 其中包含回答文字的帧数量
 
+        recorded = False
+
+        async def record_usage(usage: dict[str, Any]) -> None:
+            """把这次调用记成一行账单：只记一次（usage 可能在多帧里重复出现）"""
+            nonlocal recorded
+            if recorded:
+                return  # 【注意】：上游可能多帧给 usage，重复记 = 重复扣费
+            recorded = True
+            db.add(
+                LlmCall(
+                    conversation_id=request.conversation_id,
+                    model=actual_model,
+                    prompt_tokens=_as_int(usage.get("prompt_tokens")),
+                    completion_tokens=_as_int(usage.get("completion_tokens")),
+                    total_tokens=_as_int(usage.get("total_tokens")),
+                )
+            )
+            await db.flush()
+
         try:
             # aiter_chunks 已经帮我们做完了：切行、跳空行、剥 data: 前缀、
             # 消化 [DONE]、json.loads —— 这里拿到的就是干净的 dict
@@ -479,6 +505,7 @@ async def chat_stream(
                     # 这种帧只可能是"纯用量帧"（OpenAI 开 stream_options.include_usage 时会出现）
                     # 它没有内容也没有结束原因，所以处理完就可以跳过
                     if usage:
+                        await record_usage(usage)
                         details = usage.get("completion_tokens_details") or {}
                         logger.info(
                             "流式用量(纯用量帧): prompt=%s completion=%s total=%s reasoning=%s "
@@ -534,6 +561,7 @@ async def chat_stream(
                 #   OpenAI 则是单独一帧（choices 为空，已在上面处理）。
                 #   两种位置都要覆盖，所以这里再判断一次，且必须在 content 判断之前
                 if usage:
+                    await record_usage(usage)
                     # 写进服务端日志 = 记账：转发给前端 = 让用户看到花了多少
                     details = usage.get("completion_tokens_details") or {}
                     logger.info(
@@ -605,12 +633,11 @@ async def chat_stream(
 
         except Exception as exc:
             # 【异常路径：把错误编码进流，再收尾】
-            # 这里不用显式放过 CancelledError / GeneratorExit 是因为这俩是特殊异常
-            # 他俩直接继承自 BaseException，不是 Exception（普通异常）的子类
-            # 所以「客户端断开」和「生成器被关闭」根本不会进这个分支，
-            # 会原样往外抛，由 finally 和上层处理
+            # 上游给坏帧 / flush 失败等普通异常都会进这里
             # logger.exception 会带完整 traceback；而回给前端的只有一句人话
             # （绝不回显 str(exc) 或堆栈 —— 那可能泄露内部结构）
+            await db.rollback()  # 这次调用不记账
+
             logger.exception("流式过程中失败：%s", type(exc).__name__)
             yield (
                 "data: "
@@ -621,6 +648,12 @@ async def chat_stream(
                 + "\n\n"
             )
             yield "data: [DONE]\n\n"
+
+        except BaseException:
+            # 【注意】：必须是 BaseException —— 客户端断开的 CancelledError 继承它，
+            #   except Exception 拦不住；而「只 raise 不回滚」实测会让 get_db 把半截账单提交掉
+            await db.rollback()
+            raise
 
         finally:
             # 【注意】：finally 只做清理，绝不 yield
