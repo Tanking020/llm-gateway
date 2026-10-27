@@ -44,9 +44,10 @@ class Conversation(Base):
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
     # 一对多：一个对话有多条调用记录
-    # LlmCall 在 Python 从上往下执行到这时候还没定义，因此加引号把它变为一个字符串
-    # 引号 = "先记下这个名字，等会儿再找"（延迟解析）
     # relationship 让两个属性互指，ORM 才知道它们是同一个关系的两侧
+    # LlmCall 在后面才定义，所以写成字符串（延迟解析，否则 NameError）
+    # 【注意】：故意【不写 cascade="all, delete-orphan"】——
+    #   那会让删对话时把计费记录一起删掉，账目就丢了
     calls: Mapped[list["LlmCall"]] = relationship(
         back_populates="conversation",
         # 删父时，所有失去父对象的子对象都直接删掉
