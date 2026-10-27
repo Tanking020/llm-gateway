@@ -454,33 +454,39 @@ async def chat_stream(
     # 推进它的是 StreamingResponse 里的 async for（starlette/responses.py:253），不是本文件
     async def event_source() -> AsyncIterator[str]:
         """异步生成器：每 yield 一次 = 一帧 SSE，框架收一帧发一帧"""
+        # raw_chunks=0 -> 上游根本没按 SSE 回（HTML / 空 body）
+        # raw_chunks>0 而 content_frames=0 -> 回了帧但没有内容帧（忽略 stream=True / 只有思维链）
+        raw_chunks = 0  # 收到的原始 SSE 帧数量
+        content_frames = 0  # 其中包含回答文字的帧数量
+
+        # 先落一行 pending 账单：断开 / 上游异常时它会被改成 aborted 后随请求事务落库
+        # 【注意】：上游已产出的 token 照样收费 —— 不留这行，账面就看不到这次调用
+        #   但 flush 不是持久化：进程崩溃时这一行会被回滚掉（实测强杀后 0 行）
+        # 必须在 yield thinking 之前：yield 交出控制权，从那一刻起就可能被取消
+        call = LlmCall(
+            conversation_id=request.conversation_id, model=actual_model, status="pending"
+        )
+        db.add(call)
+        await db.flush()
+
+        recorded = False
+
         # 先发一帧状态，前端可以立刻显示"模型思考中"
         #   注意：加了 pre-flight 之后，这一帧要等上游响应头回来才发得出去
         #   实测 TTFB 从 60.0ms 变成约 181~266ms，仍远小于首个内容帧的 845.8ms
         yield f"data: {json.dumps({'status': 'thinking'}, ensure_ascii=False)}\n\n"
 
-        #   raw_chunks=0 -> 上游根本没按 SSE 回（HTML / 空 body）
-        #   raw_chunks>0 而 content_frames=0 -> 回了帧但没有内容帧（忽略 stream=True / 只有思维链）
-        raw_chunks = 0  # 收到的原始 SSE 帧数量
-        content_frames = 0  # 其中包含回答文字的帧数量
-
-        recorded = False
-
         async def record_usage(usage: dict[str, Any]) -> None:
             """把这次调用记成一行账单：只记一次（usage 可能在多帧里重复出现）"""
             nonlocal recorded
             if recorded:
-                return  # 【注意】：上游可能多帧给 usage，重复记 = 重复扣费
+                return  # 【注意】：上游可能多帧给 usage，这里防止重复扣费
             recorded = True
-            db.add(
-                LlmCall(
-                    conversation_id=request.conversation_id,
-                    model=actual_model,
-                    prompt_tokens=_as_int(usage.get("prompt_tokens")),
-                    completion_tokens=_as_int(usage.get("completion_tokens")),
-                    total_tokens=_as_int(usage.get("total_tokens")),
-                )
-            )
+            # 两阶段记账核心是用同一个对象走完全程，所以这里改字段而不是再 add 一行
+            call.prompt_tokens = _as_int(usage.get("prompt_tokens"))
+            call.completion_tokens = _as_int(usage.get("completion_tokens"))
+            call.total_tokens = _as_int(usage.get("total_tokens"))
+            call.status = "completed"
             await db.flush()
 
         try:
