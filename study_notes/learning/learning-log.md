@@ -138,6 +138,7 @@
 | 1.57 | 10-26 | **补讲「索引到底怎么建的」（学习者连问三轮后）** — 学习者原问题：「行 id 是新行自增，索引到底咋建的？给我一个新行我咋知道它对应的索引值是多少？」 | [study_notes/stage1-fastapi.md](stage1-fastapi.md) §10.6b-补 | 📎 字节码证据（`EXPLAIN INSERT`）：有索引时多出 `OpenWrite`（打开索引）+ `SCopy/IntCopy`（取列值）+ `MakeRecord`（组装索引项）+ `IdxInsert`；删行多 `IdxDelete`；📎 `bisect` 手工模拟 + 真 SQLite 对照：索引顺序按**列值**不按 rowid；📎 `PRAGMA index_xinfo`：索引只有「列值 + rowid」两列；📎 主键不用额外索引（`SEARCH ... USING INTEGER PRIMARY KEY`） |
 | 1.58 | 10-26 | **Step 10.6b-1 打开 SQLite 外键强制（学习者亲手写）** — `database.py` 挂 `connect` 事件执行 `PRAGMA foreign_keys=ON` | [src/app/database.py](../../src/app/database.py) | ✅ 三道门全绿；📎 端到端 5 项全对：池内 3 条连接全 `foreign_keys=1` / 插 `conversation_id=999` 被拒 `IntegrityError: FOREIGN KEY constraint failed` / 合法插入成功 / 删对话后 `llm_calls` 剩 0 行；⭐ 批改时订正学习者游标注释（原写「游标意义在于按顺序执行多条互不干扰」，实际是 DBAPI 里「发语句 + 持结果集位置」的载体） | 
 | 1.59 | 10-26 | **学习者定下「注释只留防错，教学进笔记」原则** — 原话：「这样写注释会不会太多了，感觉应该保留核心部分剩下的记录进笔记……把核心记录到代码块附近，把一些笔记记录到笔记里面」 | [src/app/database.py](../../src/app/database.py)、[工程规范与协作约定.md](../../工程规范与协作约定.md) §4.4c、[.github/copilot-instructions.md](../../.github/copilot-instructions.md) | `database.py` 注释 55 行 -> 38 行（删 17 行）；⭐ 删前先脚本核验「要挪走的 10 条内容笔记里都已有」；📎 精简后复验行为不变（3 条连接全 `foreign_keys=1`、孤儿被 `IntegrityError` 拒）；制定三条线分工表 + 注释块长度上限（≤4 行） | 
+| 1.60 | 10-27 | **学习者质疑「SET NULL vs 软删除」** — 原话：「你确定用 setnull 对吗，我们用软删除会不会更贴近业界实际做法」 | [study_notes/project/decisions.md](../project/decisions.md) 第 16 条 | ⭐ 核对后发现我把**两个正交决策**混成了四选一：D1 账单怎么保留（架构）/ D2 对话能不能恢复（产品）。**软删除解决的是 D2，不是 D1** —— 账单能保住是因为「父行没真删」，不是软删除的功劳。📎 三方案实测：B 账单 1800 token 完整但归属丢；D 完整且归属保留，但⚠️ 忘了加 `deleted_at IS NULL` 就返回 2 条（含已删）、⚠️ 外键允许给已软删对话挂新计费；E 完整且归属保留但无外键保护。结论：维持 B，软删除留作独立产品决策（待办 #34） | 
 
 > 状态：⬜ 待验证 / ✅ 已验证 / ⛔ 阻塞
 
@@ -401,6 +402,8 @@
 | 10-26 | ⭐⭐ **索引项 = `(被索引列的值, rowid)`，不需要计算** —— 填 `conversation_id=7`，索引的键就是 7。📎 字节码实测：有索引的 `INSERT` 多出 `IdxInsert`（组装 `(7, rowid)` 并按顺序插进去），删行多 `IdxDelete` —— 这就是「写变慢」的机制：每次写要动 **表 + 每个索引** 棵树 | 
 | 10-26 | ⭐⭐ **`ondelete=` 必须先有 `PRAGMA foreign_keys=ON` 才起作用**（SQLite 默认关）。📎 10 组矩阵实测，最易踩的一格：**有 `relationship` 却没写 `cascade`** 时 ORM 先抢着置 `NULL`，数据库层 CASCADE 无事可做 —— 即使外键开着子行也留下。⭐ 判据：`PRAGMA foreign_keys=ON` 与 `cascade="all, delete-orphan"` 至少要有一个，且不能被上述写法抵消 | 
 | 10-26 | ⭐⭐ **代码注释只留「防错」，教学解释进笔记**。判据：**删掉这句注释，读者会不会写错代码？** 会 → 留；不会 → 挪走。注释是防错不是教学 —— 代码里塞教学内容的后果是**学习者反而不读了**。⚠️ 挪走前必须先用脚本确认笔记里已有（否则等于删知识点） | 
+| 10-27 | ⭐⭐ **「账单要保留」和「对话可恢复」是两个正交决策**，不要混成「级联策略四选一」。⭐ 判据：**软删除解决的是「误删能不能撤回」（产品），不是「数据会不会丢」（架构）** —— 账单能保住是因为「父行没真删」，那是软删除的副作用，不是它的目的。📎 软删除的真实代价（实测）：所有列表查询必须加过滤（漏一处泄露已删数据）/ 外键失效 / 表无限增长 / 与「被遗忘权」冲突 | 
+| 10-27 | ⭐ **账单表应该「冗余自足」**：存当时的 model / 单价 / 时间戳 / request_id，不靠 join 父表还原。不是「保住 conversation_id」，而是「即使 conversation_id 为 NULL，这条账自己也能解释」 | 
 | 10-26 | ⭐ **`PRAGMA` 是「每条连接」的开关且不持久化**，所以要挂 `engine.sync_engine` 的 `"connect"` 事件（不是启动时执行一次，也不是 `"checkout"`）。📎 事件里拿到的不是原生 `aiosqlite.Connection`，而是 `AsyncAdapt_aiosqlite_connection`（同步风格适配层）—— 所以注解只能写 `Any`（`object` 报无 `cursor`，`aiosqlite.Connection` 报 `Result[Cursor]` 无 `execute`） | 
 | 10-26 | ⭐⭐ **索引的顺序按「列值」不按 `rowid`**，且**键可以重复**（`1,1,1,3,3,4,4`）。📎 实测依次插 `(row=1,conv=3),(row=2,conv=1),(row=3,conv=3)` → 索引 `[(1,2),(3,1),(3,3)]`。⭐ **主键不用额外索引**（表本身就是按 rowid 排的树）；`conversation_id` 在表里乱序才需要再建一棵 | 
 | 10-26 | ⭐ **`rowid` 自增不复用已删的号**（📎 删 id=2 后新行是 4）—— 否则「记住 id=2」的客户端会指向新对象。⭐⭐ **客户端不按标题查**：`POST` 响应返回 `id`（📎 `lastrowid`），之后全用 `id`。「按标题查」是**人类思维**，不是程序思维 | 

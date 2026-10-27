@@ -262,7 +262,7 @@
 | 31 | 🟡 **`Conversation` 无 `updated_at`**：PATCH 后无法知道最后修改时间 | 模型只有 `id` / `title` / `created_at`。PATCH 改了 `title` 但没有字段记录「什么时候改的」 | **10.6d**（与分页一起）：加 `updated_at` + `onupdate=...`；⚠️ `create_all` **不会**给已有表加列，需删库重建或写迁移 |
 | 32 | 🟡 **PATCH 无并发控制**：两个客户端同时改，后写覆盖前写（lost update） | PATCH 直接 `conv.title = payload.title`，无版本号 / `If-Match` 校验。将来加字段后，A 与 B 各改不同字段会互相覆盖 | **阶段 2 之后**（当前只有一个可改字段，风险低） |
 | 33 | ~~**无索引**：除主键外没有任何索引~~ | 📎 核对 `models.py`：`Index` / `unique` 出现次数均为 **0**。将来按 `created_at` 排序或按 `conversation_id` 查 `llm_calls` 会全表扫 | ✅ **已完成**（10.6a，2026-10-26）：`llm_calls.conversation_id` 已加 `index=True`，📎 实测 25 倍 |
-| 34 | 🟡 **无软删除**：`DELETE` 是真删，误删无法恢复 | `await db.delete(conv)` 直接从表里删行；`llm_calls` 也会跟着 cascade 删掉 | **阶段 2 之后**（产品出现「回收站 / 撤销删除」需求时） |
+| 34 | 🟡 **无软删除**：`DELETE` 是真删，误删无法恢复 | `await db.delete(conv)` 直接从表里删行。⚠️ 注意：这**不影响账单**（10.6b 已改 `ondelete="SET NULL"`，计费记录保留）。📎 若要做软删除，实测代价：所有列表查询必须加 `deleted_at IS NULL`（漏一处返回已删数据）/ 外键失效（能给已软删的对话挂新计费）/ 表无限增长 / 与「被遗忘权」冲突 | **产品出现「回收站 / 撤销删除」需求时**（属产品决策，见 decisions #16 的「两个正交决策」） |
 | 35 | 🟠 **对话只有标题，没有消息内容** —— 没有 `messages` 表 | 现在 `conversations` 只有 `id` / `title` / `created_at`。`/v1/chat/stream` 完全不落库 → **这个后端还不能真正「管理对话」** | **10.6 之后 / 阶段 2**：建 `messages` 表（`conversation_id` / `role` / `content`），流式接口写用户消息 + 助手回答 |
 | 36 | 🟡 **无认证 / 鉴权**：任何人知道 URL 就能删任何对话 | 所有 `/v1/conversations` 接口零鉴权；也没有「对话归属哪个用户」的字段 | **阶段 3 部署前必须做**：至少加 API key 头校验；正式版需用户表 + `owner_id` |
 | 37 | 🟡 **无速率限制**：会被刷爆（真金白银） | `/v1/chat` 与 `/v1/chat/stream` 每次调用都花钱，但没有限流。一个循环就能烧完余额 | **阶段 3 部署前**：加 IP / key 维度限流（`slowapi` 或网关层） |
