@@ -57,6 +57,11 @@ class ChatRequest(BaseModel):
     # gt=0 = "如果填了，必须大于 0"
     max_tokens: int | None = Field(default=None, gt=0)
 
+    # 这次调用属于哪个对话（可选）。None = 不属于任何对话，仍允许调用
+    # 【注意】：这里只声明字段，不校验它是否存在 —— 存在性要查库
+    #   只能在路由里做（形状归 pydantic，存在性归业务代码）
+    conversation_id: int | None = Field(default=None, gt=0, description="所属对话的 id")
+
 
 class ChatResponse(BaseModel):
     """返回给客户端的响应"""
