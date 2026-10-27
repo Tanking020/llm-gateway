@@ -21,6 +21,7 @@
 | 把 `ConversationIn` 和 `ConversationPatch` 合并 | [decisions #10](decisions.md#10-契约按用途分家in--patch--out) | ⛔ 那个"重复"是故意的 |
 | 让 `PATCH` 接受空 body | [decisions #12](decisions.md#12-patch-而不是-put且空-body-直接拒绝) | ⛔ 必填字段是免费的 bug 探测器 |
 | 把引擎改成每请求新建 | [decisions #14](decisions.md#14-引擎用模块级单例并在-lifespan-里释放) | ⛔ 连接池就没意义了 |
+| 给 `LlmCall` 写 `conversation_id: int` | [decisions #16](decisions.md#16-计费记录不能跟着对话一起删) | 必须 `int \| None` —— 📎 写 `int` 就是 500 |
 
 ## 两个文件的边界
 

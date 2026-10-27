@@ -403,6 +403,7 @@
 | 10-26 | ⭐⭐ **`ondelete=` 必须先有 `PRAGMA foreign_keys=ON` 才起作用**（SQLite 默认关）。📎 10 组矩阵实测，最易踩的一格：**有 `relationship` 却没写 `cascade`** 时 ORM 先抢着置 `NULL`，数据库层 CASCADE 无事可做 —— 即使外键开着子行也留下。⭐ 判据：`PRAGMA foreign_keys=ON` 与 `cascade="all, delete-orphan"` 至少要有一个，且不能被上述写法抵消 | 
 | 10-26 | ⭐⭐ **代码注释只留「防错」，教学解释进笔记**。判据：**删掉这句注释，读者会不会写错代码？** 会 → 留；不会 → 挪走。注释是防错不是教学 —— 代码里塞教学内容的后果是**学习者反而不读了**。⚠️ 挪走前必须先用脚本确认笔记里已有（否则等于删知识点） | 
 | 10-27 | ⭐⭐ **「账单要保留」和「对话可恢复」是两个正交决策**，不要混成「级联策略四选一」。⭐ 判据：**软删除解决的是「误删能不能撤回」（产品），不是「数据会不会丢」（架构）** —— 账单能保住是因为「父行没真删」，那是软删除的副作用，不是它的目的。📎 软删除的真实代价（实测）：所有列表查询必须加过滤（漏一处泄露已删数据）/ 外键失效 / 表无限增长 / 与「被遗忘权」冲突 | 
+| 10-27 | ⭐⭐ **可空外键是「四环链条」，任何一环漏 `\| None` 就是 500**：数据库 DDL（`Mapped[int \| None]` 决定有没有 NOT NULL）→ ORM 注解（列 + relationship 两处）→ **pydantic 出参**（最容易漏）→ 取关联字段必须判空。📎 实测：schema 写 `int` → 500（客户端只看到「服务内部错误」）；写 `int \| None` → 200 `null`。📎 `call.conversation.title` 在 NULL 时 → `AttributeError` | 
 | 10-27 | ⭐ **账单表应该「冗余自足」**：存当时的 model / 单价 / 时间戳 / request_id，不靠 join 父表还原。不是「保住 conversation_id」，而是「即使 conversation_id 为 NULL，这条账自己也能解释」 | 
 | 10-26 | ⭐ **`PRAGMA` 是「每条连接」的开关且不持久化**，所以要挂 `engine.sync_engine` 的 `"connect"` 事件（不是启动时执行一次，也不是 `"checkout"`）。📎 事件里拿到的不是原生 `aiosqlite.Connection`，而是 `AsyncAdapt_aiosqlite_connection`（同步风格适配层）—— 所以注解只能写 `Any`（`object` 报无 `cursor`，`aiosqlite.Connection` 报 `Result[Cursor]` 无 `execute`） | 
 | 10-26 | ⭐⭐ **索引的顺序按「列值」不按 `rowid`**，且**键可以重复**（`1,1,1,3,3,4,4`）。📎 实测依次插 `(row=1,conv=3),(row=2,conv=1),(row=3,conv=3)` → 索引 `[(1,2),(3,1),(3,3)]`。⭐ **主键不用额外索引**（表本身就是按 rowid 排的树）；`conversation_id` 在表里乱序才需要再建一棵 | 

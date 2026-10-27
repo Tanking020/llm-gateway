@@ -4993,7 +4993,7 @@ error: Statement is unreachable  [unreachable]
 | ⑧ §10.5f 公共规则抽取 | `ConversationTitle`（`StringConstraints(strip_whitespace=True)`），POST/PATCH 共用；堵住纯空格标题（修前 200 → 修后 422） | ✅ 2026-10-25 |
 | ⑨ §10.6a `LlmCall` 表 | 外键 + `relationship` + `cascade` + `index=True`；📎 索引实测 25 倍 | ✅ 2026-10-26 |
 | ⑩ §10.6b-1 外键强制 | `connect` 事件 + `PRAGMA foreign_keys=ON`；📎 孤儿插入被拒 | ✅ 2026-10-26 |
-| ⑪ §10.6b-2 `conversation_id` + pre-flight | `ChatRequest` 加可选字段；对话不存在 → 404（流开始前拦） | ⬜ 待做 |
+| ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测 | 🟡 步骤卡已发 |
 | ⑫ §10.6b-3 usage 落库 | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫 | ⬜ 待做 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ⬜ 待做 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
@@ -6954,6 +6954,96 @@ for conv in convs.scalars():
 > 🔗 这和 ML 里的"**特征工程要向量化，不要 for 循环**"是同一种思维：
 > **把 N 次操作合成 1 次批量操作**。
 
+## 10.6b-2 ⚠️ 可空外键的完整链条：DDL → ORM → pydantic → 取关联
+
+> 起因：2026-10-27 学习者问「我们把 conversation_id 设成可空，那代码允许 NULL 了吗？客户端查这条记录会不会报错？」
+
+### 一句话结论
+
+> **「数据库允许 NULL」→「ORM 允许 `None`」→「pydantic 出参也必须允许 `None`」→「取关联字段必须判空」。**
+> **链条上任何一环漏了 `| None`，就是 500。**
+
+### 第 1 层：数据库 DDL —— `Mapped[int | None]` 直接决定有没有 `NOT NULL`
+
+📎 实测 `models.py` 写 `Mapped[int | None]`，生成的 DDL：
+
+```sql
+conversation_id INTEGER,                    -- ← 没有 NOT NULL
+FOREIGN KEY(conversation_id) REFERENCES conversations (id) ON DELETE SET NULL
+```
+
+📎 实测插入 `conversation_id=None` → **成功**，库里该行真的存 `NULL`。
+
+⭐ 判据：**`| None` 不是"类型提示"，它是建表语句的一部分。**
+
+### 第 2 层：ORM 注解 —— 两处都要 `| None`
+
+```python
+conversation_id: Mapped[int | None] = mapped_column(...)          # 列可空
+conversation:    Mapped["Conversation | None"] = relationship(...)  # 关联可能为空
+```
+
+⚠️ 只写第一处、不写第二处 → mypy 会在 `call.conversation` 的用法上报错（因为类型说"一定有值"，但实际可能是 `None`）。
+
+### 第 3 层：pydantic 出参 —— 📎 漏了 `| None` 就是 500
+
+📎 实测同一条 `conversation_id=None` 的记录，两种 schema：
+
+| schema 写法 | 结果 |
+|---|---|
+| **`conversation_id: int`** | 💀 **500** `Internal Server Error` |
+| **`conversation_id: int \| None`** | ✅ **200** `[{"id":1,"conversation_id":null,...}]` |
+
+⚠️ **最坑的地方**：写成 `int` 时客户端**只看到 500「服务内部错误」**，完全不知道是 NULL 导致的。
+（这和 §10.5c 的 `ResponseValidationError` 是同一个机制 —— 出错在**序列化**阶段，不在你的业务代码里。）
+
+### 第 4 层：通过 relationship 取父表字段 —— 📎 必须判空
+
+📎 实测（父对话被删、`conversation_id` 已置 `NULL`）：
+
+```text
+conversation_id = None
+call.conversation = None
+call.conversation.title -> AttributeError: 'NoneType' object has no attribute 'title'
+```
+
+| 写法 | 结果 |
+|---|---|
+| `call.conversation.title` | 💀 `AttributeError` → 500 |
+| `call.conversation.title if call.conversation else None` | ✅ 安全 |
+| 出参 schema 用 `conversation_title: str \| None` + 手动组 dict | ✅ 安全 |
+
+### 📎 三层检查清单（写新接口前逐条过）
+
+| # | 检查 | 怎么看 |
+|---|---|---|
+| 1 | 这一列在 DDL 里有没有 `NOT NULL`? | `select sql from sqlite_master where name='表名'` |
+| 2 | ORM 注解有没有 `\| None`? | 看 `models.py` |
+| 3 | **出参 schema 有没有 `\| None`?** | ⚠️ **最容易漏的一环** |
+| 4 | 取关联字段前判空了吗? | 有没有 `if x.rel else None` |
+
+### ⭐ 为什么 `conversation_id` 会变成 NULL（三种来源）
+
+| 来源 | 含义 |
+|---|---|
+| 客户端没传 `conversation_id` | **从来没属于过任何对话** |
+| 对话被删了（`ON DELETE SET NULL`） | **曾经属于，父行后来被删** |
+| 数据迁移 / 手工修数据 | 视情况 |
+
+⚠️ **前两种现在无法区分** —— 如果这个区分重要，需要额外加一个字段（如 `orphaned_at`）。已记进待办。
+
+### 顺带：`gt=0` vs `ge=0` 的选择
+
+📎 实测 `conversation_id=0` 和 `-5` 都返回 **422 `greater_than`**（因为写了 `Field(gt=0)`）。
+
+| 写法 | `0` 的结果 | 语义 |
+|---|---|---|
+| `ge=0` | 通过校验 → 查库 → 404 | 「0 是合法输入，但没这个对话」 |
+| **`gt=0`** | **422** | 「0 根本不可能是 id」 |
+
+⭐ 判据：**id 从 1 开始 → 用 `gt=0`**。这样在**最外层**就挡掉，也把"非法输入"和"不存在"两种语义分开。
+
+---
 ## 10.7 迁移（了解，阶段 1 不急）
 
 **问题**：`create_all` 只会在**表不存在时**建表，**不会修改已有表结构**。

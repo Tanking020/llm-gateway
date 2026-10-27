@@ -269,6 +269,7 @@
 | 38 | 🟢 **无请求体大小限制**：超大 body 会占满内存 | FastAPI 默认不限制 body 大小。`title` 有 `max_length=100`，但 `messages` 列表与单条 `content` 只有长度下限 | **阶段 3 部署前**：网关（nginx `client_max_body_size`）或中间件层限制 |
 | 39 | 🟡 **`/v1/models` 与 `/v1/upstream/models` 形状不一致** | 前者返回 `{"total": int, "items": list[str]}`，后者返回 `ModelListResponse`（`items` 是 `ModelItem` 对象）。同一概念两种形状 | **10.6d**（与分页一起）：统一成 `ModelListResponse` |
 | 40 | 🟡 **没有 `tests/` 目录**：全部验证靠手工 curl + 临时脚本 | 📎 核对：项目根下 `tests/` **不存在**。每次改动靠手跑 curl 或临时探针脚本（用完即删），无法回归 | **Step 12**（测试 FastAPI）：建 `tests/` + `TestClient` + 关键路径用例 |
+| 41 | 🟠 **写 `LlmCall` 出参 schema 时 `conversation_id` 必须 `int \| None`** | 📎 实测同一条 `conversation_id=None` 的记录：schema 写 `int` → **500 Internal Server Error**（客户端完全不知道是 NULL 导致）；写 `int \| None` → **200 `null`**。⚠️ 另：`call.conversation` 在 NULL 时是 `None`，取 `.title` 会 `AttributeError` → 也必须判空。详见笔记 §10.6b-2 | **10.6b-3 之后做查询接口时**（或现在就先定好 schema 形状） |
 
 
 **待办 → 步骤 对照（2026-10-25 审计后新增）**：
