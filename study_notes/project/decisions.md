@@ -345,6 +345,7 @@
 | 📎 **为什么 R2/R3/R4/R5 都不行** | 断开时处于**已被取消的 cancel scope**，任何 `await` 都会被二次取消：`commit()` 抛 `CancelledError` 并搞出 `ResourceClosedError: This transaction is closed`；`asyncio.shield` 也挡不住。⚠️ **而 `get_db` 的 commit 跑在中间件退出栈里，不在被取消的 task 里** —— 所以我们只「登记」，提交交给它 |
 | ⭐⭐ **业务依据** | 上游按**已产出**计费，断开不是退款。第一版方案（断开时 `rollback`）会让这次调用在库里**一行都没有**，月底对账查不出差额来自哪里 |
 | ⭐ **判据** | **需要「一定会留下」的数据（账单 / 审计 / 日志），不要跟请求事务同生共死** —— 提前写、独立提交，或用两阶段（先 `pending` 再改状态） |
+| ⚠️ **实测订正** | 「进程崩溃时 `pending` 会留在库里」**是错的**：📎 强杀 uvicorn 后 `llm_calls = []`。`flush()` 只发 SQL、事务未提交，进程一死就被 SQLite 回滚。⭐ **`flush` ≠ 持久化，想扛崩溃必须 `commit`**（待办 #42：流开始前用独立会话 `commit` 一次） |
 | ⭐ **反面判据** | **在「已被取消」的上下文里做任何 `await` 写入都不可靠**，包 `shield` 也一样 |
 
 > 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6b-3（错误方案与推翻过程）+ §10.6b-4（正确方案）；[src/app/api/app.py](../../src/app/api/app.py) `event_source`

@@ -7225,7 +7225,7 @@ call.conversation.title -> AttributeError: 'NoneType' object has no attribute 't
 
 ```python
 async def event_source() -> AsyncIterator[str]:
-    # 先落一行 pending：断开 / 进程崩溃时它会留在库里
+    # 先落一行 pending：断开 / 上游异常时它会被改成 aborted 后落库
     call = LlmCall(conversation_id=..., model=..., status="pending")
     db.add(call)
     await db.flush()
@@ -7262,15 +7262,41 @@ async def event_source() -> AsyncIterator[str]:
 
 | 值 | 含义 | 谁写 |
 |---|---|---|
-| `pending` | 流开始了但没正常结束（**进程崩溃 / 断电**时才残留） | 流开始前 |
+| `pending` | 流还没结束（**正在进行的请求**才是这个值） | 流开始前 |
 | `completed` | 拿到完整 usage | `record_usage` |
 | `aborted` | 明确知道被中断（客户端断开 / 上游异常） | 两个 `except` 分支 |
+
+### ⚠️ 订正：`pending` **扛不住进程崩溃**
+
+我最初写的是「进程崩溃时 `pending` 会留在库里」—— 📎 **实测是错的**。
+
+用 `DATABASE_URL` 指到临时库，起真服务、发一次流式请求、拿到第一块后**强杀进程**（`TerminateProcess`，等价 `kill -9`），再查库：
+
+```text
+第一块: b'data: {"status": "thinking"}\n\n'
+已强杀 uvicorn 进程
+强杀后库内 llm_calls = []
+```
+
+⭐⭐ **一行都没有。** 因为 `flush()` 只是把 SQL 发给数据库，**事务并没有提交**；进程被杀 → 连接断开 → SQLite 回滚未提交事务。
+
+所以三种结束方式的实际覆盖是：
+
+| 结束方式 | 旧方案（断开 rollback） | 两阶段（本方案） |
+|---|---|---|
+| 正常读完 | 1 行 `completed` | 1 行 `completed` |
+| **客户端断开** | **0 行** | **1 行 `aborted`** ✅ |
+| 上游异常 | 0 行（被 rollback） | 1 行 `aborted` ✅ |
+| **进程崩溃 / 断电** | 0 行 | **0 行（一样扛不住）** |
+
+⭐ 判据：**`flush` ≠ 持久化。想扛住进程崩溃，必须 `commit`** —— 而 `commit` 在断开路径上做不了（见上面的实测），只能**提前到流开始前，用独立会话提交**（已记进待办 #42）。
 
 ### ⭐⭐ 三条方法论教训
 
 1. **「我在测试里构造的场景」≠「真实系统会发生的场景」** —— 六组矩阵全过了，但用的是假帧序（usage 先行），而真实上游的 usage 永远在最后一帧 → 守的是**不存在的问题**。**验证前先问：这个场景在真实数据里出现吗？**
 2. **「我的实验 app 跑通了」≠「真 app 跑通」** —— R3 在只有 `get_db` 的精简 app 里成功，在真 app（多了 `BaseHTTPMiddleware`）里失败。⭐ **复刻环境时漏一个中间件，结论就反了。**
 3. **技术方案要能被业务问题推翻** —— 六组矩阵证明了「怎么不写半截数据」，但从没问「半截数据该不该写」。⭐ **「能不能做到」和「该不该做」是两个问题，后者优先级更高。**
+4. **`flush()` ≠ 持久化** —— ⚠️ 我在步骤卡里写「进程崩溃也会留一行 pending」，凭的是直觉；📎 强杀实测 `llm_calls = []`，**一行都没有**。⭐ **只有 `commit()` 才是「写进库」，`flush()` 只是「把 SQL 发给数据库」。**
 
 ### 一句话判据
 

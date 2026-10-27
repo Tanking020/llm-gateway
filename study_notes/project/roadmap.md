@@ -272,7 +272,7 @@
 | 39 | 🟡 **`/v1/models` 与 `/v1/upstream/models` 形状不一致** | 前者返回 `{"total": int, "items": list[str]}`，后者返回 `ModelListResponse`（`items` 是 `ModelItem` 对象）。同一概念两种形状 | **10.6d**（与分页一起）：统一成 `ModelListResponse` |
 | 40 | 🟡 **没有 `tests/` 目录**：全部验证靠手工 curl + 临时脚本 | 📎 核对：项目根下 `tests/` **不存在**。每次改动靠手跑 curl 或临时探针脚本（用完即删），无法回归 | **Step 12**（测试 FastAPI）：建 `tests/` + `TestClient` + 关键路径用例 |
 | 41 | 🟠 **写 `LlmCall` 出参 schema 时 `conversation_id` 必须 `int \| None`**，且要带 `status` | 📎 实测同一条 `conversation_id=None` 的记录：schema 写 `int` → **500 Internal Server Error**（客户端完全不知道是 NULL 导致）；写 `int \| None` → **200 `null`**。⚠️ 另：`call.conversation` 在 NULL 时是 `None`，取 `.title` 会 `AttributeError` → 也必须判空。⭐ 10.6b-4 之后还要暴露 `status`（`pending`/`completed`/`aborted`）。详见笔记 §10.6b-2 / §10.6b-4 | **10.6b-3 之后做查询接口时**（或现在就先定好 schema 形状） |
-| 42 | 🟡 **`aborted` 行和 `pending` 残留行怎么处理** | ⚠️ 现状：断开时 token 只能记 `0`（usage 帧永远到不了），**金额算不出来**。另 `pending` 只会在进程崩溃/断电时残留，没有清理机制。① 要不要按已转发的内容**估算** `completion_tokens`？② 要不要给 `pending` 加超时清理（启动时把超过 N 小时的 `pending` 改成 `aborted`）？详见笔记 §10.6b-4 | **要做「账单统计 / 成本看板」时**（10.6d 或阶段 2 末） |
+| 42 | 🟠 **账单还扛不住进程崩溃（`flush` 不是持久化）** | 📎 强杀 uvicorn 实测：流进行中 `pending` 行已 `flush` 过，进程一死 `llm_calls = []` —— **一行都没有**。要真扛崩溃，得在流开始前**用独立会话 `commit` 一次**（`async with SessionMaker() as acct: acct.add(...); await acct.commit()`），代价是每请求多一次独立事务提交。⚠️ 另：断开时 token 只能记 `0`（usage 帧永远到不了），**金额算不出来** —— 要不要按已转发内容估算 `completion_tokens`？详见笔记 §10.6b-4 | **要做「账单统计 / 成本看板」时**（10.6d 或阶段 2 末） |
 
 
 **待办 → 步骤 对照（2026-10-25 审计后新增）**：
