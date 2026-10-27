@@ -119,7 +119,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 ```
 
 > ⚠️ 框架层的 404（路由不存在）与 422（请求形状不合法）目前仍是 FastAPI 默认的 `{"detail": ...}`，
-> 三种形状并存属于**已知待办**（见[路线图](study_notes/能力档案与路线图.md) 待办 #6），计划在 Step 11 统一。
+> 三种形状并存属于**已知待办**（见[路线图](study_notes/project/roadmap.md) 待办 #6），计划在 Step 11 统一。
 >
 > 流式接口的 `/docs` 目前把 `200` 标成 `application/json`（返回注解是 `Response` 子类时 FastAPI 会置空
 > `response_model`），实际响应是 `text/event-stream` —— 见待办 #11。
@@ -182,7 +182,7 @@ data: [DONE]
 | —（我方自造） | — | 在请求上游之前发出 | `THINKING` |
 
 > ⭐ 算一遍：64 − 57（丢弃 ROLE + 思维链）+ 1（THINKING）+ 1（FINISH 拆成 2 帧）= **9** ✅
-> 帧的分类与顺序详见[阶段1 笔记](study_notes/阶段1-FastAPI速成.md) §9.8d。
+> 帧的分类与顺序详见[阶段1 笔记](study_notes/learning/stage1-fastapi.md) §9.8d。
 
 ```powershell
 # 请求体写进临时文件（含中文，避免 PowerShell 转义把 JSON 弄坏）
@@ -202,7 +202,7 @@ Remove-Item "$env:TEMP\chat_stream.json"
 
 > 🔴 **时序不能用 `curl -w` 的 `ttfb/total` 判**：`time_starttransfer` 量的是**响应头到达**，
 > 而流式接口的头是路由立刻发出的（实测 8.9ms）。要证明"内容在流"，必须用**带时间戳的客户端**
-> （httpx `iter_text()` + `perf_counter`）量首个数据帧时刻。详见[阶段1 笔记](study_notes/阶段1-FastAPI速成.md) §9.3b ③。
+> （httpx `iter_text()` + `perf_counter`）量首个数据帧时刻。详见[阶段1 笔记](study_notes/learning/stage1-fastapi.md) §9.3b ③。
 >
 > ⚠️ `TestClient` 里的 `transfer-encoding` 是 `None` —— 它能验证**帧格式**，证明不了"分批发送"。
 > 时序必须用真 uvicorn + 真 HTTP 客户端。
@@ -332,7 +332,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **异步优先（`async`/`await`）** | LLM 应用的时间几乎全花在"等"（等模型返回 1~30 秒、等数据库、等外部 API）。同步写法在等待时占住执行权，并发请求会退化成串行 | 需避免在异步路径里调用阻塞库；CPU 密集任务更适合进程池 |
 | **mypy strict + ruff 双工具** | 二者分工不同：**ruff 管"形状"**（格式、导入顺序、可疑写法），**mypy 管"含义"**（类型是否自相矛盾）。后者需要理解代码语义，是 ruff 做不到的 | 严格模式初期会报较多错，需要写全类型注解 |
 | **上层供应商中立**（`llm_api_key` / `llm_base_url` / `llm_model`） | 走"OpenAI 兼容协议"，但配置项**不以供应商命名** —— 换厂商只改 `.env` 三行，代码零改动（实测：把 `base_url` 指向另一家兼容服务，`/models` 检查命令原样可用） | 需要在代码与供应商 JSON 之间做一层转换；专有能力（如某家私有参数）不能直接用 |
-| **上游一律视为不可信输入**（2026-10-21 新增，规范 §十四） | 和用户输入同级：`json.loads` 的结果是 `Any`，键名/类型/结构都可能与假设不同。失败分三层——**L1 没回应 / L2 状态码不对 / L3 200 但结构不对**，只有 L2 被 `raise_for_status()` 自动覆盖，L1/L3 必须自己翻译成 502。流式下 L3 发生在头已发出之后，只能把错误编码进流 | 需要写 `try/except (ValueError, KeyError, TypeError)` 与流内错误帧；📎 实测现有代码有 **6 种 L3 场景落到 500**、**4 种导致流「200 + 断连」**、**1 种静默丢整条流**（见[路线图](study_notes/能力档案与路线图.md)待办 #14~#18） |
+| **上游一律视为不可信输入**（2026-10-21 新增，规范 §十四） | 和用户输入同级：`json.loads` 的结果是 `Any`，键名/类型/结构都可能与假设不同。失败分三层——**L1 没回应 / L2 状态码不对 / L3 200 但结构不对**，只有 L2 被 `raise_for_status()` 自动覆盖，L1/L3 必须自己翻译成 502。流式下 L3 发生在头已发出之后，只能把错误编码进流 | 需要写 `try/except (ValueError, KeyError, TypeError)` 与流内错误帧；📎 实测现有代码有 **6 种 L3 场景落到 500**、**4 种导致流「200 + 断连」**、**1 种静默丢整条流**（见[路线图](study_notes/project/roadmap.md)待办 #14~#18） |
 | **流式失败三层防线**（2026-10-22 新增，笔记专题 12） | 判据一是**「这个问题在读到数据之前就能判断吗」**：① **pre-flight**（看状态码）→ L1/L2 → **502**；② **适配器**（看「行 / 帧」：`startswith("data:")`、空行跳过、非 dict 丢弃）→ 丢弃 + WARNING；③ **路由**（看「字段 / 最终结果」：`isinstance(text, str)`、`content_frames == 0`）→ 零内容发 **`STREAM_NO_CONTENT`** 帧。📎 实测 7 种上游异常因此全部有 `[DONE]` 收尾（此前 3 种静默、2 种断连） | 前端必须知道 **200 也可能是失败**（`response.ok === true`），要在 SSE 循环里识别 `frame.error`；让适配器自己发错误帧是错的 —— 它就得知道「整个流」的状态，那它就不再是协议层。判据二是**「这一帧的内容未知吗」**：未知 → **中止**（`STREAM_FAILED`）；只是没有可用文字 → **跳过**（`warning` + `continue`）—— 一个坏帧不该毁掉整个回答 |
 | **单一真相：同一份事实只写一处**（2026-10-21 新增，规范 §4.6 总纲） | 判据不是"看起来重复"，而是**「改一处会不会漏另一处」**。五类事实各有各的家：字面量 → `constants.py`；错误码/状态码映射 → `errors.py`；上游错误翻译 → `LlmClient` 适配器（§14.7）；业务规则/语义校验 → 独立纯函数（§14.8）；可复用功能（SSE 切行、重试、分页） → 独立模块。📎 本项目五起同源事故（`Bearear` / `X-Request_ID` / `UPSTREAM_MALFORMEAD` / 12 行死代码 / role 校验漏一条路由）**没有一起是"不小心"** —— 只要同一份事实存在 N 份（N≥2），第 N+1 次改动就会漏 | 三个提问顺序：① 会被 ≥2 处用到吗（否 → 就地写）② 两处不一致会出错吗（否 → 可不抽）③ 抽完要传 ≥4 个参数吗（是 → **抽错了**）。⚠️ **反向代价同样真实**：抽太碎会让读代码要跳三个文件 —— 读的成本与改的成本必须一起算（§14.3） |
 | **上游调用一律封进适配器**（`LlmClient`，2026-10-21 新增，规范 §14.7） | 把「发请求 + 判状态码 + 读错误正文 + 解析 JSON + 翻译成 `AppError`」收进一个类，契约一句话：**成功返回值、失败抛 `AppError`、绝不泄漏 `httpx` 异常**。路由因此**不 import `httpx`、不写 `try/except`**，新加路由不可能漏翻译。用 `ruff` 的 `TID251` 把这条约定变成**机械检查**（只有 `llm_client.py` 与 `playground/` 可 import `httpx`）。⚠️ 曾试过"每条路由各写一遍"（抄漏一次：`UPSTREAM_MALFORMEAD` 拼错 → L3 全变 400）和"全局 `@app.exception_handler(httpx.xxx)`"（路由确实零行，但它靠 ASGI 中间件栈，**CLI / 定时任务里完全失效**，且不用起 FastAPI 就没法单测） | 适配器要自己管 `aclose()`（`send(stream=True)` 没有 `async with` 帮你关）；`stream` 默认值必须取安全的 `False`，否则 `response.json()` 抛 `ResponseNotRead` → 500，而 **MockTransport 复现不出来**；流式接口还得额外做 **pre-flight**（先校验状态码再返回 `StreamingResponse`），代价是 TTFB 从 60ms 升到约 181~266ms |
@@ -368,7 +368,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - TOML 表头写错导致的"键归属错误"：报错信息只说类型不对，根因却是少了表头
 - `extra="ignore"` 静默吞掉拼错的配置键：改为 `forbid` 后错误暴露在启动时
 - **密钥被自己的报错打印出来**：配置校验失败时 pydantic 默认回显原始值 —— 处理方式（全历史取证、吊销重发、`hide_input_in_errors`）与整改规则见规范 §10.1
-- **一个曾被记错的结论被自己推翻**：行宽规则原先记成"按字符数"，后用**判定性实验**证伪并纠正为"按显示宽度（汉字占 2 列）"—— 错误来源是实验时把中文经管道喂进工具导致编码损坏，见[工具与依赖速查](study_notes/工具与依赖速查.md) §5
+- **一个曾被记错的结论被自己推翻**：行宽规则原先记成"按字符数"，后用**判定性实验**证伪并纠正为"按显示宽度（汉字占 2 列）"—— 错误来源是实验时把中文经管道喂进工具导致编码损坏，见[tools-reference](study_notes/learning/tools-reference.md) §5
 - **状态码"对了"不等于验证通过**：PowerShell 内联拼 JSON 导致服务器收到伪 JSON，422 是拿到了，但 `type=json_invalid`（解析关被拦）而非 `too_short`（契约关被拦）—— 判据改成"先看 `type`+`loc`，再看状态码"
 - **`app.state, client = x`（逗号）与 `app.state.client = x`（点号）是两种语义**：前者是解包赋值，对 `AsyncClient` 直接 `TypeError`；若右边可迭代更阴 —— 整个 `state` 对象会被静默替换
 - **同名重绑定会让"注册"失效**：模块里出现两个 `app = FastAPI(...)` 时，异常处理器注册在旧对象上，uvicorn 却用新对象 → 所有业务异常静默回落成 500
@@ -402,7 +402,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - 🔴 **CORS 的 `allow_methods` 必须与实际注册的路由一致**（2026-10-25 实测事故）：加了 `PATCH` / `DELETE` 路由但忘了加进 `allow_methods` → 浏览器预检 `OPTIONS` 直接 **400**，前端完全无法调用；⚠️ `curl` 测不出来（CORS 只在浏览器生效）。⭐ 判据：**新增任何非 GET/POST 路由，必须回头检查 `allow_methods`**
 - ⭐⭐ **索引 = 按某列排好序的额外一份表（B-Tree）**，不是「让数据库更聪明」。📎 实测 5 万行：无索引 2985.9 µs vs 有索引 119.6 µs（**25 倍**）；规模曲线 4 万→8 万：无索引 7.085→17.352 ms（**线性**），有索引 0.165→0.216 ms（**对数**）。代价：插入慢 38%、占空间多 18%、命中大半表时**可能不被使用**。⭐ `SELECT *` 一定要**回表**（只有 `COVERING INDEX` 才不用）
 - ⭐⭐ **代码注释只留「防错」，详细解释进笔记**：判据是「**删掉这句注释，读者会不会写错代码**」——会就留，不会就挪走。对比表 / N 组实测 / 取舍过程 / 名词定义全部放笔记或步骤卡代码块之外。⚠️ 单块连续注释 ≤ 4 行，docstring「为什么」段 ≤ 3 行
-- ⭐⭐ **重要业务/架构决策单独记在 [study_notes/决策记录.md](study_notes/决策记录.md)**（18 条 ADR）：每条写「背景 → 方案对比 → 决定 → **代价（放弃了什么）** → 触发重审的条件」。⭐ 判据：**换个方案也能跑 → 记决策；不会（客观事实）→ 记笔记**。⭐ 核心判据：**「子记录该不该跟着父记录消失」取决于「谁有权删父记录」** —— 用户能删的东西，下面不能挂不可再生的记录
+- ⭐⭐ **重要业务/架构决策单独记在 [study_notes/project/decisions.md](study_notes/project/decisions.md)**（18 条 ADR）：每条写「背景 → 方案对比 → 决定 → **代价（放弃了什么）** → 触发重审的条件」。⭐ 判据：**换个方案也能跑 → 记决策；不会（客观事实）→ 记笔记**。⭐ 核心判据：**「子记录该不该跟着父记录消失」取决于「谁有权删父记录」** —— 用户能删的东西，下面不能挂不可再生的记录
 - ⭐⭐ **删父行时子行怎么办是「两层各管一段」**：`ForeignKey(ondelete=)` 只管**原生 SQL 删**，`relationship(cascade=)` 只管 **ORM 删**。⚠️ 📎 即使写了 `ondelete="CASCADE"`，`session.delete()` 仍只把 FK 置 `NULL`
 - **`db.get()` 查不到返回 `None`，不判空会变成 500**：📎 实测 `None` 流到 `response_model` → pydantic 报 `ResponseValidationError: Input should be a valid dictionary or object..., input=None` → 客户端 500。⚠️ **不是 `AttributeError`**。⭐ 判据：**把 404 伪装成 500 最容易误导排查** —— 看到 `X | None` 就该判空
 - **PowerShell 里 `curl.exe` 的输出不要接管道**：📎 两次实测同一个病 —— 乱码 `鐜版湁瀵硅瘽` 是 PowerShell 按 **GBK** 解码 UTF-8 字节（数据本身正确）；`curl | python` 更严重，**10494 字节被压成 8954**，JSON 结构被破坏。解法：`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` / `curl -o` 写文件 / 直接用 Python。⭐ 判据：**看到乱码先查源头对不对，别急着改代码**
@@ -410,11 +410,11 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 
 | 文档 | 内容 |
 |---|---|
-| [能力档案与路线图.md](study_notes/能力档案与路线图.md) | 目标、能力缺口分析、阶段规划 |
-| [阶段0-工程基础.md](study_notes/阶段0-工程基础.md) | uv / Git / 项目结构 / pydantic / 类型注解 / 异步 / 测试 / lint / Docker |
-| [阶段1-FastAPI速成.md](study_notes/阶段1-FastAPI速成.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 测试 → 部署（Step 1~6 后有「前半程回顾」章节；**Step 9 的 §9.9「一条流式请求的全生命周期」是三张全景图的复习入口**，§9.2b~9.2d / §9.3a 是流式的分层讲解） |
-| [学习过程记录.md](study_notes/学习过程记录.md) | 步骤流水、踩坑记录、关键结论 |
-| [工具与依赖速查.md](study_notes/工具与依赖速查.md) | 第三方包与工程工具速查：定位、安装、常用 API 与命令、易错点 |
+| [project/roadmap.md](study_notes/project/roadmap.md) | 目标、能力缺口分析、阶段规划 |
+| [learning/stage0-engineering-basics.md](study_notes/learning/stage0-engineering-basics.md) | uv / Git / 项目结构 / pydantic / 类型注解 / 异步 / 测试 / lint / Docker |
+| [learning/stage1-fastapi.md](study_notes/learning/stage1-fastapi.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 测试 → 部署（Step 1~6 后有「前半程回顾」章节；**Step 9 的 §9.9「一条流式请求的全生命周期」是三张全景图的复习入口**，§9.2b~9.2d / §9.3a 是流式的分层讲解） |
+| [learning/learning-log.md](study_notes/learning/learning-log.md) | 步骤流水、踩坑记录、关键结论 |
+| [learning/tools-reference.md](study_notes/learning/tools-reference.md) | 第三方包与工程工具速查：定位、安装、常用 API 与命令、易错点 |
 | [工程规范与协作约定.md](工程规范与协作约定.md) | 本项目的工程规范：命名、分层、质量门、安全约定 |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | AI 协作指令：任何新会话自动加载的讲解风格、工作纪律与命令规范 |
 
