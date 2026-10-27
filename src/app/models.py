@@ -47,12 +47,8 @@ class Conversation(Base):
     # relationship 让两个属性互指，ORM 才知道它们是同一个关系的两侧
     # LlmCall 在后面才定义，所以写成字符串（延迟解析，否则 NameError）
     # 【注意】：故意【不写 cascade="all, delete-orphan"】——
-    #   那会让删对话时把计费记录一起删掉，账目就丢了
-    calls: Mapped[list["LlmCall"]] = relationship(
-        back_populates="conversation",
-        # 删父时，所有失去父对象的子对象都直接删掉
-        cascade="all, delete-orphan",
-    )
+    #   那会让删对话时把计费记录一起删掉（级联删除），账目就丢了
+    calls: Mapped[list["LlmCall"]] = relationship(back_populates="conversation")
 
 
 class LlmCall(Base):
@@ -67,15 +63,13 @@ class LlmCall(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # 外键：告诉数据库【这一列的值必须是 conversations 表里已存在的 id】
-    # ondelete="CASCADE"：父行被删时，数据库自动删掉子行
-    # index=True: 按外键额外建一条索引（外键常要建索引，因为要按外键查子记录，否则会变成全表扫）
-    # 【注意】：上面这个 ondelete 只在【绕过 ORM 直接发 DELETE 语句】时生效。
-    #   走 session.delete() 时它【管不到】—— 实测即使写了 ondelete="CASCADE"，
-    #   ORM 仍然只把 conversation_id 置成 NULL（因为这一列可空）。
-    #   真正让 ORM 删子行的是 Conversation.calls 上的 cascade="all, delete-orphan"。
+    # 外键：这一列的值必须是 conversations 表里已存在的 id
+    # ondelete="SET NULL"：父行被删时只把这一列置 NULL，整条记录保留
+    # 【注意】：不能写 CASCADE —— 计费是账目，删对话不能连带删账
+    #   （实测写 CASCADE 时删 1 个对话丢 900 token）
+    # index=True：要按 conversation_id 查「这个对话花了多少」，不建会全表扫
     conversation_id: Mapped[int | None] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
         index=True,
     )
 
