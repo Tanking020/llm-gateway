@@ -74,7 +74,7 @@
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
-  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅；下一步 **10.6c N+1 与 `selectinload`**
+  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅**；下一步 **10.6c N+1 与 `selectinload`**
   - ⚠️ **已知的小瑕疵**：笔记里 `§10.6c`（N+1）的物理位置排在 `§10.6b-2` **之前** —— 编号与顺序不一致，下次整理笔记时再挪（不影响阅读，因为都有编号）
 
 ### 阶段 2：LLM 原生 API（2 周）
@@ -219,7 +219,8 @@
 | 10.6a | `LlmCall` 表 + `Conversation.calls` 一对多（外键 / `cascade` / `conversation_id` 索引） | ✅ 2026-10-26 完成；📎 建表语句含 `ON DELETE CASCADE` + `ix_llm_calls_conversation_id`；📎 索引实测 25 倍（5 万行）+ 规模曲线证明 O(log n)；📎 五种删父子写法对比；⚠️ 批改订正一处理解错误（`ondelete=` 不能解决 ORM 置 NULL） |
 | 10.6b-1 | 打开 SQLite 外键强制（`engine.sync_engine` 的 `connect` 事件 + `PRAGMA foreign_keys=ON`） | ✅ 2026-10-26 完成；📎 池内 3 条连接全为 1；孤儿 `conversation_id=999` 被 `IntegrityError` 拒；📎 **订正 10.6a 的旧结论**：10 组矩阵证明 `ondelete` 依赖 `PRAGMA`，且「有 relationship 无 cascade」会抵消级联 |
 | 10.6b-2 | `ChatRequest` 加 `conversation_id` + pre-flight（不存在 → 404，流开始前拦） | ✅ 2026-10-27 完成；📎 六项验证 200 / 404 / 404 / 422 / 200 / 400×2；⭐ 顺带把「对话不存在」的 5 处重复抽成 `require_conversation`，并统一两条 chat 的校验顺序 |
-| 10.6b-3 | 生成器里写 `LlmCall`（`except BaseException` 回滚守卫） | ✅ 2026-10-27 完成；📎 真上游落 1 行 `conv=1 / 33+46=79`；📎 六组守卫矩阵证明「只 raise 不回滚」会被 `get_db` 提交半截账单；📎 强化验证 C vs D（同一场景 0 行 / 1 行） |
+| 10.6b-3 | 生成器里写 `LlmCall`（第一版：`except BaseException` 回滚守卫） | ✅ 2026-10-27 完成，⚠️ **但方案在 1.63 被推翻**：守卫守的是「编造的帧序」，且业务上让断开的调用完全不留账（学习者指出「断了也花了 token」） |
+| 10.6b-4 | **两阶段记账**：流开始前落 `pending` 行 → 拿到 usage 改 `completed` → 断开/异常只做同步赋值 `aborted` | ✅ 2026-10-27；📎 真 app 中间件栈下 5 种「断开时补写」全失败，只有「提前写」可行；📎 四格验收 + 真实 DeepSeek 端到端；新增 `LlmCall.status`（`pending`/`completed`/`aborted`） |
 | 10.6c | N+1 原理 + `selectinload` 实测 | ⬜ 待做 |
 | 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39） | ⬜ 待做 |
 
@@ -270,7 +271,8 @@
 | 38 | 🟢 **无请求体大小限制**：超大 body 会占满内存 | FastAPI 默认不限制 body 大小。`title` 有 `max_length=100`，但 `messages` 列表与单条 `content` 只有长度下限 | **阶段 3 部署前**：网关（nginx `client_max_body_size`）或中间件层限制 |
 | 39 | 🟡 **`/v1/models` 与 `/v1/upstream/models` 形状不一致** | 前者返回 `{"total": int, "items": list[str]}`，后者返回 `ModelListResponse`（`items` 是 `ModelItem` 对象）。同一概念两种形状 | **10.6d**（与分页一起）：统一成 `ModelListResponse` |
 | 40 | 🟡 **没有 `tests/` 目录**：全部验证靠手工 curl + 临时脚本 | 📎 核对：项目根下 `tests/` **不存在**。每次改动靠手跑 curl 或临时探针脚本（用完即删），无法回归 | **Step 12**（测试 FastAPI）：建 `tests/` + `TestClient` + 关键路径用例 |
-| 41 | 🟠 **写 `LlmCall` 出参 schema 时 `conversation_id` 必须 `int \| None`** | 📎 实测同一条 `conversation_id=None` 的记录：schema 写 `int` → **500 Internal Server Error**（客户端完全不知道是 NULL 导致）；写 `int \| None` → **200 `null`**。⚠️ 另：`call.conversation` 在 NULL 时是 `None`，取 `.title` 会 `AttributeError` → 也必须判空。详见笔记 §10.6b-2 | **10.6b-3 之后做查询接口时**（或现在就先定好 schema 形状） |
+| 41 | 🟠 **写 `LlmCall` 出参 schema 时 `conversation_id` 必须 `int \| None`**，且要带 `status` | 📎 实测同一条 `conversation_id=None` 的记录：schema 写 `int` → **500 Internal Server Error**（客户端完全不知道是 NULL 导致）；写 `int \| None` → **200 `null`**。⚠️ 另：`call.conversation` 在 NULL 时是 `None`，取 `.title` 会 `AttributeError` → 也必须判空。⭐ 10.6b-4 之后还要暴露 `status`（`pending`/`completed`/`aborted`）。详见笔记 §10.6b-2 / §10.6b-4 | **10.6b-3 之后做查询接口时**（或现在就先定好 schema 形状） |
+| 42 | 🟡 **`aborted` 行和 `pending` 残留行怎么处理** | ⚠️ 现状：断开时 token 只能记 `0`（usage 帧永远到不了），**金额算不出来**。另 `pending` 只会在进程崩溃/断电时残留，没有清理机制。① 要不要按已转发的内容**估算** `completion_tokens`？② 要不要给 `pending` 加超时清理（启动时把超过 N 小时的 `pending` 改成 `aborted`）？详见笔记 §10.6b-4 | **要做「账单统计 / 成本看板」时**（10.6d 或阶段 2 末） |
 
 
 **待办 → 步骤 对照（2026-10-25 审计后新增）**：
@@ -280,10 +282,11 @@
 | **10.6a** | `LlmCall` 表 + `Conversation.calls` 一对多（外键 + `cascade` + `conversation_id` 索引） | #33（索引） |
 | **10.6b-1** | 打开 SQLite 外键强制（`connect` 事件 + `PRAGMA foreign_keys=ON`） | — |
 | **10.6b-2** | `ChatRequest` 加 `conversation_id` + pre-flight 校验（`require_conversation` 一处实现） | #41（`LlmCall` 出参 schema 要提前定形状） |
-| **10.6b-3** | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫 | #35（`messages` 表要同样思路） |
+| **10.6b-3** | 生成器里写 `LlmCall` + 第一版回滚守卫（⚠️ 方案已被 10.6b-4 推翻） | — |
+| **10.6b-4** | **两阶段记账**：`status` 三态（`pending` / `completed` / `aborted`） | #41（`LlmCall` 出参 schema 也要带 `status`） |
 | **10.6c** | N+1 原理 + `selectinload` 实测 | — |
 | **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #39** |
-| **10.8** | Step 10 自检（40 题） | — |
+| **10.8** | Step 10 自检（46 题） | — |
 | **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |

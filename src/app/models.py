@@ -81,6 +81,12 @@ class LlmCall(Base):
     completion_tokens: Mapped[int] = mapped_column(default=0)
     total_tokens: Mapped[int] = mapped_column(default=0)
 
+    # 这次调用怎么结束的：completed = 拿到完整 usage；aborted = 客户端中途断开
+    # 【注意】：断开时上游【已经产出的 token 照样收费】，所以不能因为没拿到 usage
+    #   就把这一行丢掉 —— 否则账面完全看不到这次调用，月底对账查不出差额来自哪里
+    #   （实测 true 上游断开时 usage 帧永远不会到达，token 只能记 0）
+    status: Mapped[str] = mapped_column(String(20), default="completed")
+
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
     # 反向导航：call.conversation 拿到那条对话

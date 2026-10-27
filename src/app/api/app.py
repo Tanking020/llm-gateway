@@ -454,34 +454,40 @@ async def chat_stream(
     # 推进它的是 StreamingResponse 里的 async for（starlette/responses.py:253），不是本文件
     async def event_source() -> AsyncIterator[str]:
         """异步生成器：每 yield 一次 = 一帧 SSE，框架收一帧发一帧"""
-        # 先发一帧状态，前端可以立刻显示"模型思考中"
-        #   注意：加了 pre-flight 之后，这一帧要等上游响应头回来才发得出去
-        #   实测 TTFB 从 60.0ms 变成约 181~266ms，仍远小于首个内容帧的 845.8ms
-        yield f"data: {json.dumps({'status': 'thinking'}, ensure_ascii=False)}\n\n"
-
         #   raw_chunks=0 -> 上游根本没按 SSE 回（HTML / 空 body）
         #   raw_chunks>0 而 content_frames=0 -> 回了帧但没有内容帧（忽略 stream=True / 只有思维链）
         raw_chunks = 0  # 收到的原始 SSE 帧数量
         content_frames = 0  # 其中包含回答文字的帧数量
 
+        # 先落一行 pending 账单：客户端断开 / 进程崩溃时，这一行会以 pending 留在库里。
+        # 【注意】：上游已产出的 token 照样收费 —— 不留这行，账面就完全看不到这次调用
+        #   （实测：断开时 usage 帧永远到不了，token 只能记 0，但「发生过」这个事实必须留下）
+        call = LlmCall(
+            conversation_id=request.conversation_id,
+            model=actual_model,
+            status="pending",
+        )
+        db.add(call)
+        await db.flush()
+
         recorded = False
 
         async def record_usage(usage: dict[str, Any]) -> None:
-            """把这次调用记成一行账单：只记一次（usage 可能在多帧里重复出现）"""
+            """正常路径记账：只记一次（usage 可能在多帧里重复出现）"""
             nonlocal recorded
             if recorded:
                 return  # 【注意】：上游可能多帧给 usage，重复记 = 重复扣费
             recorded = True
-            db.add(
-                LlmCall(
-                    conversation_id=request.conversation_id,
-                    model=actual_model,
-                    prompt_tokens=_as_int(usage.get("prompt_tokens")),
-                    completion_tokens=_as_int(usage.get("completion_tokens")),
-                    total_tokens=_as_int(usage.get("total_tokens")),
-                )
-            )
+            call.prompt_tokens = _as_int(usage.get("prompt_tokens"))
+            call.completion_tokens = _as_int(usage.get("completion_tokens"))
+            call.total_tokens = _as_int(usage.get("total_tokens"))
+            call.status = "completed"
             await db.flush()
+
+        # 先发一帧状态，前端可以立刻显示"模型思考中"
+        #   注意：加了 pre-flight 之后，这一帧要等上游响应头回来才发得出去
+        #   实测 TTFB 从 60.0ms 变成约 181~266ms，仍远小于首个内容帧的 845.8ms
+        yield f"data: {json.dumps({'status': 'thinking'}, ensure_ascii=False)}\n\n"
 
         try:
             # aiter_chunks 已经帮我们做完了：切行、跳空行、剥 data: 前缀、
@@ -636,7 +642,9 @@ async def chat_stream(
             # 上游给坏帧 / flush 失败等普通异常都会进这里
             # logger.exception 会带完整 traceback；而回给前端的只有一句人话
             # （绝不回显 str(exc) 或堆栈 —— 那可能泄露内部结构）
-            await db.rollback()  # 这次调用不记账
+            # 业务异常也要留账：上游已经产出的 token 照样收费
+            if not recorded:
+                call.status = "aborted"
 
             logger.exception("流式过程中失败：%s", type(exc).__name__)
             yield (
@@ -651,8 +659,12 @@ async def chat_stream(
 
         except BaseException:
             # 【注意】：必须是 BaseException —— 客户端断开的 CancelledError 继承它，
-            #   except Exception 拦不住；而「只 raise 不回滚」实测会让 get_db 把半截账单提交掉
-            await db.rollback()
+            #   except Exception 拦不住
+            # 【注意】：这里【只做同步赋值，不要 await】—— 实测任何 await（rollback / commit /
+            #   甚至 shield 包住的 commit）都会被二次取消，账单反而写不进去。
+            #   pending 行早就 flush 过了，落盘交给 get_db（它跑在中间件退出栈里，躲得过取消）
+            if not recorded:
+                call.status = "aborted"
             raise
 
         finally:

@@ -748,27 +748,55 @@
     > 📎 实测反例：改之前 `/v1/chat` 先查库(270 行)后语义(276 行)，`/v1/chat/stream` 先语义(421)后查库(426) —— 对「`conversation_id=999` + 最后一条是 assistant」这个请求，两条接口分别回 **404 / 400**（同一种坏请求两个答案）。统一成「先语义后查库」后两条都回 **400**。
     > ⭐ 附带收益：非法消息**零 IO** 就被拒，数据库白省一次往返。
 
-41. 流式接口里 `flush()` 过一条数据之后客户端断开，`get_db` 会怎么处理？为什么「在 `except` 里 `raise`」拦不住？
-    > `get_db` 的 `yield session` 之后是 `await session.commit()` —— 流结束后 FastAPI 认为依赖**正常结束**，这一行照常执行。而 `except Exception` 抓不到 `CancelledError`（它继承 `BaseException`）。
-    > 📎 实测 D 组（只 `raise` 不回滚）：断开后库里**多 1 行**半截账单。A 组（完全无守卫）同样 1 行。
-    > ⭐ **真正让 commit 失效的不是「抛异常」，而是 `rollback()` 把活动事务清掉了**（`in_tx` 从 `True` 变 `False`），之后 `commit()` 变成空操作。
+41. 为什么「客户端断开时用 `except BaseException: await db.rollback()` 把账单撤掉」这个方案被否决了？错在哪两个层次？
+    > **层次 1：验证的场景是编的。** 六组矩阵用的是「usage 帧先到、内容帧后到」的假帧序，但真实上游的 `usage` **永远在最后一帧**。📎 实测真实帧序下中途断开：`llm_calls` 是空的 —— `record_usage` 从未被调用，**根本没有「半截账单」可撤**。
+    > **层次 2：业务方向搞反了。** 上游按**已产出**计费，断开不是退款。`rollback` 一做，这次调用在库里**一行都没有** —— 比「留一行 token=0」更差，月底对账连差额来自哪里都查不出。
+    > ⭐ 判据：**「验证通过」只证明「在我构造的场景下成立」。** 先问「这个场景在真实数据里出现吗」。
 
-42. 流式落库时 `except Exception` 和 `except BaseException` 分别覆盖什么？两个分支的顺序能反吗？
-    > | 分支 | 覆盖 |
-    > |---|---|
-    > | `except Exception` | 上游给坏帧 / `flush` 失败等普通异常 |
-    > | `except BaseException` | 客户端断开（`CancelledError`）、生成器被关闭（`GeneratorExit`） |
+42. 为什么「断开时补写一行账单」做不到，而「流开始前先写一行 `pending`」可以？
+    > 关键在**代码跑在哪个上下文**：
+    > | 时机 | 上下文 | 能不能 `await` |
+    > |---|---|---|
+    > | 流开始前（第一个 `yield` 之前） | 正常请求上下文 | ✅ |
+    > | 断开时（`except BaseException` 里） | **已被取消的 cancel scope** | ❌ 任何 `await` 都被二次取消 |
+    > 📎 实测断开时：`await db.commit()` 抛 `CancelledError` 并炸出 `ResourceClosedError: This transaction is closed`；`asyncio.shield(commit())` 一样失败。
+    > ⭐ 而 **`get_db` 的 `commit()` 跑在中间件退出栈里（`AsyncExitStackMiddleware`），不在被取消的 task 里** —— 所以我们只「登记 + `flush`」，提交交给它。
+    > ⚠️ 补充：这个方案在一个**只有 `get_db`、没有中间件**的精简 app 里能成，在真 app（多了 `BaseHTTPMiddleware`）里失败。**复刻环境漏一个中间件，结论就反了。**
+
+43. 流式落库时 `except Exception` 和 `except BaseException` 分别覆盖什么？两个分支的顺序能反吗？
+    > | 分支 | 覆盖 | 该做什么 |
+    > |---|---|---|
+    > | `except Exception` | 上游给坏帧 / `flush` 失败等普通异常 | `call.status = "aborted"`（同步赋值） |
+    > | `except BaseException` | 客户端断开（`CancelledError`）、生成器关闭（`GeneratorExit`） | 同上，**且绝对不能 `await`** |
     > ⚠️ **顺序不能反**：`BaseException` 写在前面会把所有普通异常也吃掉，`except Exception` 分支永远不执行。
-    > ⭐ 两个分支都要 `await db.rollback()` —— 漏掉任一条都有一类场景会留下半截账单。
+    > ⭐ 两个分支都只做**同步赋值**、不 `rollback` 不 `commit` —— 落盘统一交给 `get_db`。
 
-43. `usage` 在 DeepSeek 和 OpenAI 的流式响应里出现的位置有什么不同？只处理一处会怎样？
+44. `LlmCall.status` 的三个值分别是什么含义？哪个值只在「进程崩溃」时才可能残留？
+    > | 值 | 含义 | 谁写 |
+    > |---|---|---|
+    > | `pending` | 流开始了但没正常结束 | 流开始前 |
+    > | `completed` | 拿到完整 usage | `record_usage` |
+    > | `aborted` | 明确知道被中断（客户端断开 / 上游异常） | 两个 `except` 分支 |
+    > ⭐ **`pending` 只在「进程崩溃 / 断电」时才残留** —— 正常断开会被两个 `except` 改成 `aborted`。
+    > ⭐ 这个列的业务意义：**能算出「中断损耗率」**（有多少调用没拿到 usage），否则账面永远对不上上游账单。
+
+45. 「需要一定会留下的数据（账单 / 审计 / 日志），不要跟请求事务同生共死」—— 这句话在代码上怎么落地？
+    > 三个做法，按代价从低到高：
+    > | 做法 | 说明 |
+    > |---|---|
+    > | **两阶段** | 先写 `pending` 行（正常上下文 `flush`），结束时改状态 |
+    > | **独立会话** | `async with SessionMaker() as acct:` 自己 `commit`，不共用请求事务 |
+    > | **异步通道** | 写消息队列，由独立 worker 落账（阶段 3 规模才需要） |
+    > ⭐ 判据：**「这次请求回滚了，这条记录该不该消失？」** 该消失 → 用请求事务；不该消失 → 用上面三个。
+
+46. `usage` 在 DeepSeek 和 OpenAI 的流式响应里出现的位置有什么不同？只处理一处会怎样？
     > | 上游 | 位置 |
     > |---|---|
     > | DeepSeek | 和 `finish_reason` 挤在**同一帧** |
     > | OpenAI（`stream_options.include_usage`） | **单独一帧**，且 `choices` 是空列表 |
     > ⭐ 只处理一处 → **有一半上游记不上账**（而且不报错，静默漏账）。
     > ⭐ 另外要防重复：上游可能在多帧重复给 `usage`，不设开关会**一次调用记成两行 = 重复收费**。
-    > 📎 强化验证用假上游造两种帧序，两种都落 1 行（`conv=1 / prompt=33 / completion=46 / total=79`）。
+    > 📎 用假上游造两种帧序，两种都落 1 行（`conv=1 / prompt=33 / completion=46 / total=79`）。
 
 ### Step 11 · 工程化：配置 / 日志 / 安全
 

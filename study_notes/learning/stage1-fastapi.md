@@ -4994,10 +4994,10 @@ error: Statement is unreachable  [unreachable]
 | ⑨ §10.6a `LlmCall` 表 | 外键 + `relationship` + `cascade` + `index=True`；📎 索引实测 25 倍 | ✅ 2026-10-26 |
 | ⑩ §10.6b-1 外键强制 | `connect` 事件 + `PRAGMA foreign_keys=ON`；📎 孤儿插入被拒 | ✅ 2026-10-26 |
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
-| ⑫ §10.6b-3 usage 落库 | 生成器里写 `LlmCall` + `except BaseException` 回滚守卫；📎 六组守卫矩阵（D 组证明「只 raise 没用」）+ 四格强化验证（C vs D 是同一场景 0 行 / 1 行） | ✅ 2026-10-27 |
+| ⑫ §10.6b-3 / 10.6b-4 记账与 `status` | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了：断了也花了 token 却不记账）；最终**两阶段记账**：流开始前落 `pending` → 拿到 usage 改 `completed` → 断开/异常只做同步赋值 `aborted`；📎 真 app 中间件栈下 5 种「断开时补写」全部失败 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ⬜ 待做 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
-| ⑮ §10.8 自检 | 本节自检 40 题 | ⬜ 待做 |
+| ⑮ §10.8 自检 | 本节自检 46 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -7093,11 +7093,17 @@ call.conversation.title -> AttributeError: 'NoneType' object has no attribute 't
 
 ---
 
-## 10.6b-3 ⚠️ 流式接口里落库：`usage` 记账 + 断开守卫
+## 10.6b-3 `usage` 记账 + 一个被我推翻的「断开守卫」方案
 
 ### 这一步做了什么
 
-`event_source` 里两处拿到 `usage` 的地方，把这次调用写进 `llm_calls` 一行；并且保证「客户端中途断开」时**不留半截账单**。
+`event_source` 里两处拿到 `usage` 的地方，把这次调用写进 `llm_calls` 一行。
+
+⚠️ 本节保留**第一版方案（错的）**的完整实测 —— 因为**推翻它的过程**比结论本身更值得看。正确方案见 **§10.6b-4 两阶段记账**。
+
+### 📎 第一版方案：想在「断开时」把账单撤掉（⚠️ 结论已推翻）
+
+当时的假设是「断开时会留下半截账单，所以要 `rollback`」。六组实测（实验 app 只有 `get_db`，**没有中间件**）：
 
 ### 📎 六组守卫实测（真 uvicorn + 项目的 `get_db`，4 种守卫 × 2 种结束方式）
 
@@ -7110,22 +7116,39 @@ call.conversation.title -> AttributeError: 'NoneType' object has no attribute 't
 | S `asyncio.shield(db.rollback())` | 1 行 ✅ | 0 行 | ⚠️ `in_tx=True`（状态没清干净） |
 | K `await db.close()` | 1 行 ✅ | 0 行 ✅ | `in_tx=False` |
 
-⭐⭐ **D 组是理解整件事的钥匙**：光抛异常没用。因为 `get_db` 长这样——
+⭐⭐ **D 组看起来是「钥匙」**：光抛异常没用 —— `get_db` 的 `commit()` 在 `yield` 恢复后照常执行；真正让 commit 失效的是 `rollback()` 把活动事务清掉了（`in_tx` True→False）。
 
-```python
-async with SessionMaker() as session:
-    try:
-        yield session
-        await session.commit()   # 流结束后 FastAPI 认为依赖「正常结束」，这一行照常执行
-    except Exception:            # CancelledError 不是 Exception，抓不到
-        await session.rollback()
+于是当时写下了判据「**流式接口里 `flush` 过的数据，必须在断开路径上显式 `rollback`**」，并记进了决策 20。
+
+⚠️ **但这个结论是错的，两个层次都错** ↓
+
+### ⚠️ 错在哪之一：验证的场景是编的
+
+六组矩阵全部用「**usage 帧先到、内容帧后到**」的假帧序 —— 但**真实上游的 usage 永远在最后一帧**。
+
+📎 实测真实帧序（内容 5 帧 → usage 只在最后一帧）中途断开：
+
+```text
+客户端收到 3 块后断开，最后一块: b'data: {"delta": "2"}\n\n'
+断开后 llm_calls: []        ← record_usage 从未被调用，根本没有「半截账单」
 ```
 
-⭐ **真正让 commit 失效的不是「抛异常」，而是 `rollback()` 把活动事务清掉了**（`in_tx` 从 `True` 变 `False`）—— 之后 `get_db` 的 `commit()` 变成**空操作**。
+⭐⭐ **真实场景下守卫根本不会被触发到** —— 它守的是一个不存在的问题。
 
-⚠️ 实测 B 的 `await db.rollback()` 那一行**自身**会被二次取消（trace 显示 `清理动作被二次取消: CancelledError`），但事务状态在 await 被取消**之前**就已经切换好了 —— 所以结果正确。这不是巧合：SQLAlchemy 把事务状态切换放在同步段。
+### ⚠️ 错在哪之二：业务方向搞反了（学习者发现的）
 
-### 📎 强化验证：让断开真的发生在「flush 之后」
+> 原话：「就算客户端中断，已经生成的部分还是花了我们的 token 吧？难道这部分就不计费了吗」
+
+⭐ **对。上游按已产出计费，断开不是退款。**
+
+| 做法 | 钱 | 账 |
+|---|---|---|
+| 断开时 `rollback`（第一版方案） | 已经花了 | **一行都没有** ← 比 A 组还差 |
+| 断开时什么都不做（A 组） | 已经花了 | 1 行，但 token=0 |
+
+⚠️ **「账面干净」不等于「账目正确」** —— 抹掉一行的后果是月底对不上账，而且查不出差额来自哪里。
+
+### 📎 强化验证（⚠️ 场景仍然是编的）
 
 普通 curl 测不出来 —— 因为断开通常发生在第一帧 `status: thinking`，那时**还没 flush 任何东西**，「没多行」是必然的。
 
@@ -7139,6 +7162,8 @@ async with SessionMaker() as session:
 | **D 反证：把 `rollback` 换成空操作，同样断开** | **1 行** | ✅ `[(1, ..., 33, 46, 79)]` |
 
 ⭐⭐ **C 与 D 才是真证据**：同一场景、只改守卫，0 行 vs 1 行。没有 D，C 的 0 行可能只是「碰巧没 flush 到」。
+
+⚠️ 但这组验证只证明「在这个假场景下守卫有效」，**不能证明真实场景有问题** —— 见上面的「错在哪之一」。
 
 ### 为什么 `usage` 要处理两处
 
@@ -7166,11 +7191,92 @@ async with SessionMaker() as session:
 
 ⭐ 判据：**存进数据库的值，类型必须在边界处收窄一次** —— SQLite 不会帮你挡。
 
+⚠️ 顺带：断开时服务端日志会出现 `ERROR sqlalchemy.pool ... CancelledError: Cancelled via cancel scope` —— 这是连接池被强制 terminate 的**噪音**，不是 bug（连接没法优雅归还，只能销毁）。
+
+---
+
+## 10.6b-4 两阶段记账：先落一行 pending，不在断开路径上写
+
+### 问题
+
+「断开时补写」这条路走不通。📎 在**真 app 的中间件栈**下实测 5 种（这次多了 CORS + 请求 ID 两个中间件）：
+
+| 方案 | 断开后写入 | 说明 |
+|---|---|---|
+| R1 完全不记账 | 0 行 | 账面无记录 |
+| R2 `rollback` only（第一版方案） | 0 行 | 同上 |
+| R3 `rollback` + `add`（靠 `get_db` 提交） | **0 行** | ⚠️ 在早先那个精简实验 app 里能成，**真 app 里不行** |
+| R4 `rollback` + `add` + `await db.commit()` | 0 行 | commit 被 `CancelledError` 打断，还炸出 `ResourceClosedError: This transaction is closed` |
+| R5 `rollback` + `add` + `asyncio.shield(commit())` | 0 行 | shield 也挡不住 |
+| **P 流开始前 `add` + `flush` 一行 pending** | **1 行** ✅ | ← 唯一可行的 |
+
+### ⭐⭐ 为什么「开始前写」能成、「断开时补写」不能
+
+| 时机 | 代码跑在哪个上下文 | 能不能 `await` |
+|---|---|---|
+| 流开始前（第一个 `yield` 之前） | 正常请求上下文 | ✅ 完全正常 |
+| 断开时（`except BaseException` 里） | **已被取消的 cancel scope** | ❌ 任何 `await` 都会被二次取消 |
+
+⚠️⚠️ **而 `get_db` 的 `commit()` 跑在中间件退出栈里（`AsyncExitStackMiddleware`），不在被取消的请求 task 里** —— 所以它躲得过取消。
+
+⭐ 这就是 P 能成的根本原因：**我们只负责「登记」，提交交给一个不会被取消的人。**
+
+### 最终代码形状
+
+```python
+async def event_source() -> AsyncIterator[str]:
+    # 先落一行 pending：断开 / 进程崩溃时它会留在库里
+    call = LlmCall(conversation_id=..., model=..., status="pending")
+    db.add(call)
+    await db.flush()
+
+    try:
+        ...
+        # 拿到 usage：只改这一行的字段，不新建行
+        call.prompt_tokens = ...
+        call.status = "completed"
+        await db.flush()
+        ...
+    except Exception:
+        if not recorded:
+            call.status = "aborted"    # 同步赋值，不 await
+        ...
+    except BaseException:
+        if not recorded:
+            call.status = "aborted"    # 【只做同步赋值】
+        raise
+```
+
+### 📎 四格验收（真 app + 假上游）
+
+| 场景 | 结果 |
+|---|---|
+| 正常读完 | `completed` `33/46/79` ✅ |
+| **真实帧序 + 中途断开** | **`aborted` `0/0/0`** ✅ ← 关键是**这一行存在** |
+| usage 先到 + usage 后断开 | `completed` `33/46/79` ✅ 真值不丢 |
+| 上游抛异常 | `aborted` `0/0/0` ✅ |
+
+📎 真实 DeepSeek 端到端：`conv=1 model=deepseek-flash prompt=33 completion=60 total=93 status=completed` ✅
+
+### `status` 三态
+
+| 值 | 含义 | 谁写 |
+|---|---|---|
+| `pending` | 流开始了但没正常结束（**进程崩溃 / 断电**时才残留） | 流开始前 |
+| `completed` | 拿到完整 usage | `record_usage` |
+| `aborted` | 明确知道被中断（客户端断开 / 上游异常） | 两个 `except` 分支 |
+
+### ⭐⭐ 三条方法论教训
+
+1. **「我在测试里构造的场景」≠「真实系统会发生的场景」** —— 六组矩阵全过了，但用的是假帧序（usage 先行），而真实上游的 usage 永远在最后一帧 → 守的是**不存在的问题**。**验证前先问：这个场景在真实数据里出现吗？**
+2. **「我的实验 app 跑通了」≠「真 app 跑通」** —— R3 在只有 `get_db` 的精简 app 里成功，在真 app（多了 `BaseHTTPMiddleware`）里失败。⭐ **复刻环境时漏一个中间件，结论就反了。**
+3. **技术方案要能被业务问题推翻** —— 六组矩阵证明了「怎么不写半截数据」，但从没问「半截数据该不该写」。⭐ **「能不能做到」和「该不该做」是两个问题，后者优先级更高。**
+
 ### 一句话判据
 
-⭐⭐ **流式接口里凡是 `flush` 过的数据，都必须在「客户端断开」这条路径上显式 `rollback` —— 因为框架会把它当成「正常完成」来提交。**
+⭐⭐ **需要「一定会留下」的数据（账单 / 审计 / 日志），不要跟请求事务同生共死 —— 提前写、独立提交，或用两阶段（先 `pending` 再改状态）。**
 
-⚠️ 顺带：断开时服务端日志会出现 `ERROR sqlalchemy.pool ... CancelledError: Cancelled via cancel scope` —— 这是连接池被强制 terminate 的**噪音**，不是 bug（连接没法优雅归还，只能销毁）。要消掉这个噪音就得在 `finally` 里用 `asyncio.shield` 包 `aclose()`，收益不大，暂不处理。
+⚠️ 反面判据：**在「已被取消」的上下文里做任何 `await` 写入都不可靠** —— 包不包 `shield` 都一样。
 
 ---
 

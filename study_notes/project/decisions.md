@@ -40,7 +40,7 @@
 | [17](#17-代码注释只留防错教学进笔记) | 注释边界 | **注释防错，笔记教学** | 2026-10-26 |
 | [18](#18-标记符号md-用-emoji代码不用) | 标记符号 | **md 用 emoji，py 用【注意】** | 2026-10-26 |
 | [19](#19-一次对话由谁定义服务端无状态-vs-有状态) | 「一次对话」的定义 | **保持无状态，messages 表列阶段 2** | 2026-10-27 |
-| [20](#20-流式接口落库必须在断开路径上显式-rollback) | 流式落库的事务边界 | **`except BaseException` + `rollback`** | 2026-10-27 |
+| [20](#20-流式接口记账先落-pending-行不在断开路径上写) | 流式落库的事务边界 | **两阶段：先 pending 再改状态** | 2026-10-27 |
 
 ---
 
@@ -332,20 +332,29 @@
 | ⚠️ 别混淆 | 现阶段的 `conversation_id`（10.6b-2）**只能解决「这次调用属于哪个对话」，不能解决「前几轮说了什么」** —— 后者必须等 `messages` 表。不要以为加了 `conversation_id` 就有会话了。 |
 
 ---
-## 20. 流式接口落库：必须在断开路径上显式 `rollback`
+## 20. 流式接口记账：先落 pending 行，不在断开路径上写
 
 | 项 | 内容 |
 |---|---|
-| **背景** | 10.6b-3 要在 `event_source` 里把 `usage` 写进 `llm_calls`。但流式响应里，路由函数**早就 return 了**（返回的是 `StreamingResponse` 对象），`get_db` 的 `commit()` 会在流结束后执行。客户端中途断开时会发生什么？ |
-| **方案对比** | A 无守卫<br>**B `except BaseException: await db.rollback(); raise`**<br>C 正常路径自己 `commit()`<br>D `except BaseException: raise`（只抛不回滚） |
-| **决定** | **B**。`except Exception` 分支也加 `rollback()` |
-| **代价** ⚠️ | ① 断开时 `rollback()` 的 `await` 会被二次取消（服务端多一条 `ERROR sqlalchemy.pool ... CancelledError` 噪音，不是 bug）；② 与 [9](#9-请求级数据库会话由依赖统一提交) 的「事务边界收在一处」有张力 —— 但那是**正常路径**的约定，断开路径必须自己兜 |
-| **重审条件** | 若将来给流式接口单独做 `get_db_stream`（不自动 commit），可去掉这里的 rollback |
-| 📎 **实测矩阵** | A 无守卫 → 断开后 **1 行**（半截账单被提交）；B → **0 行**；C → 0 行；**D 只 raise → 1 行**；S `asyncio.shield` → 0 行但 `in_tx=True`；K `close` → 0 行 |
-| ⭐⭐ **根因** | **D 组是钥匙**：光抛异常没用。`get_db` 的 `commit()` 在 `yield` 恢复后照常执行。真正让 commit 失效的是 `rollback()` 把**活动事务清掉**（`in_tx` 从 `True` 变 `False`）→ 之后 `commit()` 成空操作 |
-| ⭐ **判据** | **流式接口里凡是 `flush` 过的数据，都必须在「客户端断开」这条路径上显式 `rollback`** —— 因为框架会把它当成「正常完成」来提交 |
+| **背景** | 10.6b-3/4 要把 `usage` 写进 `llm_calls`。流式响应里路由函数**早就 return 了**（返回 `StreamingResponse` 对象），`get_db` 的 `commit()` 在流结束后才执行。客户端中途断开时怎么办？ |
+| **方案对比** | R1 完全不记账<br>R2 `except BaseException: await db.rollback()`（**第一版方案，已否决**）<br>R3 `rollback` + 断开时 `add` 新行<br>R4/R5 `rollback` + `add` + `commit()`（含 `shield` 版本）<br>**P 流开始前 `add` + `flush` 一行 `pending`，结束时改状态** |
+| **决定** | **P（两阶段记账）** |
+| **代价** ⚠️ 1 | 每次流式请求多一次 INSERT（即使失败） |
+| **代价** ⚠️ 2 | 账单不再和业务数据共用一个事务边界，与 [9](#9-请求级数据库会话由依赖统一提交) 有张力 —— 但**账单本来就该「即使业务回滚也留下」**，所以这是修正而不是违背 |
+| **重审条件** | 若引入独立的事务/审计通道（如消息队列），可改为异步落账 |
+| 📎 **为什么 R2/R3/R4/R5 都不行** | 断开时处于**已被取消的 cancel scope**，任何 `await` 都会被二次取消：`commit()` 抛 `CancelledError` 并搞出 `ResourceClosedError: This transaction is closed`；`asyncio.shield` 也挡不住。⚠️ **而 `get_db` 的 commit 跑在中间件退出栈里，不在被取消的 task 里** —— 所以我们只「登记」，提交交给它 |
+| ⭐⭐ **业务依据** | 上游按**已产出**计费，断开不是退款。第一版方案（断开时 `rollback`）会让这次调用在库里**一行都没有**，月底对账查不出差额来自哪里 |
+| ⭐ **判据** | **需要「一定会留下」的数据（账单 / 审计 / 日志），不要跟请求事务同生共死** —— 提前写、独立提交，或用两阶段（先 `pending` 再改状态） |
+| ⭐ **反面判据** | **在「已被取消」的上下文里做任何 `await` 写入都不可靠**，包 `shield` 也一样 |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6b-3；[src/app/api/app.py](../../src/app/api/app.py) `event_source` 的两个 `except` 分支
+> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6b-3（错误方案与推翻过程）+ §10.6b-4（正确方案）；[src/app/api/app.py](../../src/app/api/app.py) `event_source`
+
+### ⚠️ 这一条被改过两次，为什么留着
+
+第一版写的是「必须在断开路径上显式 `rollback`」，依据是六组实测矩阵。
+后来发现那个矩阵用的是**编造的帧序**（usage 比内容先到），真实上游的 usage 永远在最后一帧 → 守卫守的是不存在的问题；更关键的是，**学习者指出「断开时上游已经计费了，凭什么不记账」** —— 业务方向整个搞反了。
+
+⭐ 保留这段是因为教训比结论有用：**「验证通过」只能证明「在我构造的场景下成立」。**
 
 ---
 
