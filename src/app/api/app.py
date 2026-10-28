@@ -642,7 +642,9 @@ async def chat_stream(
             # 上游给坏帧 / flush 失败等普通异常都会进这里
             # logger.exception 会带完整 traceback；而回给前端的只有一句人话
             # （绝不回显 str(exc) 或堆栈 —— 那可能泄露内部结构）
-            await db.rollback()  # 这次调用不记账
+            # 上游已经产出的 token 照样收费，所以不能抹掉这一行，只能标成 aborted
+            if not recorded:
+                call.status = "aborted"
 
             logger.exception("流式过程中失败：%s", type(exc).__name__)
             yield (
@@ -657,8 +659,11 @@ async def chat_stream(
 
         except BaseException:
             # 【注意】：必须是 BaseException —— 客户端断开的 CancelledError 继承它，
-            #   except Exception 拦不住；而「只 raise 不回滚」实测会让 get_db 把半截账单提交掉
-            await db.rollback()
+            #   except Exception 拦不住；
+            # 【注意】：这里只做同步赋值，不要 await —— 实测任何 await（rollback / commit /
+            #   甚至 shield 包住的 commit 都会被二次取消，账单反而写不进去）
+            if not recorded:
+                call.status = "aborted"
             raise
 
         finally:
