@@ -98,7 +98,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 | GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse` | 200 / 502 |
 | POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；可选 `conversation_id`（不存在 → 404，**在流开始前拦**）；每次调用落一行账单 | 200 / 404 / 422 |
 | POST | `/v1/conversations` | 新建对话（落库）；`title` 长度 1~100 | 201 / 422 |
-| GET | `/v1/conversations` | 列出对话，按 `id` 升序，**含账单统计** `call_count` / `total_tokens` | 200 |
+| GET | `/v1/conversations` | **游标分页**列出对话（`?limit=1~100&after_id=N`），含账单统计；响应 `{items, total, limit, next_cursor, has_more}` | 200 / 422 |
 | GET | `/v1/conversations/{conv_id}` | 单个对话；不存在 → 404；`conv_id` 非整数 → 422 | 200 / 404 / 422 |
 | DELETE | `/v1/conversations/{conv_id}` | 删除对话（204 无内容）；不存在 → 404；⚠️ 计费记录 `SET NULL` 保留 | 204 / 404 / 422 |
 | PATCH | `/v1/conversations/{conv_id}` | 修改标题（部分更新）；不存在 → 404；空 body / null / 空串 → 422 | 200 / 404 / 422 |
