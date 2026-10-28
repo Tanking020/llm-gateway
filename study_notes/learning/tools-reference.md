@@ -1230,6 +1230,49 @@ root level: WARNING
 - ⚠️ SQLite **默认不强制外键**（`PRAGMA foreign_keys=0`），需要 `event.listens_for(engine, "connect")` 里执行 `PRAGMA foreign_keys=ON`
 - ⚠️ `create_all` **只建缺失的表，不改已有表** —— 给已有表加列必须删库重建或写迁移
 
+### `Result` 的五个取值方法 + 「一次性游标」陷阱（2026-10-28 实测）
+
+`await session.execute(stmt)` 返回的**不是值**，而是一个**结果集容器**（`ChunkedIteratorResult`）。
+📎 实测：即使 `SELECT count(...)` 只回 1 行 1 列，它也不是 `int`。
+
+| 方法 | 返回 | 恰好 1 行 1 列时 | 多行时 | 0 行时 |
+|---|---|---|---|---|
+| `.all()` | `list[Row]` | `[(3,)]` | 全部 | `[]` |
+| `.first()` | `Row \| None` | `(3,)` | 只取第一行 | `None` |
+| `.one()` | `Row` | `(3,)` | ⚠️ `MultipleResultsFound` | `NoResultFound` |
+| `.scalar()` | 第一行第一列的值 | `3` | ⚠️ **静默取第一行** | `None` |
+| **`.scalar_one()`** | 第一行第一列的值 | `3` | ⚠️ `MultipleResultsFound` | `NoResultFound` |
+| `.scalar_one_or_none()` | 值或 `None` | `3` | ⚠️ `MultipleResultsFound` | `None` |
+| `.scalars()` | **还是 `Result`**（只留第一列）→ 还要 `.all()`/`.one()` | — | — | — |
+
+⭐ **选法**：
+
+| 场景 | 用哪个 |
+|---|---|
+| `COUNT` / `SUM` / `MAX`（SQL 保证恰好 1 行） | **`.scalar_one()`** |
+| 按主键/唯一键查一个值，可能没有 | `.scalar_one_or_none()` |
+| 业务上允许多行、只要第一条 | `.first()` |
+| 要全部 | `.all()` / `.scalars().all()` |
+
+⭐⭐ **为什么 `COUNT` 要用 `scalar_one()` 而不是 `scalar()`**：它把「我假设恰好一行」**写进了代码**。
+若将来有人把查询改成带 `GROUP BY`（会返回多行），`scalar_one()` **立刻抛异常**；
+而 `scalar()` 会**静默返回第一组的数** —— `total` 变成一个错误的数字且不报错。
+
+#### ⚠️⚠️ 坑：`Result` 是**一次性游标**，用过就废
+
+📎 实测：
+
+```text
+第 1 次 .all()        -> [(3,)]
+第 2 次 .all()        -> []          ← 空的，不报错
+先 .all() 再 .first()  -> [(3,)] 然后 None   ← None，不报错
+```
+
+⭐⭐ **`Result` 内部是数据库游标，读到末尾就没了。** 对同一个 `Result` 调两次取值方法，
+第二次拿到**空值/None** 且**不报错** —— 典型的静默失效。
+
+⭐ 判据：**`Result` 只能消费一次；需要多次读取就先 `rows = result.all()` 存下来。**
+
 ## 11. 本文件更新日志
 
 | 日期 | 变更 |
@@ -1246,3 +1289,4 @@ root level: WARNING
 | 2026-10-23 | 新增 §10 SQLAlchemy 2.1 与 aiosqlite（原「更新日志」顺延为 §11）；记录版本约束、`[asyncio]` extra 与 greenlet 的 2.0/2.1 差异、常用 API、`run_sync` 不是线程池、内存 SQLite 不跨重启持久；同步 §0 总览与版本基线 |
 | 2026-10-26 | §10 新增「关系与索引：`ForeignKey` / `relationship` / `index=True`」（10.6a 实测）：两层分工（`ondelete` vs `cascade`）/ 五种删父子写法对比 / 📎 索引 25 倍收益 + 规模曲线证明 O(log n) / 索引三个代价（插入 +38%、空间 +18%、可能不被使用）/ `COVERING INDEX` / 三个静默坑 |
 | 2026-10-25 | §2 新增「`StringConstraints`：给字符串类型本身加约束」（10.5f 实测）：`strip_whitespace=True` 先清洗再判长度 / 📎 修前 `"   "` `"\t\n"` 全角空格都返回 200 并入库空白标题、修后全 422 / 📎 `Field(min_length)` 在 `field_validator` **之前**执行，所以不能用 validator 做 strip / 📎 顺带修掉「空格+100字符+空格」被误判 `string_too_long` 的旧行为。同时订正 §2「常用语法」里「`field_validator` 可顺带清洗」那条（半错） |
+| 2026-10-28 | §10 新增「`Result` 的五个取值方法 + 「一次性游标」陷阱」（10.6d-2 实测）：`execute()` 返回的是结果集容器不是值；`.all()` / `.first()` / `.one()` / `.scalar()` / `.scalar_one()` 在「1 行 / 多行 / 0 行」三种情况下的行为对照表；⭐⭐ `COUNT` 用 `.scalar_one()` 而不是 `.scalar()` —— 把「假设恰好一行」写进代码，改查询时立刻炸而不是静默返回错的数；⚠️⚠️ `Result` 是一次性游标，第 2 次 `.all()` 返回 `[]`、`.first()` 返回 `None`，**都不报错** |

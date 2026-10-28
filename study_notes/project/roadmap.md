@@ -74,7 +74,7 @@
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
-  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅**；下一步 **10.6d Step 10 收尾专项**
+  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅**；下一步 **10.6d-3 `/health` 探库**
   - ✅ **笔记章节顺序已于 2026-10-28 整理**：`§10.6c`（N+1）原来排在 `§10.6b-2` 之前，现已移到 `§10.6b-5` 之后，编号与物理顺序一致
 
 ### 阶段 2：LLM 原生 API（2 周）
@@ -224,7 +224,7 @@
 | 10.6b-4a | 流开始前 `add` + `flush` 一行 `pending`（`yield thinking` 必须挪到其后） | ✅ 学习者手写；📎 两次真实调用都是 `completed` 且 token 非 0 |
 | 10.6b-4b | 两个 `except` 去掉 `rollback`，改成同步赋值 `aborted` | ✅ 学习者手写；📎 端到端：断开 `aborted 0/0/0`、正常 `completed 33/49/82`；⚠️ 首次验收拿到 404 `对话不存在：1`（库被删过）导致测试空转 |
 | 10.6c | N+1 原理 + `selectinload` 实测 | ✅ 2026-10-28；📎 三种写法实测（N=5：6/2/1 条），规模曲线 N=100 时 **101 条 57.7ms vs 2 条 4.9ms**；📎 async 下惰性加载是 `MissingGreenlet` 报错不是变慢；落地成 `GET /v1/conversations` 加 `call_count` + `total_tokens`（`outerjoin` + `coalesce`） |
-| 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39） | ⬜ 待做 |
+| 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39 #30 #52） | 🟡 10.6d-1 `updated_at` ✅ / **10.6d-2 游标分页 ✅** / 10.6d-3 `/health` 探库 ⬜ / 10.6d-4 形状统一 ⬜ |
 
 > ✅ **Step 9 于 2026-10-23 正式收口**：代码（9a → 9b-4b-3）、文档（§9.1~§9.11）、自检题 1~61、待办 #1~#23 全部关闭。
 > **下一个动作 = Step 10 数据库**。开工前注意两条与本步相关的遗留：待办 **#8**（`/v1/chat` 仍是 echo）与 **#11**（`/docs` 把流式接口标成 `application/json`）。
@@ -257,7 +257,7 @@
 | 22 | ~~**流内异常仍是 P2 形态**~~：`data:` 行坏 JSON 时客户端**连 `[DONE]` 都收不到** | ✅ **9b-4b-2 已修**：`[DONE]` 挪进 `try` + `except Exception` 分支各发一次（📎 实测 7 种输入全 `DONE=True`） | — |
 | 23 | ~~**`usage` / `delta` / `finish_reason` 拿到非预期类型时会中止整条流**~~（📎 实测 `usage` 是字符串 → `STREAM_FAILED`，内容明明能送达） | ✅ **9b-4b-2d 已修**（`_as_dict()` + `isinstance(finish_reason, str)`）；📎 12 用例全 `DONE=True` | — |
 | 24 | 🔴 **CORS `allow_methods` 缺 `PATCH` / `DELETE`**：浏览器预检 `OPTIONS` 直接 400，前端完全无法调用这两个接口 | 📎 2026-10-25 实测：`OPTIONS /v1/conversations/1` + `Access-Control-Request-Method: PATCH` → **400**，`allow-methods: GET, POST`。⚠️ `curl` 测不出来（CORS 只在浏览器生效），实际请求本身还是 200/204 且带 `ACAO` 头。根因：10.5d / 10.5e 加路由时没同步 CORS 列表 | ✅ **已修**（2026-10-25）：`allow_methods=["GET","POST","PATCH","DELETE"]`；📎 复测四种方法预检全 200，`PUT` 仍正确拒绝 |
-| 25 | 🟠 **`GET /v1/conversations` 无分页**：一次返回全表 | 代码里 `select(Conversation).order_by(...)` 直接 `.all()`，无 `limit` / `offset` / 游标。数据量上千后响应体过大、内存峰值高；且与 `/v1/models`（有 `?limit=`）风格不一致 | **10.6d**（Step 10 收尾）：加 `?limit=&offset=` + `total`，或改游标分页 |
+| 25 | ✅ **`GET /v1/conversations` 无分页** | 已解决（2026-10-28，10.6d-2）：改为**游标分页** `?limit=20&after_id=N`，响应 `{items, total, limit, next_cursor, has_more}`。⚠️ **不用 offset**：📎 实测 offset 在「翻页期间删数据」时会**漏掉一条**（用户永远看不到），游标用「值」`id > N` 不受影响（[决策 #22](decisions.md)）| — |
 | 26 | 🟠 **`/health` 不检查数据库连通性**：库挂了仍返回 ok | `async def health()` 只 `return {"status": "ok"}` —— 只证明进程活着。Docker / 负载均衡据此不会摘掉不健康实例 | **10.6d** 或 **Step 13 部署**：加 `SELECT 1` 探活，失败返回 503 |
 | 27 | 🟡 **`.env.example` 缺 `DATABASE_URL`**：别人 clone 后不知道有这个配置项 | 📎 2026-10-25 核对：模板里有 `APP_NAME` / `APP_ENV` / `DEBUG` / `HOST` / `PORT` / `LLM_*` / `REQUEST_TIMEOUT`，**唯独没有 `DATABASE_URL`**（10.3a 新增了 `config.database_url` 但没同步模板） | **随时可做**（1 行）：补 `DATABASE_URL` 及注释 |
 | 28 | 🟡 **`settings.debug` 定义了但没传给 `FastAPI(debug=...)`** | 📎 核对：`app = FastAPI(title=..., description=..., version=..., lifespan=lifespan)` —— **没有 `debug` 参数**。`settings.debug` 只在 `main.py:77` 的 CLI 演示里打印一次 | **Step 11**：与日志 / 配置一起收拾；顺带决定生产环境是否关闭 `/docs` |
@@ -297,8 +297,8 @@
 | **10.6b-3** | 生成器里写 `LlmCall` + 第一版回滚守卫（⚠️ 方案已被 10.6b-4 推翻） | — |
 | **10.6b-4** | **两阶段记账**：`status` 三态（`pending` / `completed` / `aborted`） | #41（`LlmCall` 出参 schema 也要带 `status`） |
 | **10.6c** | N+1 原理 + `selectinload` 实测 + 列表加账单统计 | #43（账单统计的第一步） |
-| **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #39** |
-| **10.8** | Step 10 自检（59 题） | — |
+| **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #30 #39 #52** |
+| **10.8** | Step 10 自检（64 题） | — |
 | **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |

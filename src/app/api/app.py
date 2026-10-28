@@ -43,6 +43,7 @@ from app.schemas import (
     ChatResponse,
     ConversationIn,
     ConversationOut,
+    ConversationPageOut,
     ConversationPatch,
     ConversationStatsOut,
     ModelListResponse,
@@ -387,13 +388,19 @@ async def update_conversation(
     return conv
 
 
-@app.get("/v1/conversations", response_model=list[ConversationStatsOut])
-async def list_conversations(db: DbDep) -> list[ConversationStatsOut]:
+@app.get("/v1/conversations", response_model=ConversationPageOut)
+async def list_conversations(
+    db: DbDep,
+    limit: Annotated[int, Query(ge=1, le=100, description="这一页最多几条")] = 20,
+    after_id: Annotated[int | None, Query(ge=0, description="游标：只返回 id 比它大的")] = None,
+) -> ConversationPageOut:
     """
-    列出全部对话（含账单统计），按 id 升序
+    分页列出对话（含账单统计），按 id 升序
 
     order_by 不能省：SQL 不保证返回顺序（"恰好"按插入顺序只是实现细节）
 
+    【注意】：用游标 after_id 而不是 offset —— offset 数的是【位置】，数据增删会让位置漂移
+        实测在翻页期间删一行会漏掉一条：游标数的是【值】（id > N），不受影响
     【注意】：必须 outerjoin —— 用 join 会让没有账单的对话整行消失
     【注意】：必须 coalesce —— SUM 遇到空集返回 NULL，响应里就变成 null 而不是 0
     """
@@ -409,23 +416,37 @@ async def list_conversations(db: DbDep) -> list[ConversationStatsOut]:
         )
         .outerjoin(LlmCall, LlmCall.conversation_id == Conversation.id)
         .group_by(Conversation.id)
-        .order_by(Conversation.id)
     )
+    if after_id is not None:
+        stmt = stmt.where(Conversation.id > after_id)
+
+    # 多取一条来判断【还有没有下一页】—— 比再跑一次 COUNT 便宜
+    rows = (await db.execute(stmt.order_by(Conversation.id).limit(limit + 1))).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    total = (await db.execute(select(func.count(Conversation.id)))).scalar_one()
+
     # 由于 select 的是具体几列而不是整个表，SQLAlchemy 返回 Row 而不是 ORM 对象
     # （Row 只装 select 里点名的列 —— 少点名一个就 AttributeError → 500）
-    # 所以不能靠 from_attributes=True 自动转换，而是手动传值组装
-    rows = (await db.execute(stmt)).all()
-    return [
-        ConversationStatsOut(
-            id=r.id,
-            title=r.title,
-            created_at=r.created_at,
-            updated_at=r.updated_at,
-            call_count=r.call_count,
-            total_tokens=r.total_tokens,
-        )
-        for r in rows
-    ]
+    #   所以不能靠 from_attributes=True 自动转换，而是手动传值组装
+    return ConversationPageOut(
+        items=[
+            ConversationStatsOut(
+                id=r.id,
+                title=r.title,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+                call_count=r.call_count,
+                total_tokens=r.total_tokens,
+            )
+            for r in rows
+        ],
+        total=total,
+        limit=limit,
+        next_cursor=rows[-1].id if has_more and rows else None,
+        has_more=has_more,
+    )
 
 
 # 【时序验证】流式必须起真服务；但 curl -w 的 ttfb 量的是"响应头"不是"首帧"

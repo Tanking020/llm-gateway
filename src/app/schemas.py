@@ -169,3 +169,19 @@ class ConversationStatsOut(ConversationOut):
 
     call_count: int = Field(description="这个对话发生过几次 LLM 调用")
     total_tokens: int = Field(description="这个对话累计消耗的 token")
+
+
+class ConversationPageOut(BaseModel):
+    """
+    分页响应：一页数据 + 翻页要用的元数据
+
+    【注意】：total 是【命中总数】，不是本页条数 —— 两者在分页时不一定相等
+    """
+
+    items: list[ConversationStatsOut] = Field(description="本页的对话列表")
+    total: int = Field(ge=0, description="命中总数（不是本页条数）")
+    limit: int = Field(ge=1, description="这一页最多几条")
+    next_cursor: int | None = Field(
+        default=None, description="下一页传 after_id 用这个值；null = 没有下一页"
+    )
+    has_more: bool = Field(description="还有没有下一页")

@@ -4996,8 +4996,8 @@ error: Statement is unreachable  [unreachable]
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
 | ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ✅ 2026-10-28 |
-| ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 ✅ / 形状统一 #39 | 🟡 进行中（10.6d-1 ✅ / 10.6d-2 分页方案已定：**游标 + total**） |
-| ⑮ §10.8 自检 | 本节自检 59 题 | ⬜ 待做 |
+| ⑭ §10.6d 收尾专项 | 分页 #25 ✅ / `/health` 探库 #26 / `updated_at` #31 ✅ / 形状统一 #39 #30 #52 | 🟡 10.6d-1 ✅ / **10.6d-2 游标分页 ✅** / 10.6d-3 ⬜ / 10.6d-4 ⬜ |
+| ⑮ §10.8 自检 | 本节自检 64 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -7763,16 +7763,16 @@ async def list_conversations(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     after_id: Annotated[int | None, Query(ge=0)] = None,
 ) -> ConversationPageOut:
-    base = (
+    stmt = (
         select(...)
         .outerjoin(LlmCall, LlmCall.conversation_id == Conversation.id)
         .group_by(Conversation.id)
     )
     if after_id is not None:
-        base = base.where(Conversation.id > after_id)     # 游标：用「值」不用「位置」
+        stmt = stmt.where(Conversation.id > after_id)     # 游标：用「值」不用「位置」
 
     # 多取一条，用来判断还有没有下一页（比 count 便宜）
-    rows = (await db.execute(base.order_by(Conversation.id).limit(limit + 1))).all()
+    rows = (await db.execute(stmt.order_by(Conversation.id).limit(limit + 1))).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
 
@@ -7788,13 +7788,42 @@ async def list_conversations(
 
 ⭐ **`limit + 1` 技巧**：多取一条就知道「还有没有下一页」，比再跑一次 `COUNT` 便宜。
 
-⚠️ **三个坑**：
+⚠️ **四个坑**：
 
 | 坑 | 后果 |
 |---|---|
 | `limit` 不设上限 | 客户端传 `limit=1000000` 等于没分页 |
 | `total` 用 `len(items)` | 那是**本页条数**，不是总数 |
 | 在 `group_by` 查询里 `count(*)` 当 total | 变成「每组的行数」，不是「总组数」→ 必须另起一次查询 |
+| **`stmt.where(...)` 不赋值回去** | 条件**静默失效**（不报错，返回全表） |
+
+⭐⭐ **`stmt.where()` 必须写 `stmt = stmt.where(...)`** —— SQLAlchemy 的 `select()` 是**不可变描述对象**，每个方法都返回新对象，不修改原对象。
+
+#### 📎 实测七格（学习者验收）
+
+```text
+① 默认（limit=20）    [200] total=11 limit=20 next=None has_more=False  11 条
+② limit=3            [200] total=11 limit=3  next=3    has_more=True   ids=[1,2,3]
+③ after_id=3         [200] total=11 limit=3  next=6    has_more=True   ids=[4,5,6]
+④ after_id=9         [200] total=11 limit=3  next=None has_more=False  ids=[10,11]
+⑤ after_id=999       [200] total=11 limit=3  next=None has_more=False  items=[]
+⑥ limit=101          [422] less_than_equal
+⑦ after_id=-1        [422] greater_than_equal
+```
+
+⭐ **②③④ 的 `total` 始终是 11** —— 这是「`total` 是总数不是本页数」的证据。
+
+#### 📎 关键验证：翻页期间删数据（游标不丢，offset 会丢）
+
+```text
+取到 [1,2,3] → 删 3
+取到 [4,5,6] → 删 6
+取到 [7,8,9] → 删 9
+取到 [10]
+漏掉: 无    重复: 无
+```
+
+⚠️ offset 版本在同样操作下**会漏掉**（见 [§10.6d-2 的对比实验](#106d-2-分页为什么必须是游标而不是-offset)）。
 
 ---
 
