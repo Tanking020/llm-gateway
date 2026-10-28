@@ -43,6 +43,13 @@ class Conversation(Base):
     # 数据库存 UTC（协调世界时），展示时再转本地时间
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
+    # 【注意】：onupdate 是 SQLAlchemy 在 Python 侧算好再塞进 UPDATE 的，
+    #   不是数据库触发器 —— 绕过 ORM 直接写 SQL 时它不会更新
+    updated_at: Mapped[datetime] = mapped_column(
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
     # 一对多：一个对话有多条调用记录
     # relationship 让两个属性互指，ORM 才知道它们是同一个关系的两侧
     # LlmCall 在后面才定义，所以写成字符串（延迟解析，否则 NameError）

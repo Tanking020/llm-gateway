@@ -159,6 +159,7 @@ class ConversationOut(BaseModel):
     id: int = Field(description="数据库生成的唯一编号")
     title: str = Field(description="对话标题")
     created_at: datetime = Field(description="创建时间（UTC，读回时 tzinfo 会丢）")
+    updated_at: datetime = Field(description="最后修改时间（UTC，读回时 tzinfo 会丢）")
 
 
 class ConversationStatsOut(ConversationOut):
