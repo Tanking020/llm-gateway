@@ -4997,7 +4997,7 @@ error: Statement is unreachable  [unreachable]
 | ⑫ §10.6b-3 / 10.6b-4 记账与 `status` | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了：断了也花了 token 却不记账）；最终**两阶段记账**：流开始前落 `pending` → 拿到 usage 改 `completed` → 断开/异常只做同步赋值 `aborted`；📎 真 app 中间件栈下 5 种「断开时补写」全部失败 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ⬜ 待做 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
-| ⑮ §10.8 自检 | 本节自检 46 题 | ⬜ 待做 |
+| ⑮ §10.8 自检 | 本节自检 47 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -7247,7 +7247,7 @@ async def event_source() -> AsyncIterator[str]:
         raise
 ```
 
-### 📎 四格验收（真 app + 假上游）
+### 📎 四格验收（真 app + 假上游，AI 侧预验证）
 
 | 场景 | 结果 |
 |---|---|
@@ -7256,7 +7256,27 @@ async def event_source() -> AsyncIterator[str]:
 | usage 先到 + usage 后断开 | `completed` `33/46/79` ✅ 真值不丢 |
 | 上游抛异常 | `aborted` `0/0/0` ✅ |
 
-📎 真实 DeepSeek 端到端：`conv=1 model=deepseek-flash prompt=33 completion=60 total=93 status=completed` ✅
+### 📎 学习者侧端到端验收（真实 DeepSeek）
+
+| 场景 | 实测 |
+|---|---|
+| 断开（拿到第一块就 `break`） | `id=1 conv=1 prompt=0 completion=0 total=0 status=aborted` ✅ |
+| 正常读完 | `id=2 conv=2 prompt=33 completion=49 total=82 status=completed` ✅ |
+| 之前正常调用两行 | `prompt=33 completion=41 total=74` / `completion=48 total=81`，都是 `completed` ✅ |
+
+### ⚠️ 一个让测试空转的坑：404 让整段测试变成无效
+
+第一次验收时学习者拿到的是：
+
+```text
+拿到第一块就断开: b'{"detail":"对话不存在：1"}'
+```
+
+⭐ **这不是 `aborted`，是 pre-flight 的 404** —— 库里没有 id=1 的对话（中间删过库），请求**根本没进到流式逻辑**。查库自然是 0 行。
+
+⚠️ 如果没注意到这一点，很容易得出「守卫没生效」的错误结论。
+
+⭐⭐ 判据：**测试失败时，先确认「请求真的走到了我想测的那条路径」** —— 一个前置校验的 404 就能让整段测试空转。验证脚本要**自带建对话**（用返回的 id），不要依赖写死的 id。
 
 ### `status` 三态
 

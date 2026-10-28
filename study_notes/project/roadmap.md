@@ -221,6 +221,8 @@
 | 10.6b-2 | `ChatRequest` 加 `conversation_id` + pre-flight（不存在 → 404，流开始前拦） | ✅ 2026-10-27 完成；📎 六项验证 200 / 404 / 404 / 422 / 200 / 400×2；⭐ 顺带把「对话不存在」的 5 处重复抽成 `require_conversation`，并统一两条 chat 的校验顺序 |
 | 10.6b-3 | 生成器里写 `LlmCall`（第一版：`except BaseException` 回滚守卫） | ✅ 2026-10-27 完成，⚠️ **但方案在 1.63 被推翻**：守卫守的是「编造的帧序」，且业务上让断开的调用完全不留账（学习者指出「断了也花了 token」） |
 | 10.6b-4 | **两阶段记账**：流开始前落 `pending` 行 → 拿到 usage 改 `completed` → 断开/异常只做同步赋值 `aborted` | ✅ 2026-10-27；📎 真 app 中间件栈下 5 种「断开时补写」全失败，只有「提前写」可行；📎 四格验收 + 真实 DeepSeek 端到端；新增 `LlmCall.status`（`pending`/`completed`/`aborted`） |
+| 10.6b-4a | 流开始前 `add` + `flush` 一行 `pending`（`yield thinking` 必须挪到其后） | ✅ 学习者手写；📎 两次真实调用都是 `completed` 且 token 非 0 |
+| 10.6b-4b | 两个 `except` 去掉 `rollback`，改成同步赋值 `aborted` | ✅ 学习者手写；📎 端到端：断开 `aborted 0/0/0`、正常 `completed 33/49/82`；⚠️ 首次验收拿到 404 `对话不存在：1`（库被删过）导致测试空转 |
 | 10.6c | N+1 原理 + `selectinload` 实测 | ⬜ 待做 |
 | 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39） | ⬜ 待做 |
 
@@ -286,7 +288,7 @@
 | **10.6b-4** | **两阶段记账**：`status` 三态（`pending` / `completed` / `aborted`） | #41（`LlmCall` 出参 schema 也要带 `status`） |
 | **10.6c** | N+1 原理 + `selectinload` 实测 | — |
 | **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #39** |
-| **10.8** | Step 10 自检（46 题） | — |
+| **10.8** | Step 10 自检（47 题） | — |
 | **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |
