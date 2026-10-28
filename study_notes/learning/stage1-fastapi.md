@@ -4994,10 +4994,10 @@ error: Statement is unreachable  [unreachable]
 | ⑨ §10.6a `LlmCall` 表 | 外键 + `relationship` + `cascade` + `index=True`；📎 索引实测 25 倍 | ✅ 2026-10-26 |
 | ⑩ §10.6b-1 外键强制 | `connect` 事件 + `PRAGMA foreign_keys=ON`；📎 孤儿插入被拒 | ✅ 2026-10-26 |
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
-| ⑫ §10.6b-3 / 10.6b-4 记账与 `status` | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了：断了也花了 token 却不记账）；最终**两阶段记账**：流开始前落 `pending` → 拿到 usage 改 `completed` → 断开/异常只做同步赋值 `aborted`；📎 真 app 中间件栈下 5 种「断开时补写」全部失败 | ✅ 2026-10-27 |
+| ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ⬜ 待做 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
-| ⑮ §10.8 自检 | 本节自检 47 题 | ⬜ 待做 |
+| ⑮ §10.8 自检 | 本节自检 50 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -7221,6 +7221,8 @@ call.conversation.title -> AttributeError: 'NoneType' object has no attribute 't
 
 ⭐ 这就是 P 能成的根本原因：**我们只负责「登记」，提交交给一个不会被取消的人。**
 
+---
+
 ### 最终代码形状
 
 ```python
@@ -7322,8 +7324,151 @@ async def event_source() -> AsyncIterator[str]:
 
 ⭐⭐ **需要「一定会留下」的数据（账单 / 审计 / 日志），不要跟请求事务同生共死 —— 提前写、独立提交，或用两阶段（先 `pending` 再改状态）。**
 
-⚠️ 反面判据：**在「已被取消」的上下文里做任何 `await` 写入都不可靠** —— 包不包 `shield` 都一样。
+⚠️ 反面判据：**在「已被取消」的上下文里做任何 `await` 写入都不可靠** —— ⚠️ 注意 `asyncio.shield()` 也救不了（只有 anyio 的 `CancelScope(shield=True)` 能，见 [§10.6b-5](#106b-5-为什么被取消后连-await-都不能用机制拆解)）。
 
+---
+
+## 10.6b-5 为什么「被取消后」连 `await` 都不能用（机制拆解）
+
+### 起因
+
+代码里这一句注释被追问了两次：
+
+```python
+# 【注意】：这里只做同步赋值，绝不 await —— 此刻处在【已取消的 anyio cancel scope】里
+```
+
+「为什么同步赋值就可以，`await` 就不行？」—— 下面用 3 组 + 4 格实测拆开。
+
+### 📎 实测 1：同一个 `await`，两种取消下结果完全不同
+
+**A 纯 asyncio**（`task.cancel()` 投递一次）
+
+```text
+捕获 CancelledError
+同步赋值成功: aborted
+await sleep(0)     -> 成功        ← 没事
+await sleep(0.01)  -> 成功
+```
+
+**B anyio cancel scope 已取消**（Starlette 中间件用的就是它）
+
+```text
+捕获 CancelledError（scope 已取消）
+同步赋值成功: aborted
+await sleep(0)     -> 又被取消    ← 一进去就炸
+await sleep(0.01)  -> 又被取消
+```
+
+⭐⭐ **同一句 `await`，A 里能过、B 里必炸。** 区别不在 `await` 本身，而在**「取消」是被谁、以什么形式记住的**。
+
+### ⭐⭐ 机制：asyncio 的取消是「消息」，anyio 的是「状态」
+
+| | asyncio `task.cancel()` | anyio `CancelScope.cancel()` |
+|---|---|---|
+| 取消是什么 | **一次性投递**一个 `CancelledError` | 把 scope 的**状态永久改成「已取消」** |
+| 捕获之后 | 这次投递就结束了，下个 `await` 正常 | scope **仍然是已取消状态** |
+| 后续 `await` | ✅ 能过 | ❌ 每个挂起点都先查开关 → 立刻再抛 |
+
+```text
+CancelScope(状态 = 已取消)
+  └── 你的 except 块依然跑在这个 scope 里
+        └── await → 检查开关 → 已取消 → 立刻抛 CancelledError
+```
+
+⭐⭐ **关键认知：你 catch 到的不是「一次异常」，而是「正身处一个已取消的区域」。** 在区域里做任何 `await`，等于往墙上撞。
+
+### 为什么同步赋值没事
+
+| 操作 | 会「挂起」吗 | 会检查取消开关吗 |
+|---|---|---|
+| `call.status = "aborted"` | ❌ 纯内存写属性 | ❌ 根本不看 |
+| `await db.commit()` | ✅ 要等 IO | ✅ 一看就抛 |
+
+⭐⭐ **取消只在「`await` 挂起点」生效。** 同步代码一行都不会被打断 —— 所以 `if not recorded:` 判断、属性赋值、`raise` 全都能跑完。
+
+### 那数据怎么落盘
+
+```text
+call.status = "aborted"      ← 内存改字段，SQLAlchemy 标成 dirty
+raise                        ← 异常往外抛，生成器结束
+   ↓
+get_db 的 await session.commit()   ← 由它发 UPDATE，写进库
+```
+
+**`get_db` 为什么不被取消？** 因为它的 `commit()` 跑在**中间件退出栈**（`AsyncExitStackMiddleware`）里 —— 那是**另一个 scope**：请求 task 被取消，退出栈照样收尾。
+
+📎 证据：只在 `except` 里做同步改状态的那版代码，实测写出 1 行 `aborted` —— 说明 `get_db` 的 commit 真的跑了。
+
+### 📎 实测 2：两种 `shield` 只有一种有效（⚠️ 我最初写错了）
+
+| 写法 | 在已取消的 scope 里 |
+|---|---|
+| S1 裸 `await` | ❌ 又被取消 |
+| **S2 `await asyncio.shield(coro)`** | ❌ **又被取消** |
+| **S3 `with anyio.CancelScope(shield=True): await coro`** | ✅ **成功** |
+| S4 同上，`coro` 换成 db 风格可等待对象 | ✅ 成功 |
+
+```text
+S1 裸 await anyio.sleep(0.01): 又被取消
+S2 await asyncio.shield(sleep 0.01): 又被取消
+S3 嵌套 anyio shield scope + await: 成功
+```
+
+⭐ **`asyncio.shield` 为什么不行**：它保护的是**里面的协程不被砍**，但 `await shield(...)` **本身仍是一个挂起点** —— 在这个挂起点上照样查取消开关 → 立刻抛。等于「里面还在跑，你已经不等了」。
+⭐ **anyio shield scope 为什么行**：它**临时代替掉取消状态**，让里面那几个 `await` 看到的开关是「未取消」。
+
+⚠️ **但本项目不用它**：它只能救回一次 `await`，代码复杂度上升；而 `get_db` 本来就可靠。**能靠结构解决的，别靠技巧。**
+
+### 📎 实测 3：真实 SQLAlchemy 操作印证（10.6b-4 留下的数据）
+
+| 断开时的写法 | 断开后写入 |
+|---|---|
+| `await db.commit()`（有 add） | **0 行**，还抛 `ResourceClosedError: This transaction is closed` |
+| `await asyncio.shield(db.commit())` | **0 行** |
+| **只做 `call.status = "aborted"`（同步）** | **1 行** ✅ |
+
+⭐ 与上面的机制完全对上：**前两个都卡在挂起点，第三个压根不挂起。**
+
+### ⭐ 判据（落地四步）
+
+⭐⭐ **可能被取消的路径上，只做同步操作；所有 `await` 交给「不会被取消的人」去做。**
+
+| 步骤 | 问什么 |
+|---|---|
+| 1 | 这段代码**可能被取消**吗？（客户端断开 / 超时 / 服务停止） |
+| 2 | 里面有 `await` 吗？**有就必须挪走或删掉** |
+| 3 | 必须做的事能不能拆成「**同步标记 + 事后落盘**」？ |
+| 4 | 谁来落盘？**必须是不在被取消 task 里的那一层**（中间件退出栈 / 独立任务 / 独立会话） |
+
+### 反例对照
+
+| 想做的事 | ❌ 在 `except` 里直接做 | ✅ 正确做法 |
+|---|---|---|
+| 标记账单失效 | `await db.rollback()` | `call.status = "aborted"`（同步） |
+| 写日志到文件 | `await aiofiles.write(...)` | 同步 `logger.warning(...)`（标准日志是同步的） |
+| 通知下游 | `await client.post(...)` | 丢进队列 / 直接放弃 |
+
+### 完整因果链
+
+```text
+客户端断开
+   ↓
+Starlette 取消请求 task → CancelScope 变成「已取消」
+   ↓
+把 CancelledError 抛进 event_source（在某个 await 处）
+   ↓
+except BaseException 捕获 —— 但仍在已取消的 scope 里
+   ↓
+┌─ 同步：call.status = "aborted"   ✅ 成功
+└─ await db.commit()               ❌ 立刻再抛 CancelledError
+   ↓
+raise 把异常继续往外抛
+   ↓
+中间件退出栈（不在被取消的 task 里）执行 get_db 的 commit
+   ↓
+UPDATE llm_calls SET status='aborted' → 落库 ✅
+```
 ---
 
 ## 10.7 迁移（了解，阶段 1 不急）

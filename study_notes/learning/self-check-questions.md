@@ -805,6 +805,25 @@
     > ⭐⭐ 判据：**测试失败时先确认「请求真的走到了我想测的那条路径」。** 一个前置校验的 404 / 422 就能让整段测试空转。
     > ⭐ 做法：验证脚本**自带建数据**（先 `POST /v1/conversations` 拿返回的 id），不要依赖写死的 id。
 
+48. 同样一句 `await`，在「`task.cancel()` 之后」和「anyio `CancelScope` 取消之后」表现一样吗？
+    > **不一样。** 📎 实测：纯 asyncio 里捕获 `CancelledError` 后，`await asyncio.sleep(0)` / `sleep(0.01)` **都能成功**；anyio cancel scope 取消后，**两个都被再次取消**。
+    > ⭐ 机制：asyncio 的 `cancel()` 是**一次性投递消息**，捕获后这次投递就结束；anyio 的 `CancelScope.cancel()` 是把 **scope 状态永久改成「已取消」**，scope 内每个 `await` 挂起点都先查这个开关 → 立刻再抛。
+    > ⭐⭐ **你 catch 到的不是「一次异常」，而是「正身处一个已取消的区域」。**
+
+49. 为什么 `call.status = "aborted"` 能成功，而 `await db.commit()` 一定失败？
+    > **因为取消只在「`await` 挂起点」生效，同步代码不会被打断。**
+    > | 操作 | 会挂起吗 | 会查取消开关吗 |
+    > |---|---|---|
+    > | `call.status = "aborted"` | ❌ 纯内存写属性 | ❌ 根本不看 |
+    > | `await db.commit()` | ✅ 等 IO | ✅ 一看就抛 |
+    > ⭐ 属性改完 SQLAlchemy 把它标成 dirty，**落盘交给 `get_db`** —— 它的 `commit()` 跑在中间件退出栈里（另一个 scope），请求 task 被取消它也照样收尾。
+
+50. `asyncio.shield()` 和 anyio 的 `CancelScope(shield=True)` 都能「防取消」吗？
+    > **只有后者能。** 📎 在已取消的 scope 里实测：裸 `await` ❌、`await asyncio.shield(coro)` ❌ **同样被取消**、`with anyio.CancelScope(shield=True): await coro` ✅ **成功**。
+    > ⭐ `asyncio.shield` 保护的是**里面的协程不被砍**，但 `await shield(...)` **本身仍是一个挂起点** —— 在这个挂起点上照样查开关 → 立刻抛。等于「里面还在跑，你已经不等了」。
+    > ⭐ anyio 的 shield scope 是**临时代替掉取消状态**，让里面的 `await` 看到「未取消」。
+    > ⚠️ 本项目没用它：只能救回一次 `await`，复杂度不值得。**能靠结构解决的，别靠技巧。**
+
 ### Step 11 · 工程化：配置 / 日志 / 安全
 
 1. 为什么"前端直连 LLM API"必然泄露 Key？F12 能看到吗？

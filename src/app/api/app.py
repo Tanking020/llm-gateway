@@ -658,10 +658,11 @@ async def chat_stream(
             yield "data: [DONE]\n\n"
 
         except BaseException:
-            # 【注意】：必须是 BaseException —— 客户端断开的 CancelledError 继承它，
-            #   except Exception 拦不住；
-            # 【注意】：这里只做同步赋值，不要 await —— 实测任何 await（rollback / commit /
-            #   甚至 shield 包住的 commit 都会被二次取消，账单反而写不进去）
+            # 【注意】：必须是 BaseException —— CancelledError 继承它，except Exception 拦不住
+            # 【注意】：这里只做同步赋值，绝不 await —— 此刻处在【已取消的 anyio cancel scope】里，
+            #   任何 await 一进去就被再取消（实测 asyncio.shield 也挡不住；只有 anyio 的
+            #   CancelScope(shield=True) 能挡，但没必要）；纯内存赋值不发 await，一定成功
+            # 【判据】：可能被取消的路径上只做同步操作，落盘交给不会被取消的 get_db
             if not recorded:
                 call.status = "aborted"
             raise

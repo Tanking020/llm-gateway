@@ -34,8 +34,8 @@
 | 库 | **fastapi** | 把带类型注解的函数变成 HTTP 接口；自动校验 + 自动生成 API 文档 | `uv add fastapi` | 1.1 | [§7](#7-fastapihttp-框架) |
 | 工具 | **uvicorn** | ASGI 服务器：监听端口、解析 HTTP、把请求交给 `app` 对象 | `uv add "uvicorn[standard]"` | 1.1 | [§8](#8-uvicornasgi-服务器) |
 | 标准库 | **logging** | 分级日志事件流（替代 `print`）；默认落 stderr，**不写文件** | Python 自带，无需安装 | 6.3b | [§9](#9-loggingpython-标准库不是项目依赖) |
-| 库 | **SQLAlchemy** | 用 Python 类映射数据库表，并组织查询与事务 | `uv add "sqlalchemy[asyncio]>=2.1,<2.2"` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步orm与aiosqlite) |
-| 库 | **aiosqlite** | 让 SQLite 操作可以 `await`（SQLAlchemy 的异步 SQLite 驱动） | `uv add aiosqlite` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步orm与aiosqlite) |
+| 库 | **SQLAlchemy** | 用 Python 类映射数据库表，并组织查询与事务 | `uv add "sqlalchemy[asyncio]>=2.1,<2.2"` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步-orm-与-aiosqlite) |
+| 库 | **aiosqlite** | 让 SQLite 操作可以 `await`（SQLAlchemy 的异步 SQLite 驱动） | `uv add aiosqlite` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步-orm-与-aiosqlite) |
 
 **本机版本基线（实测）**：`uv 0.12.23` / `pydantic 2.13.5` / `pydantic-settings 2.15.0` / `mypy 2.4.0` / `ruff 0.16.10` / `httpx 0.28.1` / `fastapi 0.143.0` / `uvicorn 0.54.0` / `starlette 1.8.0` / `sqlalchemy 2.1.6` / `greenlet 3.5.6` / `aiosqlite 0.22.1`
 
