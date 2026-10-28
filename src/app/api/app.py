@@ -29,7 +29,7 @@ from typing import Annotated, Any
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep
@@ -44,6 +44,7 @@ from app.schemas import (
     ConversationIn,
     ConversationOut,
     ConversationPatch,
+    ConversationStatsOut,
     ModelListResponse,
 )
 
@@ -386,21 +387,39 @@ async def update_conversation(
     return conv
 
 
-@app.get("/v1/conversations", response_model=list[ConversationOut])
-async def list_conversations(db: DbDep) -> list[Conversation]:
+@app.get("/v1/conversations", response_model=list[ConversationStatsOut])
+async def list_conversations(db: DbDep) -> list[ConversationStatsOut]:
     """
-    列出全部对话，按 id 升序
+    列出全部对话（含账单统计），按 id 升序
 
     order_by 不能省：SQL 不保证返回顺序（"恰好"按插入顺序只是实现细节）
+
+    【注意】：必须 outerjoin —— 用 join 会让没有账单的对话整行消失
+    【注意】：必须 coalesce —— SUM 遇到空集返回 NULL，响应里就变成 null 而不是 0
     """
-    # select(...) 只是"描述要查什么"，await db.execute(...) 才真的发 SQL
-    result = await db.execute(select(Conversation).order_by(Conversation.id))
-    # .scalars()：每行只取第 1 列。这里第 1 列就是完整的 ORM 对象，所以正好取出 Conversation；
-    #   换成 select(Conversation.id, Conversation.title) 就只剩 id（title 被静默丢掉，不报错）
-    # .all()：把结果全部取出成一个列表
-    # list(...)：结果声明的类型是 Sequence，套一层 list() 才满足返回注解 list[Conversation]
-    #   （运行时本来就是 list，套 list 是为了让 mypy 通过）
-    return list(result.scalars().all())
+    stmt = (
+        select(
+            Conversation.id,
+            Conversation.title,
+            Conversation.created_at,
+            func.count(LlmCall.id).label("call_count"),
+            func.coalesce(func.sum(LlmCall.total_tokens), 0).label("total_tokens"),
+        )
+        .outerjoin(LlmCall, LlmCall.conversation_id == Conversation.id)
+        .group_by(Conversation.id)
+        .order_by(Conversation.id)
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        ConversationStatsOut(
+            id=r.id,
+            title=r.title,
+            created_at=r.created_at,
+            call_count=r.call_count,
+            total_tokens=r.total_tokens,
+        )
+        for r in rows
+    ]
 
 
 # 【时序验证】流式必须起真服务；但 curl -w 的 ttfb 量的是"响应头"不是"首帧"
