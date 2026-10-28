@@ -4996,8 +4996,8 @@ error: Statement is unreachable  [unreachable]
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
 | ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ✅ 2026-10-28 |
-| ⑭ §10.6d 收尾专项 | 分页 #25 ✅ / `/health` 探库 #26 / `updated_at` #31 ✅ / 形状统一 #39 #30 #52 | 🟡 10.6d-1 ✅ / **10.6d-2 游标分页 ✅** / 10.6d-3 ⬜ / 10.6d-4 ⬜ |
-| ⑮ §10.8 自检 | 本节自检 68 题 | ⬜ 待做 |
+| ⑭ §10.6d 收尾专项 | 分页 #25 ✅ / `/health` 探库 #26 ✅ / `updated_at` #31 ✅ / 形状统一 #39 #30 ✅ #52 | 🟡 10.6d-1 ✅ / 10.6d-2 ✅ / 10.6d-3 ✅ / **10.6d-4a 时间格式 ✅** / 10.6d-4b ⬜ |
+| ⑮ §10.8 自检 | 本节自检 72 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -7677,8 +7677,6 @@ GET   -> "created_at":"2026-10-28T05:51:54.604445"     ← 无 Z（从库里读�
 
 ---
 
-## 10.6d Step 10 收尾专项
-
 ### 10.6d-2 分页：为什么必须是游标而不是 offset
 
 #### 📎 不分页的代价
@@ -7943,6 +7941,169 @@ sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) unable to open datab
 | 🔴 坏的一面 | docker-compose / K8s 里 DB 还没就绪时，应用会 **crash loop**；而且 `/health/ready` 这时**根本没机会回 503**（进程已经死了） |
 
 ⭐⭐ **根因是 `create_all` 在启动路径上**（待办 #50）—— 把 DDL 移出启动流程（Alembic 作为独立部署步骤）后，启动就不需要 DB，`/health/ready` 才能真正承担「报告 503」的职责。
+
+---
+
+### 10.6d-4a 时间字段：UTC 属性到底在哪一步丢的
+
+关闭待办 **#30**（时间格式 `...Z` vs 无 `Z` 不一致）。
+
+#### 📎 三段链路：丢失点在「格式化」，不在数据库
+
+| 阶段 | 值 | `tzinfo` |
+|---|---|---|
+| 写入前（Python 对象） | `datetime(2026,10,28,5,51,54,604445, tzinfo=UTC)` | `UTC` → **aware** |
+| bind 格式化后（塞进 SQL） | `'2026-10-28 05:51:54.604445'` | **没了** |
+| 读回（Python 对象） | `datetime(2026,10,28,5,51,54,604445)` | `None` → **naive** |
+
+⭐ 不是「SQLite 不肯存时区」，而是 **SQLAlchemy 的 SQLite 方言在生成字符串时就没写时区**。
+
+📎 `sqlite.DATETIME()._storage_format` 的真实值：
+
+```text
+%(year)04d-%(month)02d-%(day)02d %(hour)02d:%(minute)02d:%(second)02d.%(microsecond)06d
+```
+
+占位符只有 `year/month/day/hour/minute/second/microsecond` —— **一个时区占位符都没有**。
+
+📎 直接调 `bind_processor`，看两个**不同时刻**被格式化成什么：
+
+```text
+输入 UTC     datetime(2026,10,28, 5,51,54,604445, tzinfo=UTC)
+   -> '2026-10-28 05:51:54.604445'
+输入 +08:00  datetime(2026,10,28,13,51,54,604445, tzinfo=+08:00)
+   -> '2026-10-28 13:51:54.604445'
+```
+
+⭐ 两个时刻差 8 小时，字符串也差 8 小时，但**字符串本身看不出属于哪个时区** —— 信息在落盘时不可逆地丢了。
+
+#### 🔴 `DateTime(timezone=True)` 在 SQLite 下【完全无效】
+
+很多人以为加上 `timezone=True` 就修好了。📎 同一份 `Table` 定义在两个方言下的 DDL：
+
+```sql
+-- SQLite 方言
+CREATE TABLE tzprobe (
+    plain    DATETIME,
+    with_tz  DATETIME,                  -- timezone=True 消失了
+    PRIMARY KEY (id)
+)
+
+-- PostgreSQL 方言
+CREATE TABLE tzprobe (
+    plain    TIMESTAMP WITHOUT TIME ZONE,
+    with_tz  TIMESTAMP WITH TIME ZONE,  -- 生效
+    PRIMARY KEY (id)
+)
+```
+
+⭐⭐ **SQLite 根本没有「带时区的时间类型」**。它声明里的「类型」只是亲和性标签，值实际存成 TEXT。
+所以 `timezone=True` 在 SQLite 下**既不改变 DDL、也不改变 bind 格式、也不改变读回结果**：
+
+```text
+plain    = '2026-10-28 05:51:54.604445'   SQLite 类型 = text
+with_tz  = '2026-10-28 05:51:54.604445'   SQLite 类型 = text
+读回 tzinfo 都是 None
+```
+
+⭐ 判据：**换到 PostgreSQL 时这一列才需要 `timezone=True`**；SQLite 阶段加了只是心理安慰。
+
+#### ⭐ 为什么「刚 flush 完的对象」却带 `+00:00`
+
+因为它**从没经过数据库** —— `datetime.now(UTC)` 的返回值原封不动躺在 Python 对象里。
+同一个字段因此有两条来路、两种形状：
+
+| 路径 | `tzinfo` | 序列化 |
+|---|---|---|
+| `POST` / `PATCH` 刚 flush 完的对象 | `UTC`（aware） | `...Z` |
+| `GET` 从库里读回来的对象 | `None`（naive） | 无 `Z` |
+
+⭐ 待办 #30 的根因不是「某个接口写错了」，而是**同一字段有两条来路**。修法只能是**在出口统一**。
+
+#### 修法：`ConversationOut` 上加 validator，子类自动继承
+
+在 `ConversationOut`（所有对话响应的基类）上加一次，`ConversationStatsOut` 继承它 → 列表、详情、`POST`、`PATCH` **一处改完全部生效**。
+这是 [决策 #8](../project/decisions.md)「单一真相」的又一实例。
+
+#### ⭐⭐ 我的错误：`mode` 选错，且理由是编的
+
+我最初给的方案是 `mode="before"`，理由写「默认的 `after` 补 tzinfo 太晚，pydantic 已经决定了要不要当 aware 处理」。
+**这句没实测就写了**（违反规范 §4.4）。📎 实测证明它错，而且 `after` 更好：
+
+| 输入 | `mode="before"` | `mode="after"` |
+|---|---|---|
+| naive `datetime`（ORM 对象） | ✅ 补 Z | ✅ 补 Z |
+| **字符串** `"2026-10-28T05:51:54.604445"` | ❌ **输出无 Z** | ✅ 补 Z |
+| `None` | ✅ 跳过 | ✅ 跳过 |
+
+**before 在字符串输入时为什么失效**：
+
+```text
+before 收到: str       '2026-10-28T05:51:54.604445'    ← isinstance(v, datetime) 为 False
+after  收到: datetime  datetime(2026,10,28,5,51,54,604445)
+```
+
+`before` 拿到的是**原始值**，`isinstance` 判断失败 → 修复逻辑**被静默跳过**；之后 pydantic 才把它转成 naive datetime → 序列化无 Z。
+
+#### ⚠️ after 的唯一缺点：返回值不重新校验
+
+📎 让 validator 故意返回一个字符串：
+
+| 写法 | 结果 |
+|---|---|
+| `before` 返回 `"我就是个字符串"` | `ValidationError` **被拦下** |
+| `after` 返回 `"我就是个字符串"` | **建对象成功**，`t = '我就是个字符串'`，只在序列化时 warning |
+
+原因：`before` 的返回值**还要再过一遍类型校验**；`after` 的返回值**直接进模型**。
+
+#### ⭐ 判据（以后遇到就这样选）
+
+| 你想干的事 | 用哪个 mode |
+|---|---|
+| 把「字符串 / 数字」**转换成**目标类型 | `before` |
+| 对**已经校验好**的值做修正（补时区、裁剪、判空） | `after` |
+| 想让自己写错的返回值被发现 | `before` |
+
+「补 UTC」属于第二类 → 用 `after`，拿到的必定是 `datetime` 或 `None`，连 `isinstance` 都不用写。
+
+#### 🔴 顺带修掉的 bug：`PATCH` 返回的 `updated_at` 是旧值
+
+📎 验收时发现：
+
+```text
+PATCH  created_at = ...51.982327Z
+PATCH  updated_at = ...51.982327Z   ← 与 created_at 相同 = 没更新
+GET 详情 updated_at = ...52.030808Z  ← 这才是真值
+```
+
+**根因**：`POST` 里有 `await db.flush()`，`PATCH` 里**没有**。
+
+📎 三步对照：
+
+| 时机 | `conv.updated_at` |
+|---|---|
+| `conv.title = "新标题"`（只赋值） | **没变** |
+| `await db.flush()` 之后 | **已更新**（aware） |
+| `await db.refresh(c)` 之后 | 已更新（naive，读回） |
+
+⭐⭐ **`onupdate` 的 lambda 在 flush 生成 UPDATE 语句那一刻才求值** —— 只赋值不 flush，连 UPDATE 都还没生成，返回 200 时数据库里一个字没改。
+⭐ `flush()` 就够了，不需要 `refresh()`：onupdate 算出的值会同时写进 SQL 参数和对象属性。
+
+⚠️ 这暴露一个更大的问题：**`get_db` 的 `commit()` 跑在路由函数返回之后** → 「返回 200」不等于「已提交」，提交失败时客户端已收到成功 → 待办 **#54**。
+
+#### 📎 验收（同一条记录走完四步）
+
+| 阶段 | `created_at` | `updated_at` |
+|---|---|---|
+| POST | `14:36:39.227087Z` | `14:36:39.227087Z` |
+| GET（前） | `14:36:39.227087Z` | `14:36:39.227087Z` |
+| PATCH | `14:36:39.227087Z` | **`14:36:41.240715Z`** ← 变晚 |
+| GET（后） | `14:36:39.227087Z` | `14:36:41.240715Z` |
+
+- `created_at` 全程不变，全部带 `Z`
+- `updated_at` 只在 PATCH 后跳变，且 **PATCH 返回值 == 库里真实值**（flush 生效）
+- 列表与详情一致
+- ⭐ 额外证明：`ConversationOut.model_validate({"created_at": "2026-10-28T05:51:54.604445", ...})` 也输出 `Z` —— 旧的 `before` 版本这里一个 Z 都没有
 
 ---
 

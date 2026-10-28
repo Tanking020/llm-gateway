@@ -956,6 +956,64 @@
     > ⭐⭐ 根因：**`create_all` 在启动路径上**（待办 #50）。把 DDL 移到 Alembic 独立部署步骤后，
     > 启动就不需要 DB，`/health/ready` 才能真正承担「报告 503」的职责。
 
+69. SQLite 读回来的 `datetime` 为什么没有 `tzinfo`？它是在**哪一步**丢的？
+    > 📎 三段链路：
+    > | 阶段 | 值 | `tzinfo` |
+    > |---|---|---|
+    > | 写入前（Python） | `datetime(..., tzinfo=UTC)` | `UTC` → aware |
+    > | bind 格式化后 | `'2026-10-28 05:51:54.604445'` | **没了** |
+    > | 读回（Python） | `datetime(2026,10,28,5,51,54,604445)` | `None` → naive |
+    > 📎 根因是 `sqlite.DATETIME()._storage_format`：
+    > `%(year)04d-%(month)02d-%(day)02d %(hour)02d:%(minute)02d:%(second)02d.%(microsecond)06d`
+    > —— **一个时区占位符都没有**。
+    > ⭐ 不是「数据库不肯存」，是 **SQLAlchemy 生成字符串时就没写**。
+    > ⚠️ 危险推论：`+08:00` 的 13:51 和 UTC 的 13:51 存进去是**同一个字符串**，读回来无法区分。
+
+70. 给列加 `DateTime(timezone=True)` 能修好 SQLite 的时区丢失吗？
+    > ❌ **不能，完全无效**。📎 同一份 `Table` 定义：
+    > ```sql
+    > -- SQLite
+    > plain DATETIME,  with_tz DATETIME            -- timezone=True 消失了
+    > -- PostgreSQL
+    > plain TIMESTAMP WITHOUT TIME ZONE,
+    > with_tz TIMESTAMP WITH TIME ZONE             -- 生效
+    > ```
+    > ⭐ SQLite **没有「带时区的时间类型」**，它的类型声明只是亲和性标签，值实际存 TEXT。
+    > `timezone=True` 在 SQLite 下既不改 DDL、也不改 bind 格式、也不改读回结果。
+    > ⭐ 判据：**换到 PostgreSQL 时才需要它**；SQLite 阶段加了只是心理安慰。
+
+71. `field_validator` 的 `mode="before"` 和 `"after"` 怎么选？
+    > 📎 实测对照：
+    > | 输入 | `before` | `after` |
+    > |---|---|---|
+    > | naive `datetime`（ORM 对象） | ✅ | ✅ |
+    > | **字符串** `"2026-10-28T05:51:54"` | ❌ **静默失效** | ✅ |
+    > | `None` | ✅ 跳过 | ✅ 跳过 |
+    > **before 为什么在字符串时失效**：它拿到的是**原始值**（`str`），
+    > `isinstance(v, datetime)` 为 False → 修复被跳过；`after` 拿到的已是 `datetime`。
+    > ⚠️ `after` 唯一缺点：**返回值不重新校验** —— 📎 返回 `"我就是个字符串"` 竟然建对象成功，
+    > 只在序列化时给 warning；`before` 会抛 `ValidationError`。
+    > ⭐ 判据：
+    > | 想干的事 | 用哪个 |
+    > |---|---|
+    > | 把字符串/数字**转换成**目标类型 | `before` |
+    > | 对**已校验好**的值做修正（补时区、裁剪、判空） | `after` |
+    > | 想让自己写错的返回值被发现 | `before` |
+    > ⚠️ 另外：`@classmethod` 跟 mode **无关**，pydantic 对两种 mode **都要求**（📎 不加都抛 `PydanticUserError: cannot be applied to instance methods`）。
+
+72. 接口返回了 `201 Created`，能保证数据已经写进数据库了吗？
+    > ❌ **不能**。`get_db` 的 `commit()` 跑在**路由函数返回之后**（依赖的 `yield` 之后）。
+    > 📎 实测（patch `AsyncSession.commit` 抛 `RuntimeError("模拟磁盘满")`）：
+    > ```text
+    > POST /v1/conversations -> 201
+    > body -> {"id":2,"title":"提交会失败","created_at":...}
+    > 库里共 1 行：id=1（id=2 从未存在）
+    > ```
+    > 🔴 客户端拿到完整的「成功」响应，数据却没落盘；服务端只在日志留一条未处理异常。
+    > ⚠️ 因为**响应已经发出**，`register_exception_handlers` 也救不了（改不了状态码）。
+    > ⭐ 触发条件都是产品环境常见的：磁盘满 / 连接池耗尽 / 唯一约束冲突 / 连接被掐断。
+    > 修法方向（待办 #54）：`commit()` 提到路由函数内、`return` 之前。
+
 ### Step 11 · 工程化：配置 / 日志 / 安全
 
 1. 为什么"前端直连 LLM API"必然泄露 Key？F12 能看到吗？
@@ -1058,4 +1116,5 @@
 | 2026-10-26 | 阶段 1 · **Step 10** 补第 29~33 题（**外键 / 关系 / 索引**）：`ForeignKey` vs `relationship` 两个层面 / `cascade` 五种写法实测 / 前向引用为什么要引号 / 索引为什么是 O(log n)（📎 25 倍 + 规模曲线）/ 索引三个代价。配套笔记 §10.6a §10.6b |
 | 2026-10-26 | 阶段 1 · **Step 10** 补第 34~36 题（**索引内部结构**）：索引项 = `(列值, rowid)` 不需要算 / 顺序按列值不按 rowid、键可重复 / 删行要动所有索引、主键为何不用额外索引。配套笔记 §10.6b-补 |
 | 2026-10-26 | 阶段 1 · **Step 10** 补第 37 题（**PRAGMA foreign_keys**）：SQLite 默认不强制外键 / 为什么必须挂 `connect` 事件 / `sync_engine` 与事件名的选择。配套笔记 §10.6b-1 |
+| 2026-10-28 | 阶段 1 · **Step 10** 补第 69~72 题（**时间字段 / validator mode / 提交时机**）：UTC 在哪一步丢（📎 `_storage_format` 无时区占位符）/ `DateTime(timezone=True)` 在 SQLite 下 DDL 不变（📎 对比 PostgreSQL）/ before vs after 判据（📎 字符串输入下 before 静默失效、after 返回值不重校验）/ 「返回 201」≠「已提交」（📎 commit 抛异常后客户端仍收到完整响应体）。配套笔记 §10.6d-4a、待办 #30 #54 |
 | 2026-10-23 | 阶段 1 · **Step 9** 补第 56 题（**宽松字段三档**）：静默收窄 / warning / error 的判据（📎 `finish_reason=''` 误报警那次的教训）。配套规范 §14.4 ⑥、笔记专题 12 ⑤ |

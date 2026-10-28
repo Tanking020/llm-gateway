@@ -183,6 +183,47 @@ ChatRequest.model_validate({"messages": [{"role": "tool", "content": "x"}]})   #
 ⭐ **`loc` 会精确指到出错的位置**（`messages[0].role`），`type` 是机器可读的错误种类。这就是"当场验货"的价值：报错离**真正的源头**很近。
 捕获方式：`except ValidationError as exc:` 然后 `exc.errors()`。
 
+### 🌟 `field_validator`：`mode="before"` 还是 `"after"`
+
+| | `mode="before"` | `mode="after"`（默认） |
+|---|---|---|
+| 收到的值 | **原始值**（可能是 `str` / `int` / `None`） | **已校验转换好的**值 |
+| 返回值还会被校验吗 | ✅ 会（写错类型会抛 `ValidationError`） | ❌ **不会**（直接进模型，只在序列化时 warning） |
+| 适合干什么 | 把字符串 / 数字**转换成**目标类型 | 对**已校验好**的值做修正（补时区、裁剪、判空） |
+
+📎 实测（同一个「给 naive datetime 补 UTC」的需求）：
+
+| 输入 | `before` | `after` |
+|---|---|---|
+| naive `datetime`（ORM 对象） | ✅ 补 Z | ✅ 补 Z |
+| **字符串** `"2026-10-28T05:51:54.604445"` | ❌ **输出无 Z** | ✅ 补 Z |
+| `None` | ✅ 跳过 | ✅ 跳过 |
+
+**before 在字符串输入时为什么静默失效**：
+
+```text
+before 收到: str       '2026-10-28T05:51:54.604445'    ← isinstance(v, datetime) 为 False
+after  收到: datetime  datetime(2026, 10, 28, 5, 51, 54, 604445)
+```
+
+📎 `after` 的坑（返回值不重校验）—— 让 validator 故意返回 `"我就是个字符串"`：
+
+```text
+before: ValidationError 被拦下
+after : 建对象【成功】，t = '我就是个字符串'，只在序列化时给 warning
+```
+
+⭐⭐ 判据：**「转换类型」用 before，「修正已校验的值」用 after。**
+
+⚠️ **`@classmethod` 跟 mode 无关**：pydantic 对两种 mode **都要求**必须是类方法/静态方法。
+
+```text
+before 不加 @classmethod -> PydanticUserError: cannot be applied to instance methods
+after  不加 @classmethod -> PydanticUserError: cannot be applied to instance methods（一模一样）
+```
+
+⚠️ **父类上的 validator 会被子类继承**（跟着字段走）→ 在基类写一次，所有子类生效。
+
 ### 易错点
 
 - **`default=datetime.now()` 是错的**：默认参数在**函数定义时**求值一次 → 所有对象共享同一个时间戳。要用 `default_factory=lambda: ...`（每次创建时才求值）。
@@ -1274,6 +1315,44 @@ root level: WARNING
 
 ⭐ 判据：**`Result` 只能消费一次；需要多次读取就先 `rows = result.all()` 存下来。**
 
+#### ⚠️⚠️ 坑：SQLite 下 `datetime` 的时区**必然丢失**，`timezone=True` 也没用
+
+📎 三段链路：
+
+| 阶段 | 值 | `tzinfo` |
+|---|---|---|
+| 写入前（Python） | `datetime(..., tzinfo=UTC)` | `UTC` → aware |
+| bind 格式化后 | `'2026-10-28 05:51:54.604445'` | **没了** |
+| 读回（Python） | `datetime(2026,10,28,5,51,54,604445)` | `None` → naive |
+
+📎 丢失点在 `sqlite.DATETIME()._storage_format`：
+
+```text
+%(year)04d-%(month)02d-%(day)02d %(hour)02d:%(minute)02d:%(second)02d.%(microsecond)06d
+```
+
+占位符只有 `year/month/day/hour/minute/second/microsecond` —— **一个时区占位符都没有**。
+
+📎 `DateTime(timezone=True)` 在 SQLite 与 PostgreSQL 下的 DDL 对比：
+
+```sql
+-- SQLite 方言
+plain    DATETIME,
+with_tz  DATETIME,                  -- timezone=True 消失
+-- PostgreSQL 方言
+plain    TIMESTAMP WITHOUT TIME ZONE,
+with_tz  TIMESTAMP WITH TIME ZONE,  -- 生效
+```
+
+⭐⭐ **SQLite 没有「带时区的时间类型」**，类型声明只是亲和性标签，值存 TEXT。
+`timezone=True` 在 SQLite 下**既不改 DDL、也不改 bind 格式、也不改读回结果**。
+
+📎 危险推论：`+08:00` 的 13:51 与 UTC 的 13:51 落盘是**同一个字符串**，读回来无法区分。
+
+⭐ 判据：
+- **SQLite 阶段**：在**出口**（pydantic schema）统一补 `tzinfo=UTC`，别指望列类型
+- **换 PostgreSQL 时**：这一列才该加 `timezone=True`
+
 ## 11. 健康探针（k8s / Docker）—— 配置层，不是代码层
 
 > ⚠️ **最容易混的一点**：健康检查涉及**两个不同的层**，它们分别住在**不同的文件**里。
@@ -1385,4 +1464,6 @@ GET /health/live     -> 404     ← 同上
 | 2026-10-26 | §10 新增「关系与索引：`ForeignKey` / `relationship` / `index=True`」（10.6a 实测）：两层分工（`ondelete` vs `cascade`）/ 五种删父子写法对比 / 📎 索引 25 倍收益 + 规模曲线证明 O(log n) / 索引三个代价（插入 +38%、空间 +18%、可能不被使用）/ `COVERING INDEX` / 三个静默坑 |
 | 2026-10-25 | §2 新增「`StringConstraints`：给字符串类型本身加约束」（10.5f 实测）：`strip_whitespace=True` 先清洗再判长度 / 📎 修前 `"   "` `"\t\n"` 全角空格都返回 200 并入库空白标题、修后全 422 / 📎 `Field(min_length)` 在 `field_validator` **之前**执行，所以不能用 validator 做 strip / 📎 顺带修掉「空格+100字符+空格」被误判 `string_too_long` 的旧行为。同时订正 §2「常用语法」里「`field_validator` 可顺带清洗」那条（半错） |
 | 2026-10-28 | §10 新增「`Result` 的五个取值方法 + 「一次性游标」陷阱」（10.6d-2 实测）：`execute()` 返回的是结果集容器不是值；`.all()` / `.first()` / `.one()` / `.scalar()` / `.scalar_one()` 在「1 行 / 多行 / 0 行」三种情况下的行为对照表；⭐⭐ `COUNT` 用 `.scalar_one()` 而不是 `.scalar()` —— 把「假设恰好一行」写进代码，改查询时立刻炸而不是静默返回错的数；⚠️⚠️ `Result` 是一次性游标，第 2 次 `.all()` 返回 `[]`、`.first()` 返回 `None`，**都不报错** |
-| 2026-10-28 | 新增 **§11 健康探针（k8s / Docker）**（原更新日志顺延为 §12）：区分「端点（代码里的路由）」与「探针（YAML 里的配置）」两个层；三种探针（liveness 重启 / readiness 摘流量 / startup 等启动完）；⭐ HTTP 探针判定规则 **200~399 算成功**，拼错路径 → 404 → 无限重启；⭐⭐ **把数据库放进 liveness = 雪崩**（重启治不好数据库）；⚠️ FastAPI 一个健康端点都不自带（只自带 4 个文档路由）；📎 实测本项目 `/health` 200 / `/health/ready` 200 / `/healthz` 404 / `/health/live` 404 |
+| 2026-10-28 | 新增 **§11 健康探针（k8s / Docker）**（原更新日志顺延为 §12）：区分「端点（代码里的路由）」与「探针（YAML 里的配置）」两个层；三种探针（liveness 重启 / readiness 摘流量 / startup 等启动完）；⭐ HTTP 探针判定规则 **200~399 算成功**，拼错路径 → 404 → 无限重启；⭐⭐ **把数据库放
+| 2026-10-28 | §2 新增「`field_validator` 的 `mode="before"` vs `"after"`」（10.6d-4a 实测）：📎 「补 UTC」场景下 before 遇到**字符串**输入时 `isinstance` 失败 → **静默不补**；after 唯一缺点 **返回值不重校验**（📎 返回字符串竟建对象成功）；⭐⭐ 判据「转换类型用 before，修正已校验的值用 after」；⚠️ `@classmethod` 与 mode **无关**，两种都要求 |
+| 2026-10-28 | §10 新增「SQLite 下 `datetime` 的时区必然丢失」（10.6d-4a 实测）：📎 丢失点在 `sqlite.DATETIME()._storage_format` —— **格式串里没有时区占位符**；📎 `DateTime(timezone=True)` 在 SQLite 下展开，DDL 与 plain 完全相同，PostgreSQL 才变 `TIMESTAMP WITH TIME ZONE`；⭐ 判据「SQLite 阶段在出口补 UTC，换 PG 时列才加 `timezone=True`」 |进 liveness = 雪崩**（重启治不好数据库）；⚠️ FastAPI 一个健康端点都不自带（只自带 4 个文档路由）；📎 实测本项目 `/health` 200 / `/health/ready` 200 / `/healthz` 404 / `/health/live` 404 |
