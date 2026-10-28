@@ -824,6 +824,37 @@
     > ⭐ anyio 的 shield scope 是**临时代替掉取消状态**，让里面的 `await` 看到「未取消」。
     > ⚠️ 本项目没用它：只能救回一次 `await`，复杂度不值得。**能靠结构解决的，别靠技巧。**
 
+51. N+1 是什么？N=5 时三种写法各发几条 SQL？N=100 时呢？
+    > 「查 1 次主表 + 循环里每行再查 1 次子表」= **1 + N 次**。
+    > | N | A 循环 `await` | B `selectinload` | C `join+group` |
+    > |---|---|---|---|
+    > | 5 | **6 条** 5.3ms | 2 条 4.1ms | 1 条 1.4ms |
+    > | 100 | **101 条** 57.7ms | 2 条 4.9ms | 1 条 1.0ms |
+    > ⭐ **A 是 O(N)，B 是 O(1)**。⚠️ N=5 时只差 2 倍，看不出问题 —— **小数据测不出来，上线才炸**。
+
+52. 同步 SQLAlchemy 里 N+1 表现是「变慢」，async 里也是这样吗？
+    > **不是。** 📎 async 里直接访问 `conv.calls` → `StatementError: (sqlalchemy.exc.MissingGreenlet) greenlet_spawn has not been called`。
+    > ⭐ 因为惰性加载要发 SQL，但触发点是「属性访问」这个同步上下文，async 不允许在这里偷偷 `await`。
+    > ⭐ 所以 async 项目的 N+1 更多是**「显式循环里的 N 次 `await`」**，不是「忘记预加载」。
+
+53. 只想要「每个对话有几次调用」，该用 `selectinload` 还是 `join + group_by`？为什么？
+    > **用 `join + group_by`。** 它只回 1 个数字；`selectinload` 会把**所有子行**取回内存再数。
+    > | 需求 | 用哪个 |
+    > |---|---|
+    > | 只要数量 / 总和 | `join + group_by`（1 条 SQL，只回 1 个数） |
+    > | 要子行完整内容 | `selectinload`（1 + 1 条，用 `IN (...)` 批量取） |
+    > | 子行特别多 | `selectinload` 要小心，内存会塞下全部子行 |
+
+54. 给列表接口加统计时，为什么必须 `outerjoin` 而不是 `join`？为什么必须 `coalesce`？
+    > **`outerjoin`**：用 `join` 会让**没有账单的对话整行消失**（📎 实测新对话直接不见）。
+    > **`coalesce(sum, 0)`**：`SUM` 遇到空集返回 `NULL` 不是 `0` → 响应里是 `null`，前端 `total + 1` 变 `NaN`。
+    > ⭐ 判据：**「从 A 出发查 A +（可选的 B）」→ 永远用 `outerjoin`。** `join` 回答「同时有 A 和 B 的」，`outerjoin` 回答「所有 A，有 B 就带上」。
+
+55. 能不能直接给 `ConversationOut` 加 `call_count` 字段就好，何必新建一个 `ConversationStatsOut`？
+    > **不能，会 500。** `ConversationOut` 是 `from_attributes=True`，从 ORM 对象读字段；`POST /v1/conversations` 创建后返回的 ORM 对象**没有 `call_count` 属性** → pydantic 校验失败 → **500**。
+    > ⭐ 所以必须单独定义 `ConversationStatsOut`（继承 `ConversationOut` 加两个字段）：列表用它，CRUD 三接口继续用 `ConversationOut`。
+    > ⭐ 这是 [决策 #10](../project/decisions.md#10-契约按用途分家in--patch--out)「契约按用途分家」的又一处落地。
+
 ### Step 11 · 工程化：配置 / 日志 / 安全
 
 1. 为什么"前端直连 LLM API"必然泄露 Key？F12 能看到吗？

@@ -4995,9 +4995,9 @@ error: Statement is unreachable  [unreachable]
 | ⑩ §10.6b-1 外键强制 | `connect` 事件 + `PRAGMA foreign_keys=ON`；📎 孤儿插入被拒 | ✅ 2026-10-26 |
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
 | ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
-| ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ⬜ 待做 |
+| ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ✅ 2026-10-28 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
-| ⑮ §10.8 自检 | 本节自检 50 题 | ⬜ 待做 |
+| ⑮ §10.8 自检 | 本节自检 55 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -6928,32 +6928,6 @@ sqlalchemy.dialects.sqlite.aiosqlite.AsyncAdapt_aiosqlite_connection
 **⚠️ 不用 `ORM 对象` 直接返回行不行？** 📎 实测可以（FastAPI 会先转 dict，再交给 `response_model`），
 但要保证会话还活着（`expire_on_commit=False` 或还没 commit）。
 
-## 10.6c ⚠️ N+1 查询问题
-
-> ⚠️ 下面的 `conv.messages` 是**关系模型的教学伪代码** —— 当前 `Conversation` 还没有 `messages` 关系，复制过去跑不起来。这段只用来解释「查询次数」。
-
-```python
-convs = await db.execute(select(Conversation))
-for conv in convs.scalars():
-    print(conv.messages)      # ❌ 每条会话都发一次查询 → 1 + N 次
-```
-
-| 方案 | 写法 |
-|------|------|
-| **预加载**（推荐） | `select(Conversation).options(selectinload(Conversation.messages))` |
-| 显式 join | `select(...).join(...)` |
-| 批量查 + 内存拼装 | 查所有 message，按 `conversation_id` 分组 |
-
-> ⭐ **判断信号**：**循环里访问"关系属性"**（`conv.messages`）几乎总是 N+1。
-> 100 条会话 → 101 次查询，接口从 10ms 变成 1s。
->
-> ⚠️ **异步下更严重**：`AsyncSession` 里直接访问未加载的关系会触发隐式 IO。
-> 📎 本机 SQLAlchemy 2.1.6 + `aiosqlite` 实测：**顶层 `StatementError`，`.orig` 是 `MissingGreenlet`** ——
-> 所以异步环境必须用 `selectinload` 预加载，或显式执行可等待的查询。
->
-> 🔗 这和 ML 里的"**特征工程要向量化，不要 for 循环**"是同一种思维：
-> **把 N 次操作合成 1 次批量操作**。
-
 ## 10.6b-2 ⚠️ 可空外键的完整链条：DDL → ORM → pydantic → 取关联
 
 > 起因：2026-10-27 学习者问「我们把 conversation_id 设成可空，那代码允许 NULL 了吗？客户端查这条记录会不会报错？」
@@ -7469,6 +7443,137 @@ raise 把异常继续往外抛
    ↓
 UPDATE llm_calls SET status='aborted' → 落库 ✅
 ```
+
+---
+
+## 10.6c ⚠️ N+1 查询问题
+
+### 是什么
+
+「查 1 次主表 + 循环里每行再查 1 次子表」= **1 + N 次查询**。
+
+```python
+convs = await db.execute(select(Conversation))
+for conv in convs.scalars():
+    print(conv.calls)      # ❌ 每条会话都发一次查询 → 1 + N 次
+```
+
+### 📎 实测 1：N=5 时三种写法的 SQL 条数
+
+用 SQLAlchemy 的 `before_cursor_execute` 事件真实数 SQL：
+
+| 写法 | SQL 条数 | 耗时 |
+|---|---|---|
+| **A 循环里 `await` 逐个查** | **6**（1 + 5） | 6.3 ms |
+| B `selectinload` 预加载 | **2** | 2.5 ms |
+| C `join + group_by`（只要计数） | **1** | 1.1 ms |
+
+📎 A 组实际发出的 6 条：
+
+```text
+1. SELECT conversations.id, conversations.title ... FROM conversations
+2. SELECT count(llm_calls.id) ... WHERE conversation_id = 1
+3. SELECT count(llm_calls.id) ... WHERE conversation_id = 2
+4. SELECT count(llm_calls.id) ... WHERE conversation_id = 3
+5. SELECT count(llm_calls.id) ... WHERE conversation_id = 4
+6. SELECT count(llm_calls.id) ... WHERE conversation_id = 5
+```
+
+### 📎 实测 2：N 变大时（这条最重要）
+
+| N | A 循环 `await` | B `selectinload` | C `join+group` |
+|---|---|---|---|
+| 5 | **6 条** 5.3ms | 2 条 4.1ms | 1 条 1.4ms |
+| 20 | **21 条** 12.0ms | 2 条 2.2ms | 1 条 0.9ms |
+| 50 | **51 条** 26.6ms | 2 条 2.6ms | 1 条 0.9ms |
+| 100 | **101 条** 57.7ms | 2 条 4.9ms | 1 条 1.0ms |
+
+⭐⭐ **A 是 O(N)，B 是 O(1)**：
+
+```text
+A:  6 → 21 → 51 → 101      （N 翻倍，查询翻倍）
+B:  2 →  2 →  2 →   2      （恒定）
+耗时 5.3 → 57.7ms = 10.9 倍
+```
+
+⚠️ **N=5 时只差 2 倍，看不出问题** —— 这就是 N+1 最阴险的地方：**小数据测试完全正常，上线才炸**。
+
+### 📎 实测 3：async 下 N+1 不是「慢」，是**直接报错**
+
+直接访问 `conv.calls`（惰性加载）：
+
+```text
+❌ StatementError: (sqlalchemy.exc.MissingGreenlet)
+   greenlet_spawn has not been called; can't call await_() here.
+   Was IO attempted in an unexpected place?
+```
+
+| 场景 | 表现 |
+|---|---|
+| 同步 SQLAlchemy | N+1 → **变慢**（偷偷发 N 次 SQL） |
+| **async SQLAlchemy** | N+1 → **`MissingGreenlet` 报错**（直接炸） |
+
+⭐ 所以 async 项目里，N+1 更多是**「显式循环里的 N 次 `await`」**，而不是「忘记预加载」。
+
+### 三种解法怎么选
+
+| 需求 | 用哪个 | 为什么 |
+|---|---|---|
+| 只要**数量 / 总和** | **C `join + group_by`** | 只回 1 个数，不传子行数据 |
+| 需要**子行的完整内容** | **B `selectinload`** | 一次 `IN (...)` 取回，ORM 自动填好 `conv.calls` |
+| 子行**特别多** | B 要小心 | 内存会塞下全部子行 → 要分页 |
+| 循环里 `await` | ⛔ **永远不要** | 就是 N+1 本身 |
+
+⭐ 核心：**B 把 N 次「等于某个值」换成 1 次 `IN (...)`；C 连子行都不取，让数据库直接算好数字。**
+
+### 真实落地：`GET /v1/conversations` 加账单统计
+
+```python
+stmt = (
+    select(
+        Conversation.id,
+        Conversation.title,
+        Conversation.created_at,
+        func.count(LlmCall.id).label("call_count"),
+        func.coalesce(func.sum(LlmCall.total_tokens), 0).label("total_tokens"),
+    )
+    .outerjoin(LlmCall, LlmCall.conversation_id == Conversation.id)
+    .group_by(Conversation.id)
+    .order_by(Conversation.id)
+)
+```
+
+📎 实测结果（3 个对话）：
+
+```text
+{'id': 1, 'title': '有账单', 'call_count': 2, 'total_tokens': 175}
+{'id': 2, 'title': '没账单', 'call_count': 0, 'total_tokens': 0}
+{'id': 3, 'title': '被中断', 'call_count': 1, 'total_tokens': 0}
+```
+
+⚠️ **两个「必须」**：
+
+| 必须 | 不写会怎样 |
+|---|---|
+| **`outerjoin`** | 用 `join` → **没有账单的对话整行消失**（对话 2 不见了） |
+| **`coalesce(sum, 0)`** | `SUM` 遇到空集返回 `NULL` → 响应里是 `null`，前端 `+ 1` 变 `NaN` |
+
+⭐⭐ 判据：**`从 A 出发查 A + (可选的 B)` → 永远用 `outerjoin`。** `join` 回答「同时有 A 和 B 的」，`outerjoin` 回答「所有 A，有 B 就带上」。
+
+### ⚠️ 陷阱：不要直接复用 `ConversationOut`
+
+`ConversationOut` 是 `from_attributes=True`，从 ORM 对象读字段。如果直接给它加 `call_count: int`：
+
+📎 后果：**`POST /v1/conversations` 创建时返回的 ORM 对象没有 `call_count` 属性** → pydantic 校验失败 → **500**。
+
+⭐ 所以必须**单独定义** `ConversationStatsOut`（继承 `ConversationOut` 加两个字段），列表用它，CRUD 三接口继续用 `ConversationOut`。
+⭐ 这就是 [决策 #10](../project/decisions.md#10-契约按用途分家in--patch--out)「契约按用途分家」的又一个实例。
+
+### 判据
+
+⭐⭐ **循环里访问「关系属性」或循环里 `await` 查子表 → 几乎一定是 N+1。**
+⭐ 这和 ML 里的「**特征工程要向量化，不要 for 循环**」是同一种思维：**把 N 次操作合成 1 次批量操作**。
+
 ---
 
 ## 10.7 迁移（了解，阶段 1 不急）
@@ -8896,3 +9001,4 @@ CORS 的 `allow_methods` 必须与实际注册的路由一致。📎 2026-10-25 
 | **阶段 2** | #3 #32 #34 #35 | `KNOWN_MODELS` 硬编码 / 并发控制 / 软删除 / **消息未落库** |
 
 ⚠️ **#35 是最该记住的一条**：现在的 `conversations` 表只有标题，`/v1/chat/stream` 完全不落库 ——**「对话管理」目前只是「标题管理」**，聊天内容一行都没存。
+
