@@ -36,6 +36,7 @@
 | 标准库 | **logging** | 分级日志事件流（替代 `print`）；默认落 stderr，**不写文件** | Python 自带，无需安装 | 6.3b | [§9](#9-loggingpython-标准库不是项目依赖) |
 | 库 | **SQLAlchemy** | 用 Python 类映射数据库表，并组织查询与事务 | `uv add "sqlalchemy[asyncio]>=2.1,<2.2"` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步-orm-与-aiosqlite) |
 | 库 | **aiosqlite** | 让 SQLite 操作可以 `await`（SQLAlchemy 的异步 SQLite 驱动） | `uv add aiosqlite` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步-orm-与-aiosqlite) |
+| 概念 | **健康探针** | 编排平台定期打一个 HTTP 路径来判断「进程活着 / 能接流量」；**配置在 YAML 里，不在代码里** | 无需安装（k8s / Docker 能力） | 阶段 1 · 10.6d-3（端点）/ Step 13（配置） | [§11](#11-健康探针k8s--docker-配置层不是代码层) |
 
 **本机版本基线（实测）**：`uv 0.12.23` / `pydantic 2.13.5` / `pydantic-settings 2.15.0` / `mypy 2.4.0` / `ruff 0.16.10` / `httpx 0.28.1` / `fastapi 0.143.0` / `uvicorn 0.54.0` / `starlette 1.8.0` / `sqlalchemy 2.1.6` / `greenlet 3.5.6` / `aiosqlite 0.22.1`
 
@@ -1273,7 +1274,101 @@ root level: WARNING
 
 ⭐ 判据：**`Result` 只能消费一次；需要多次读取就先 `rows = result.all()` 存下来。**
 
-## 11. 本文件更新日志
+## 11. 健康探针（k8s / Docker）—— 配置层，不是代码层
+
+> ⚠️ **最容易混的一点**：健康检查涉及**两个不同的层**，它们分别住在**不同的文件**里。
+
+| | 端点（endpoint） | 探针（probe） |
+|---|---|---|
+| 是什么 | 一个 **HTTP 路径** | 一条**配置**：「定期去请求某个路径」 |
+| 写在哪 | **应用代码**（`@app.get("/health")`） | **YAML**（k8s `livenessProbe` / compose `healthcheck`） |
+| 谁执行 | 你的应用 | **编排平台**（kubelet / Docker 引擎） |
+| 应用知道探针存在吗 | ❌ **完全不知道**，只是「碰巧有人来 GET」 | — |
+
+⭐⭐ **探针不是代码，是配置。** 两者唯一的耦合是**一个路径字符串**：
+
+```yaml
+# k8s deployment.yaml
+livenessProbe:
+  httpGet: { path: /health, port: 8000 }        # ← 必须与应用路由一致
+  periodSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet: { path: /health/ready, port: 8000 }  # ← 同上
+  periodSeconds: 5
+  failureThreshold: 2
+```
+
+```yaml
+# docker-compose.yml（等价物）
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
+  interval: 10s
+  retries: 3
+```
+
+### 三种探针
+
+| 探针 | 回答什么问题 | 失败时平台做什么 |
+|---|---|---|
+| **liveness** | 进程还活着吗？ | **重启容器** |
+| **readiness** | 能接流量吗？ | **从负载均衡摘掉**，不重启 |
+| **startup** | 启动完成了吗？ | 在它成功前，**暂停其它两种探针** |
+
+⭐ **startup 探针解决「启动慢」问题**：启动要 60 秒的应用，liveness 的 `initialDelaySeconds` 只有 10 秒 → 启动中就被判定失败 → 无限重启。加一个 `startupProbe: failureThreshold: 12, periodSeconds: 5` 就对了。
+
+### HTTP 探针的判定规则
+
+⭐ **状态码 200~399 算成功**，其它（含 404、500、503）都算失败。
+
+⚠️ 所以 **路径拼错 = 404 = 探针永远失败**，而日志里只会看到「Pod 在重启」，很难定位。
+
+📎 实测（本项目）：
+
+```text
+GET /health          -> 200     ✅
+GET /health/ready    -> 200     ✅
+GET /healthz         -> 404     ← 拼错（k8s 社区常见写法，本项目没有）
+GET /health/live     -> 404     ← 同上
+```
+
+### 三类探针该检查什么（最容易做错的地方）
+
+| 检查内容 | 放哪个探针 | 为什么 |
+|---|---|---|
+| 进程/事件循环在转 | **liveness** | 死了才该重启 |
+| **数据库**连通性 | **readiness** | 数据库挂不是重启应用能修的 |
+| 下游第三方 API 可用 | ❌ **都不放** | 别人的问题不该让你被摘流量/重启 |
+| 磁盘/内存快满 | liveness ⚠️ 慎用 | 重启缓解不了，应该告警 |
+
+⭐⭐ **把「别人的依赖」放进 liveness 是最经典的事故**：数据库抖动 30 秒 → 全部实例 liveness 失败 → 全部重启 → 重启后还要连库 → 还是失败 → **雪崩**。
+
+### 本项目的对应关系
+
+| 端点 | 类型 | 检查 | 失败响应 |
+|---|---|---|---|
+| `/health` | liveness | 不检查外部依赖 | 恒为 200 |
+| `/health/ready` | readiness | `SELECT 1` 探库 | **503** `DB_UNAVAILABLE` |
+
+⚠️ **FastAPI / Starlette 一个健康端点都不自带**（只自带 `/docs`、`/redoc`、`/openapi.json`、`/docs/oauth2-redirect`）。
+对比：Spring Boot 有 `Actuator` 的 `/actuator/health`、ASP.NET Core 有 `HealthChecks`。
+
+### 常见坑
+
+| 坑 | 后果 |
+|---|---|
+| 探针路径与应用路由不一致（拼错 / 改名忘同步） | 404 → **无限重启**或**永远被摘流量**，且**不报错** |
+| 把探库放进 liveness | 数据库抖动 → 全实例雪崩重启 |
+| `initialDelaySeconds` 小于真实启动耗时 | 启动中就被判失败 → 重启循环（该用 `startupProbe`） |
+| readiness 探第三方 API | 上游抖动 → 你被摘流量 |
+| 探针间隔过短（如 1s）+ 探库查询很重 | 健康检查自己变成负载来源 |
+
+⭐ 判据：**探针是「两处文件里的一致事实」** —— 改一边必须回头改另一边；建议把路径提成环境变量（如 `HEALTH_PATH`）让 YAML 引用同一个值。
+
+---
+
+
+## 12. 本文件更新日志
 
 | 日期 | 变更 |
 |---|---|
@@ -1290,3 +1385,4 @@ root level: WARNING
 | 2026-10-26 | §10 新增「关系与索引：`ForeignKey` / `relationship` / `index=True`」（10.6a 实测）：两层分工（`ondelete` vs `cascade`）/ 五种删父子写法对比 / 📎 索引 25 倍收益 + 规模曲线证明 O(log n) / 索引三个代价（插入 +38%、空间 +18%、可能不被使用）/ `COVERING INDEX` / 三个静默坑 |
 | 2026-10-25 | §2 新增「`StringConstraints`：给字符串类型本身加约束」（10.5f 实测）：`strip_whitespace=True` 先清洗再判长度 / 📎 修前 `"   "` `"\t\n"` 全角空格都返回 200 并入库空白标题、修后全 422 / 📎 `Field(min_length)` 在 `field_validator` **之前**执行，所以不能用 validator 做 strip / 📎 顺带修掉「空格+100字符+空格」被误判 `string_too_long` 的旧行为。同时订正 §2「常用语法」里「`field_validator` 可顺带清洗」那条（半错） |
 | 2026-10-28 | §10 新增「`Result` 的五个取值方法 + 「一次性游标」陷阱」（10.6d-2 实测）：`execute()` 返回的是结果集容器不是值；`.all()` / `.first()` / `.one()` / `.scalar()` / `.scalar_one()` 在「1 行 / 多行 / 0 行」三种情况下的行为对照表；⭐⭐ `COUNT` 用 `.scalar_one()` 而不是 `.scalar()` —— 把「假设恰好一行」写进代码，改查询时立刻炸而不是静默返回错的数；⚠️⚠️ `Result` 是一次性游标，第 2 次 `.all()` 返回 `[]`、`.first()` 返回 `None`，**都不报错** |
+| 2026-10-28 | 新增 **§11 健康探针（k8s / Docker）**（原更新日志顺延为 §12）：区分「端点（代码里的路由）」与「探针（YAML 里的配置）」两个层；三种探针（liveness 重启 / readiness 摘流量 / startup 等启动完）；⭐ HTTP 探针判定规则 **200~399 算成功**，拼错路径 → 404 → 无限重启；⭐⭐ **把数据库放进 liveness = 雪崩**（重启治不好数据库）；⚠️ FastAPI 一个健康端点都不自带（只自带 4 个文档路由）；📎 实测本项目 `/health` 200 / `/health/ready` 200 / `/healthz` 404 / `/health/live` 404 |
