@@ -409,6 +409,9 @@ async def update_conversation(
     """
     conv = await require_conversation(db, conv_id)
     conv.title = payload.title
+    # 【注意】：必须 flush —— updated_at 的 onupdate 在 flush 生成 UPDATE 时才求值，
+    # 少这一行会让响应带着改动前的旧时间（此时 SQL 也还没发出去）
+    await db.flush()
     # 不写 commit: 由 get_db 依赖统一提交（事务边界只在一处）
     return conv
 
