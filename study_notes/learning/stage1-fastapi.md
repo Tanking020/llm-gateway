@@ -4996,7 +4996,7 @@ error: Statement is unreachable  [unreachable]
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
 | ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ✅ 2026-10-28 |
-| ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 ✅ / 形状统一 #39 | 🟡 进行中（10.6d-1 已完成） |
+| ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 ✅ / 形状统一 #39 | 🟡 进行中（10.6d-1 ✅ / 10.6d-2 分页方案已定：**游标 + total**） |
 | ⑮ §10.8 自检 | 本节自检 59 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
@@ -7674,6 +7674,127 @@ GET   -> "created_at":"2026-10-28T05:51:54.604445"     ← 无 Z（从库里读�
 | 值没变会更新吗 | ❌ 不会，dirty check 不通过就不发 UPDATE |
 
 ⚠️ **`create_all` 不会给已有表加列** → 必须删库重建（本阶段可以）。
+
+---
+
+## 10.6d Step 10 收尾专项
+
+### 10.6d-2 分页：为什么必须是游标而不是 offset
+
+#### 📎 不分页的代价
+
+同一接口逐步灌数据：
+
+| 对话数 | 响应体 |
+|---|---|
+| 100 | 18.1 KB |
+| 1000 | 181.5 KB |
+| 5000 | **912 KB** |
+
+⭐ 每条约 **0.18 KB** 线性增长 —— 上万条时「数据库 → 内存 → JSON → 网络」三个环节同时爆，而前端只能显示前 20 条。
+
+#### 🔴 决定性证据：offset 会丢数据
+
+📎 实测（模拟「标签页 A 翻页，标签页 B 删掉刚看完的对话」）：
+
+```text
+【offset 分页】
+  翻页路径: [1, 2, 3, 4, 5, 7, 8, 9, 10]
+  ⚠️ 漏掉: [6]              ← 用户永远看不到这个对话
+  ❌ 有数据丢失
+
+【游标分页】
+  翻页路径: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  ✅ 数据完整
+```
+
+⭐⭐ **根因：`offset` 数的是「位置」，位置随数据增删漂移；游标数的是「值」（`id > 5`），值不变。**
+
+```text
+删除前：  [1, 2, 3, 4, 5] [6, 7, 8, 9, 10]
+          ↑ offset 0-4    ↑ offset 5-9
+
+删掉 id=2 后，所有行往前挪一格：
+          [1, 3, 4, 5, 6] [7, 8, 9, 10]
+          ↑ offset 0-4    ↑ offset 5-9
+                          ↑ 这里本该是 6，现在坐着 7
+```
+
+⚠️ **不需要多用户** —— 同一个人的两个标签页就够了；「删除对话」是我们自己的核心接口。
+
+#### 三种方案对比
+
+| 方案 | 形状 | 漏数据 | 能算 `total` | 适合 |
+|---|---|---|---|---|
+| **A 裸数组 + `X-Total-Count` 头** | 数组 + header | ❌ 会漏 | ✅ | 已上线不想改形状 |
+| **B `{items, total, limit, offset}`** | 对象 | ❌ **会漏** | ✅ | 数据几乎不变的场景 |
+| **C 游标 + `total` 并存** | 对象 + `next_cursor` | ✅ 不会 | ✅（单独 `COUNT(*)`） | **本项目** |
+
+⚠️ A 的隐藏坑：`total` 在响应头里，**CORS 下前端读自定义头需要服务端 `expose_headers`**，否则 JS 根本读不到。
+
+#### 📎 性能不是决策依据
+
+真实列表查询（`outerjoin + group_by`，5000 对话 / 20000 账单）：
+
+| 做法 | 耗时 |
+|---|---|
+| offset 第 1 页 | 0.80 ms |
+| offset 第 200 页 | 3.29 ms |
+| 游标 `id > 3980` | **0.63 ms** |
+| `COUNT(*)` 全表（给 total） | 0.65 ms |
+
+⭐ 差距很小 —— **选游标是因为「正确性」，不是因为「性能」**。网上「offset 很慢」的前提是几百万行。
+
+#### ⭐ 为什么 `total` 可以让步、数据完整性不能
+
+| 问题 | 严重性 |
+|---|---|
+| `total` 差 2（翻页期间别人删了） | 🟡 用户看不出，刷新就对了 |
+| **漏掉一个对话** | 🔴 用户永远不知道它存在过 |
+
+⭐⭐ 这是 [工程规范 §7.0c](../../工程规范与协作约定.md)「可以让步 vs 绝不能让步」表的直接应用。
+
+#### 代码形状（游标版）
+
+```python
+@app.get("/v1/conversations", response_model=ConversationPageOut)
+async def list_conversations(
+    db: DbDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    after_id: Annotated[int | None, Query(ge=0)] = None,
+) -> ConversationPageOut:
+    base = (
+        select(...)
+        .outerjoin(LlmCall, LlmCall.conversation_id == Conversation.id)
+        .group_by(Conversation.id)
+    )
+    if after_id is not None:
+        base = base.where(Conversation.id > after_id)     # 游标：用「值」不用「位置」
+
+    # 多取一条，用来判断还有没有下一页（比 count 便宜）
+    rows = (await db.execute(base.order_by(Conversation.id).limit(limit + 1))).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    total = (await db.execute(select(func.count(Conversation.id)))).scalar_one()
+    return ConversationPageOut(
+        items=[...],
+        total=total,
+        limit=limit,
+        next_cursor=rows[-1].id if has_more and rows else None,
+        has_more=has_more,
+    )
+```
+
+⭐ **`limit + 1` 技巧**：多取一条就知道「还有没有下一页」，比再跑一次 `COUNT` 便宜。
+
+⚠️ **三个坑**：
+
+| 坑 | 后果 |
+|---|---|
+| `limit` 不设上限 | 客户端传 `limit=1000000` 等于没分页 |
+| `total` 用 `len(items)` | 那是**本页条数**，不是总数 |
+| 在 `group_by` 查询里 `count(*)` 当 total | 变成「每组的行数」，不是「总组数」→ 必须另起一次查询 |
 
 ---
 
