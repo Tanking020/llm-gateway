@@ -1,15 +1,23 @@
 # llm-app-engineering
 
 > 一个从零搭建的 LLM 应用后端。工程规范先行，逐步演进为**带量化评估的中文 RAG 知识库问答服务**。
+>
+> ⭐⭐ **项目定位：最终要作为产品上线**（2026-10-28 确认）。讲解价值是**附带的**，不是决策依据。
+> 每个技术选择都先过这一关：**「如果这个接口明天就要给 1000 个真实用户用，这样做够不够？」**
+> 判据与「可以让步 vs 绝不能让步」的清单见[工程规范 §7.0c](工程规范与协作约定.md)。
 
 **当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库进行中（依赖 / 模型 / 引擎 / 请求级会话已落地；对话接口完成 **CRUD 四操作五接口**）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库接近收尾（对话接口完成 CRUD 四操作五接口 + 账单表 + 分页方案已定）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
 已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
 **一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
-以及一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
-实测首帧 60ms / 总 906ms；上游失败时客户端拿 **502** 而不是 `200` + 断连）。
+一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
+实测首帧 60ms / 总 906ms；上游失败时客户端拿 **502** 而不是 `200` + 断连）、
+以及**可对账的账单体系**（`llm_calls` 表，`status` 三态区分 `completed` / `aborted` / `pending`）。
 详见[路线图](#路线图)。
+
+> ⚠️ **离「能上线」还差什么**：无鉴权 / 无限流 / 无自动化测试 / 无 `Dockerfile`，
+> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#53）。
 
 ---
 
@@ -78,27 +86,27 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 
 ---
 
-## 接口一览（截至阶段 1 · Step 9，含 Step 4 的响应契约与 Step 9 的 SSE）
+## 接口一览（截至阶段 1 · Step 10）
 
 | 方法 | 路径 | 说明 | 主要状态码 |
 |---|---|---|---|
-| GET | `/health` | 健康检查（部署探活用） | 200 |
+| GET | `/health` | 健康检查（部署探活用）；⚠️ 不检查数据库连通性（待办 #26） | 200 |
 | GET | `/v1/models` | 硬编码的模型清单；支持 `?prefix=` / `?limit=`（1 ~ 100） | 200 / 422 |
 | GET | `/v1/models/latest` | 默认模型 | 200 |
 | GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 |
-| POST | `/v1/chat` | 聊天（业务逻辑仍为 `echo` 占位）；最后一条消息必须是 `user` | 200 / 400 / 422 |
+| POST | `/v1/chat` | 聊天；⚠️ **业务逻辑仍为 `echo` 占位**（待办 #46）；最后一条消息必须是 `user`；可选 `conversation_id`（不存在 → 404） | 200 / 400 / 404 / 422 |
 | GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse` | 200 / 502 |
-| POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；`text/event-stream` + chunked | 200 / 422 |
+| POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；可选 `conversation_id`（不存在 → 404，**在流开始前拦**）；每次调用落一行账单 | 200 / 404 / 422 |
 | POST | `/v1/conversations` | 新建对话（落库）；`title` 长度 1~100 | 201 / 422 |
-| GET | `/v1/conversations` | 列出全部对话，按 `id` 升序；空表返回 `[]` | 200 |
+| GET | `/v1/conversations` | 列出对话，按 `id` 升序，**含账单统计** `call_count` / `total_tokens` | 200 |
 | GET | `/v1/conversations/{conv_id}` | 单个对话；不存在 → 404；`conv_id` 非整数 → 422 | 200 / 404 / 422 |
-| DELETE | `/v1/conversations/{conv_id}` | 删除对话（204 无内容）；不存在 → 404 | 204 / 404 / 422 |
+| DELETE | `/v1/conversations/{conv_id}` | 删除对话（204 无内容）；不存在 → 404；⚠️ 计费记录 `SET NULL` 保留 | 204 / 404 / 422 |
 | PATCH | `/v1/conversations/{conv_id}` | 修改标题（部分更新）；不存在 → 404；空 body / null / 空串 → 422 | 200 / 404 / 422 |
 
 **成功响应形状**（Step 4 起，`schemas.py` 定义，可在 `/docs` 展开）：
 
 ```jsonc
-// POST /v1/chat
+// POST /v1/chat（⚠️ echo 占位）
 {"content": "[echo] 你好", "model": "deepseek-flash", "usage_tokens": 0}
 
 // GET /v1/upstream/models —— 上游 10 个键只暴露 3 个（白名单：owned_by / effort 等不外泄）
@@ -106,7 +114,16 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
   {"id": "deepseek-flash", "name": "DeepSeek-V4.1-Flash", "context_window": 1048576},
   {"id": "deepseek-v4-pro", "name": "DeepSeek-V4-Pro", "context_window": 1048576}
 ]}
+
+// GET /v1/conversations —— 含账单统计（join + group_by，1 条 SQL）
+[{"id": 1, "title": "有账单", "created_at": "...", "updated_at": "...",
+  "call_count": 2, "total_tokens": 175}]
 ```
+
+⚠️ **已知形状问题**（待办 #30 #39 #52）：`created_at` 在 `POST` 响应里带 `Z`、在 `GET` 里不带；
+`/v1/models` 与 `/v1/upstream/models` 形状不一致；详情接口不返回 `call_count`。
+计划在 10.6d-4 统一。**分页方案已定：游标为主 + `total` 为辅**（[决策 #22](study_notes/project/decisions.md)）——
+⚠️ 不用 offset 分页，因为📎 实测它在翻页期间删数据会**漏掉一条**。
 
 **错误响应形状**（Step 6 起）：
 
@@ -344,6 +361,9 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **响应契约：返回注解优先，`response_model` 用于收窄** | 两者相同时只写返回注解（FastAPI 自动采用）；只有"内部模型宽于对外契约"时才显式写 `response_model=`。响应模型是**白名单**：没声明的字段不可能输出 | 返回对象缺必填字段会 `ResponseValidationError` → 500（错在我方）；响应类型写 `list[dict]` 会让 `/docs` 失去结构，且过滤晚一步 |
 | **中间件做"每个请求都要做的事"** | 请求 ID、耗时、CORS 这类逻辑写在中间件里一处生效；用 `request.state` 把 ID 传给路由与异常处理器，500 也能返回同一个 ID | 中间件拿不到路由参数；**绝不能读 `response.body`**（会把流式响应抽干）；异常路径上拿不到响应对象，500 的响应头要由处理器补 |
 | **流式 = 异步生成器 + `StreamingResponse`** | 二者分工是硬的：生成器只**产出**字符串（不碰 socket），`StreamingResponse` 负责 `http.response.start`、逐帧 `send(more_body=True)`、最后补 `more_body=False`、并监听 `http.disconnect`。驱动生成器的那句 `async for` 在 `starlette/responses.py:253`，不在本项目代码里（📎 打印调用栈实测） | 一旦开始流式就**不能再改状态码**（头已发出）；中途出错只能"把错误编码进流里"；`TestClient` 无法验证分批，时序必须用真服务 |
+| **计费记录不跟着对话一起删**（2026-10-27，决策 #16） | 用 `ondelete="SET NULL"` 而非 `CASCADE`。📎 实测 `CASCADE` 会丢 900 token 的账；`SET NULL` 保住「这一笔花过多少」，「属于谁」可以丢 | 被删对话的账单变成 `conversation_id=NULL`，**无法区分「从没属于过」和「父行被删」** |
+| **流式记账用两阶段**（2026-10-27，决策 #20） | 流开始前落一行 `status="pending"`，拿到 `usage` 改 `completed`，断开/异常只做**同步赋值** `aborted`。📎 实测：断开时处于**已取消的 cancel scope**，任何 `await`（含 `asyncio.shield`）都会被二次取消 | `flush` 不是持久化 —— 进程崩溃时这一行会被回滚（待办 #42）；断开时 token 只能记 0（待办 #43） |
+| **分页用游标而不是 offset**（2026-10-28，决策 #22） | 📎 实测 offset 分页在「翻页期间删数据」时会**漏掉一条**（用户永远看不到），游标用「值」`id > N` 不受影响 | 不支持「跳到第 N 页」；`total` 在翻页期间会轻微过时（比起漏数据，这个可以让步） |
 
 ---
 
