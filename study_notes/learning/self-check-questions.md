@@ -1051,6 +1051,37 @@
     > ⭐ 后果：上游每 0.9 秒滴一帧就能让请求**无限期挂着** —— 占连接、占并发名额、账单还在涨。
     > 对一个 LLM 应用尤其危险：**慢速滴答比直接失败更费钱**（待办 #55）。
 
+76. **纯 pydantic 的 `ConversationOut.model_validate(stats_obj)` 会裁剪字段吗？FastAPI 呢？
+    > 🔴 **两者行为相反，这是最容易搞错的一处。**
+    > | 场景 | 结果 |
+    > |---|---|
+    > | `Base.model_validate(Child 实例)` | **不裁剪**（返回的仍是 `Child`，`model_dump` 出 4 个字段） |
+    > | FastAPI `response_model=Base` 而返回 `Child` | **裁剪**成 2 个字段 |
+    > 📎 实测 HTTP 层：
+    > ```text
+    > response_model=Base，返回 Child  -> {'id': 1, 'title': 'x'}
+    > response_model=Child，返回 Child -> {'id': 1, 'title': 'x', 'call_count': 3, 'total_tokens': 119}
+    > ```
+    > ⭐ pydantic 有**快速路径**：传入的已是 `cls` 或其子类实例 → 原样返回。
+    > ⭐ 但 **FastAPI 走的不是那条路**，它按 `response_model` 的结构序列化 → 会裁剪。
+    > ⭐⭐ 判据：**`response_model` 决定实际发什么，`-> X` 只给 mypy 看；两者必须一起改。**
+
+77. `.outerjoin(LlmCall, LlmCall.conversation_id == Conversation.id)` 和 `.outerjoin(LlmCall, LlmCall.id == Conversation.id)` 差在哪？哪个更危险？
+    > | 写法 | 后果 |
+    > |---|---|
+    > | `LlmCall.conversation.id`（relationship 往下钻） | 📎 **运行时 `AttributeError`** → 两个接口 **500**，但**服务能正常启动**、`/docs` 能开、`/health` 正常 |
+    > | `LlmCall.id == Conversation.id`（两表**主键**互对） | 🔴 **不报错、不 500，页面看着完全正常，只是数字全是别人的** |
+    > 📎 实测（对话 1 有 3 条账单 73/41/5；对话 3 有 1 条 50）：
+    > ```text
+    >             正确            主键互对
+    > 对话1     (3, 119)        (1, 73)
+    > 对话2     (0, 0)          (1, 41)   ← 把别人的账单算它头上
+    > 对话3     (1, 50)         (1, 5)
+    > 对话4     (0, 0)          (1, 50)
+    > ```
+    > ⭐⭐ **第二个更危险**：它通得过所有静态检查和眼睛，只有对着已知数据断言才抓得到。
+    > ⭐ 判据：**`outerjoin` 第二个参数必须是「子表外键 = 父表主键」**，即 `LlmCall.conversation_id == Conversation.id`。
+
 ### Step 11 · 工程化：配置 / 日志 / 安全
 
 1. 为什么"前端直连 LLM API"必然泄露 Key？F12 能看到吗？
@@ -1155,4 +1186,5 @@
 | 2026-10-26 | 阶段 1 · **Step 10** 补第 37 题（**PRAGMA foreign_keys**）：SQLite 默认不强制外键 / 为什么必须挂 `connect` 事件 / `sync_engine` 与事件名的选择。配套笔记 §10.6b-1 |
 | 2026-10-28 | 阶段 1 · **Step 10** 补第 69~72 题（**时间字段 / validator mode / 提交时机**）：UTC 在哪一步丢（📎 `_storage_format` 无时区占位符）/ `DateTime(timezone=True)` 在 SQLite 下 DDL 不变（📎 对比 PostgreSQL）/ before vs after 判据（📎 字符串输入下 before 静默失效、after 返回值不重校验）/ 「返回 201」≠「已提交」（📎 commit 抛异常后客户端仍收到完整响应体）。配套笔记 §10.6d-4a、待办 #30 #54 |
 | 2026-10-28 | 阶段 1 · **Step 10** 补第 73~75 题（**时钟选择 / 超时语义**）：三个时钟的 `adjustable` 差异（📎 `get_clock_info` 实测）/ 「改系统时钟避免休眠不计时」为何是反向做法（📎 模拟 NTP 前跳 60s 时墙钟 3 秒误触发）/ `read timeout` 是间隔不是总时长（📎 read=1s 而请求跑满 4.95s 不超时）。配套 [tools-reference §12](tools-reference.md)、待办 #55 |
+| 2026-10-28 | 阶段 1 · **Step 10** 补第 76~77 题（**形状统一两个坑**）：pydantic `model_validate` **不裁剪** vs FastAPI `response_model` **会裁剪**（📎 同一份数据两种结果，因为 pydantic 有子类实例快速路径）/ `outerjoin` 三种错法对比（📎 `conversation.id` 运行时 AttributeError → 服务照常启动但两接口 500；📎 主键互对 → 不报错但数字全是别人的）。配套笔记 §10.6d-4b、待办 #52 |
 | 2026-10-23 | 阶段 1 · **Step 9** 补第 56 题（**宽松字段三档**）：静默收窄 / warning / error 的判据（📎 `finish_reason=''` 误报警那次的教训）。配套规范 §14.4 ⑥、笔记专题 12 ⑤ |

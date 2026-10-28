@@ -20,6 +20,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 # 把"异步生成器函数"变成 lifespan（可用的上下文管理器）
 from contextlib import asynccontextmanager
 
+# datetime 只用于 _conversation_stats_stmt 的返回类型注解（元组里那两个时间列）
+from datetime import datetime
+
 # Annotated：用于给函数签名中参数的 "类型位" 扩容
 from typing import Annotated, Any
 
@@ -29,7 +32,7 @@ from typing import Annotated, Any
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep
@@ -42,7 +45,6 @@ from app.schemas import (
     ChatRequest,
     ChatResponse,
     ConversationIn,
-    ConversationOut,
     ConversationPageOut,
     ConversationPatch,
     ConversationStatsOut,
@@ -272,6 +274,66 @@ def ensure_last_message_is_user(request: ChatRequest) -> None:
         )
 
 
+def _conversation_not_found(conv_id: int) -> HTTPException:
+    """
+    404 的唯一来源：改文案或者状态码只改这里
+
+    【注意】：返回异常对象而不是抛出 —— 由调用方决定在哪里 raise
+    """
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"对话不存在：{conv_id}",
+    )
+
+
+def _conversation_stats_stmt() -> Select[int, str, datetime, datetime, int, int]:
+    """
+    对话 + 账单统计的查询骨架：列表与详情共用这一份
+
+    【注意】：必须 outerjoin —— 用 join 会让没有任何账单的对话整行消失；
+        coalesce 兜住 SUM 对空集返回的 NULL
+    """
+    return (
+        select(
+            Conversation.id,
+            Conversation.title,
+            Conversation.created_at,
+            Conversation.updated_at,
+            # 在数据库内算好再拿出来，而不是全查出来再到 Python 里循环（规避 1 + N）
+            func.count(LlmCall.id).label("call_count"),
+            func.coalesce(func.sum(LlmCall.total_tokens), 0).label("total_tokens"),
+        )
+        .outerjoin(LlmCall, LlmCall.conversation_id == Conversation.id)
+        .group_by(Conversation.id)
+    )
+
+
+def _row_to_stats(row: Any) -> ConversationStatsOut:
+    """
+    把一行查询结果装成响应对象（列表与详情共用）
+
+    【注意】：Row 不是 ORM 对象，select 点名了几列就只装几列 —— 不能靠
+        from_attributes 自动转换，只能手写映射；写在一处才能「加字段只改这里」
+    """
+    return ConversationStatsOut(
+        id=row.id,
+        title=row.title,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        call_count=row.call_count,
+        total_tokens=row.total_tokens,
+    )
+
+
+async def _fetch_conversation_stats(db: AsyncSession, conv_id: int) -> ConversationStatsOut:
+    """按 id 取【对话 + 账单统计】：不存在就抛 404"""
+    stmt = _conversation_stats_stmt().where(Conversation.id == conv_id)
+    row = (await db.execute(stmt)).first()
+    if row is None:
+        raise _conversation_not_found(conv_id)
+    return _row_to_stats(row)
+
+
 async def require_conversation(db: AsyncSession, conv_id: int) -> Conversation:
     """
     按 id 取对话：不存在就抛 404
@@ -285,10 +347,7 @@ async def require_conversation(db: AsyncSession, conv_id: int) -> Conversation:
     """
     conv = await db.get(Conversation, conv_id)
     if conv is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"对话不存在：{conv_id}",
-        )
+        raise _conversation_not_found(conv_id)
     return conv
 
 
@@ -348,32 +407,38 @@ async def upstream_models(client: LlmClientDep) -> ModelListResponse:
     return ModelListResponse(total=len(models), items=models)
 
 
-@app.post("/v1/conversations", response_model=ConversationOut, status_code=201)
-async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversation:
+@app.post("/v1/conversations", response_model=ConversationStatsOut, status_code=201)
+async def create_conversation(payload: ConversationIn, db: DbDep) -> ConversationStatsOut:
     """
-    新建一个对话，返回带 id 的完整对象
+    新建一个对话，返回带 id 的完整对象（含账单统计）
 
     为什么必须 flush 而不是只 add：
         id 由数据库生成，不把 INSERT 打下去就不知道是几，没法返回给客户端。
         flush 只发 SQL、不提交 —— 提交由 get_db 在路由返回后统一做。
+
+    【注意】：刚建的对话统计必然是 0 / 0，但形状必须与列表 / 详情 / PATCH 一致 ——
+        否则前端把 POST 返回值塞进列表缓存时，那条数据会缺两个字段
     """
     # payload 是 pydantic 对象，不是字符串 —— 必须取 .title
     #   写 Conversation(title=payload) 会 500：数据库绑不了 ConversationIn 这个类型
     conv = Conversation(title=payload.title)
     # add 只登记（一个 SQL 都没发）；flush 才真的发 INSERT，
-    # 并把数据库分配的自增 id 填回 conv 对象 —— 所以后面能 return 带 id 的对象
+    # 并把数据库分配的自增 id 填回 conv 对象 —— 所以后面能拿 conv.id 再查一次
     db.add(conv)
     await db.flush()
     # 提交不在这里：get_db 会在路由函数返回之后统一 commit
-    return conv
+    #   flush 已在同一事务内发出 INSERT，所以接下来这次查询能看到刚写入的行
+    return await _fetch_conversation_stats(db, conv.id)
 
 
-@app.get("/v1/conversations/{conv_id}", response_model=ConversationOut)
-async def get_conversation(conv_id: int, db: DbDep) -> Conversation:
+@app.get("/v1/conversations/{conv_id}", response_model=ConversationStatsOut)
+async def get_conversation(conv_id: int, db: DbDep) -> ConversationStatsOut:
     """
-    按 id 查一个对话：不存在返回 404（判空与 404 文案都在 require_conversation 里）
+    按 id 查一个对话（含账单统计）：不存在返回 404
+
+    与列表返回【同一种形状】—— 同一个资源两种形状，前端点进详情就会丢字段
     """
-    return await require_conversation(db, conv_id)
+    return await _fetch_conversation_stats(db, conv_id)
 
 
 @app.delete("/v1/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -392,12 +457,12 @@ async def delete_conversation(conv_id: int, db: DbDep) -> None:
     # 不写 return: -> None 的函数隐式返回 None
 
 
-@app.patch("/v1/conversations/{conv_id}", response_model=ConversationOut)
+@app.patch("/v1/conversations/{conv_id}", response_model=ConversationStatsOut)
 async def update_conversation(
     conv_id: int,
     payload: ConversationPatch,
     db: DbDep,
-) -> Conversation:
+) -> ConversationStatsOut:
     """
     修改一个对话的标题：不存在返回 404
 
@@ -413,7 +478,8 @@ async def update_conversation(
     # 少这一行会让响应带着改动前的旧时间（此时 SQL 也还没发出去）
     await db.flush()
     # 不写 commit: 由 get_db 依赖统一提交（事务边界只在一处）
-    return conv
+    # 与列表 / 详情返回同一种形状：否则前端拿 PATCH 响应刷新缓存会丢掉统计字段
+    return await _fetch_conversation_stats(db, conv_id)
 
 
 @app.get("/v1/conversations", response_model=ConversationPageOut)
@@ -432,19 +498,7 @@ async def list_conversations(
     【注意】：必须 outerjoin —— 用 join 会让没有账单的对话整行消失
     【注意】：必须 coalesce —— SUM 遇到空集返回 NULL，响应里就变成 null 而不是 0
     """
-    stmt = (
-        select(
-            Conversation.id,
-            Conversation.title,
-            Conversation.created_at,
-            Conversation.updated_at,
-            # 通过在数据库内计算好再拿出来而不是全查出来再到 Python 中计算来规避 1 + N
-            func.count(LlmCall.id).label("call_count"),
-            func.coalesce(func.sum(LlmCall.total_tokens), 0).label("total_tokens"),
-        )
-        .outerjoin(LlmCall, LlmCall.conversation_id == Conversation.id)
-        .group_by(Conversation.id)
-    )
+    stmt = _conversation_stats_stmt()
     if after_id is not None:
         stmt = stmt.where(Conversation.id > after_id)
 
@@ -455,21 +509,8 @@ async def list_conversations(
 
     total = (await db.execute(select(func.count(Conversation.id)))).scalar_one()
 
-    # 由于 select 的是具体几列而不是整个表，SQLAlchemy 返回 Row 而不是 ORM 对象
-    # （Row 只装 select 里点名的列 —— 少点名一个就 AttributeError → 500）
-    #   所以不能靠 from_attributes=True 自动转换，而是手动传值组装
     return ConversationPageOut(
-        items=[
-            ConversationStatsOut(
-                id=r.id,
-                title=r.title,
-                created_at=r.created_at,
-                updated_at=r.updated_at,
-                call_count=r.call_count,
-                total_tokens=r.total_tokens,
-            )
-            for r in rows
-        ],
+        items=[_row_to_stats(r) for r in rows],
         total=total,
         limit=limit,
         next_cursor=rows[-1].id if has_more and rows else None,

@@ -4996,8 +4996,8 @@ error: Statement is unreachable  [unreachable]
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
 | ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ✅ 2026-10-28 |
-| ⑭ §10.6d 收尾专项 | 分页 #25 ✅ / `/health` 探库 #26 ✅ / `updated_at` #31 ✅ / 形状统一 #39 #30 ✅ #52 | 🟡 10.6d-1 ✅ / 10.6d-2 ✅ / 10.6d-3 ✅ / **10.6d-4a 时间格式 ✅** / 10.6d-4b ⬜ |
-| ⑮ §10.8 自检 | 本节自检 75 题 | ⬜ 待做 |
+| ⑭ §10.6d 收尾专项 | 分页 #25 ✅ / `/health` 探库 #26 ✅ / `updated_at` #31 ✅ / 形状统一 #39 #30 ✅ #52 ✅ | ✅ 10.6d-1 ~ 10.6d-4b 全部完成 |
+| ⑮ §10.8 自检 | 本节自检 77 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -8104,6 +8104,146 @@ GET 详情 updated_at = ...52.030808Z  ← 这才是真值
 - `updated_at` 只在 PATCH 后跳变，且 **PATCH 返回值 == 库里真实值**（flush 生效）
 - 列表与详情一致
 - ⭐ 额外证明：`ConversationOut.model_validate({"created_at": "2026-10-28T05:51:54.604445", ...})` 也输出 `Z` —— 旧的 `before` 版本这里一个 Z 都没有
+
+---
+
+### 10.6d-4b 四个接口一种形状：把「对话 + 账单统计」抽成一处
+
+关闭待办 **#52**。
+
+#### 问题：同一个资源，四种形状
+
+| 接口 | 改前返回字段 |
+|---|---|
+| `GET /v1/conversations`（列表 items） | 6 个（含 `call_count` / `total_tokens`） |
+| `GET /v1/conversations/{id}` | 🔴 **4 个** |
+| `PATCH /v1/conversations/{id}` | 🔴 **4 个** |
+| `POST /v1/conversations` | 🔴 **4 个** |
+
+⭐ 后果不是「少个字段」这么轻：前端把 POST / PATCH 的返回值**塞进列表缓存**时，那条数据会缺两个字段 → 渲染成 `undefined`（或者被迫到处写 `?? 0`）。
+
+#### 抽成四个 helper，各司其职
+
+| helper | 类型 | 为什么是这个类型 |
+|---|---|---|
+| `_conversation_not_found(conv_id)` | `def` | 纯对象构造，0 I/O |
+| `_conversation_stats_stmt()` | `def` | 只拼装 `Select` 对象，**一个字节都没发给数据库** |
+| `_row_to_stats(row)` | `def` | 纯内存映射 |
+| `_fetch_conversation_stats(db, conv_id)` | `async def` | 真的要 `await db.execute(...)` |
+
+📎 实测「造 SQL 不需要 await」：
+
+```text
+type(select(1))                 -> Select
+inspect.isawaitable(select(1))  -> False
+```
+
+⭐⭐ 判据：**`select(...)` 只是造对象；真正发 SQL 的是 `await db.execute(stmt)`。** 前者 `def`，后者 `async def`。
+
+⚠️ 列表和详情**不共用执行函数**，因为需求不同：
+
+| | 列表 | 详情 |
+|---|---|---|
+| 条件 | `where` 可选（`after_id`） | 必填 |
+| 排序/限制 | `order_by` + `limit + 1` | 不用 |
+| 取结果 | `.all()` 多行 | `.first()` 一行 |
+| 分页元数据 | 要 `total` / `next_cursor` / `has_more` | 不要 |
+| 不存在时 | 返回空列表 | 抛 404 |
+
+⭐ 所以抽的是**「查什么、怎么 join」这个骨架**（`_conversation_stats_stmt`），不是抽整个流程。硬抽会让两边都长出 `if is_list:` 分支。
+
+#### 🔴 坑 1：`outerjoin` 的 ON 条件写成 `LlmCall.conversation.id`
+
+学员写的：
+
+```python
+.outerjoin(LlmCall, LlmCall.conversation.id == Conversation.id)   # 错
+```
+
+📎 实测直接抛：
+
+```text
+AttributeError: Neither 'InstrumentedAttribute' object nor 'Comparator'
+object associated with LlmCall.conversation has an attribute 'id'
+```
+
+| 场景 | 结果 |
+|---|---|
+| `import app.api.app`（服务启动） | ✅ **成功** —— 这句在函数体里，只有调用时才求值 |
+| `GET /v1/conversations` | 🔴 **500** `{"error":{"code":"INTERNAL_ERROR",...}}` |
+| `GET /v1/conversations/{id}` | 🔴 **500** |
+
+⭐⭐ **最迷惑的地方**：服务能正常启动、`/docs` 能打开、`/health` 正常 —— 只有那两个接口 500。而且三道门全绿（运行时的属性错误）。
+
+⚠️ `conversation` 是 `relationship`，是 `InstrumentedAttribute`，**不能**用 `.id` 往下钻。要用列名 `conversation_id`。
+
+📎 另一种更隐蔽的错法（拿两张表的**主键**互对）：`.outerjoin(LlmCall, LlmCall.id == Conversation.id)`
+
+| 对话 | ✅ 正确 | 🔴 主键互对 |
+|---|---|---|
+| 对话 1（有 3 条账单 73/41/5） | `(3, 119)` | `(1, 73)` |
+| 对话 2（无账单） | `(0, 0)` | **`(1, 41)`** ← 把别人的账单算它头上 |
+| 对话 3（有 1 条 50） | `(1, 50)` | `(1, 5)` |
+| 对话 4（无账单） | `(0, 0)` | **`(1, 50)`** |
+
+⭐⭐ **这个错法不报错、不 500，页面看起来完全正常，只是数字是别人的。** 判据：**`outerjoin` 第二个参数必须是「子表外键 = 父表主键」。**
+
+#### 🔴 坑 2：`response_model` 会裁剪响应，返回注解不管事
+
+学员只改了返回注解 `-> ConversationStatsOut`，**装饰器里还是 `response_model=ConversationOut`**。
+
+📎 实测（同一份数据，只改 `response_model`）：
+
+| `response_model` | 实际 HTTP 响应 |
+|---|---|
+| `Base`（父类，2 字段），返回 `Child`（4 字段） | `{'id': 1, 'title': 'x'}` ← **被裁掉** |
+| `Child` | `{'id': 1, 'title': 'x', 'call_count': 3, 'total_tokens': 119}` |
+
+⭐⭐ **两者不一致时 `response_model` 赢，而且不报错、不警告。**
+
+⚠️ 顺带订正一个容易搞错的点：`Base.model_validate(child_instance)` **不会裁剪**（pydantic 有快速路径：传入的已是子类实例 → 原样返回，`model_dump` 出来 4 个字段）。**但 FastAPI 不是走那条路**，它按 `response_model` 的结构序列化 → 会裁剪。
+
+⭐ 判据表：
+
+| | 作用 | 谁在看 |
+|---|---|---|
+| `response_model=X` | **实际发出去的 JSON 结构**（会裁剪） | FastAPI 运行时 + `/docs` |
+| `-> X` | 只给类型检查器看 | `mypy` |
+
+#### 📎 性能：详情改走 join + group 会不会变慢
+
+📎 实测（2000 对话 / 10000 账单，200 次取同一条）：
+
+| 写法 | 单次耗时 | SQL 条数 |
+|---|---|---|
+| `db.get(Conversation, id)`（旧详情） | 0.567ms | 1 |
+| `join + group`（新详情） | **0.467ms** | 1 |
+| `select` 单表 | 0.496ms | 1 |
+
+⭐ 新的反而**更快** —— `db.get()` 要构造完整 ORM 对象并注册进 identity map，走 `Row` 不用。
+
+#### 📎 验收（种子：对话 1 有 3 条账单 73/41/5，对话 2 无）
+
+| 检查 | 结果 |
+|---|---|
+| POST | `[201]`，6 字段，`0 / 0` |
+| GET 详情 | `[200]`，6 字段，`3 / 119` |
+| PATCH | `[200]`，6 字段，与 GET 逐值一致 |
+| 列表 item | 6 字段，`3 / 119` |
+| 没账单的对话 | `0 / 0`（不是 `null`） |
+| 404 文案 | GET / PATCH / DELETE **三处一字不差** |
+| OpenAPI | POST/PATCH/GET 都声明 `ConversationStatsOut` |
+| 请求校验 | `title="   "` 仍 `[422]`（`response_model` 只管响应） |
+
+#### ⭐ 判据汇总
+
+| 场景 | 判据 |
+|---|---|
+| 抽不抽函数 | **同一个查询/映射出现第二次就抽**（改一处会不会漏另一处） |
+| 抽「什么」 | 抽**共同的那一段**（骨架 / 映射），不要抽整个流程 |
+| `outerjoin` 条件 | **子表外键 = 父表主键** |
+| `def` vs `async def` | 有 `await` 必须 async；**造对象用 `def`，真 I/O 用 `async def`** |
+| `response_model` vs 返回注解 | **`response_model` 决定发什么**，两者必须一起改 |
 
 ---
 
