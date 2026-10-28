@@ -90,7 +90,8 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 
 | 方法 | 路径 | 说明 | 主要状态码 |
 |---|---|---|---|
-| GET | `/health` | 健康检查（部署探活用）；⚠️ 不检查数据库连通性（待办 #26） | 200 |
+| GET | `/health` | **liveness**：只证明进程活着，**不检查外部依赖**（编排系统据此决定要不要重启） | 200 |
+| GET | `/health/ready` | **readiness**：探数据库（`SELECT 1`）；失败 → **503** `DB_UNAVAILABLE`，编排系统据此摘流量但不重启 | 200 / 503 |
 | GET | `/v1/models` | 硬编码的模型清单；支持 `?prefix=` / `?limit=`（1 ~ 100） | 200 / 422 |
 | GET | `/v1/models/latest` | 默认模型 | 200 |
 | GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 |
