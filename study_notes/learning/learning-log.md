@@ -248,6 +248,8 @@
 | 10-22 | 🔴 **把 `isinstance(chunk, dict)` 写在路由层 → `mypy: Statement is unreachable`** | 适配器签名是 `async def aiter_chunks(...) -> AsyncIterator[dict[str, Any]]`（承诺「我只吐 dict」），所以路由层的 `if not isinstance(chunk, dict)` **永远为假**，里面两行不可达。📎 mypy 原话：`src\app\api\app.py:313: error: Statement is unreachable [unreachable]`。⚠️ 而且 `ruff`/`format` 都是绿的 —— 只有 `warn_unreachable` 抓到 | ⭐ 根因是**类型标注撒谎**：`chunk: dict[str, Any] = json.loads(raw)` 里 `json.loads` 返回 `Any`，赋给 `dict` 完全合法、mypy 不会反对；**只有当你在下游又怀疑它时，矛盾才暴露**。⭐ 修法：把校验下移到适配器 —— `parsed: Any = json.loads(raw)`，`if not isinstance(parsed, dict): warning + continue`，让「只吐 dict」这句承诺成真。判据：**标了类型就该信任它；不信任它，就在产生它的地方收窄，不要留给调用方怀疑** |
 | 10-22 | ⚠️ **AI 给的步骤卡代码没先过三道门就发出来**（这一步的最初版本） | 把 `isinstance(chunk, dict)` 放在 `event_source`，并声称「三道门会绿」；学习者抄完立刻撞 `unreachable`。📎 后续改为：**先在临时副本上把改动跑完 `ruff check` / `format --check` / `mypy` + 端到端用例，再把通过的版本写进步骤卡** | ⭐ 教训：**步骤卡里的代码必须是我亲手跑过的代码，不能是「写出来看起来对」的代码**。已补进规范 §3.1 |
 | 10-22 | 🔴 **`yield "data: [Done]\n\n"` 大小写写错 → 每个正常请求都不发 `[DONE]`** | SSE 收尾标记必须是 `[DONE]`（大小写敏感）。📎 逐帧 repr 实测：正常请求发出的是 `'data: [Done]'`，前端永远等不到收尾 → 「回答显示完了但加载圈一直转」。⚠️ 三道门全绿（`[Done]` 是合法字符串字面量），**只有逐帧断言 `'[DONE]' in body` 抓到**；而异常路径那行恰好拼对了，所以 7 个用例里 4 个 `True`、3 个 `False` —— 一半对一半错最容易骗过眼睛 | ⭐ 根因：**同一个协议字面量手打了 3 遍**（适配器比较 1 处 + 路由发出 2 处），错 1 处。这正是不抽常量的代价。⚠️ 但本轮**故意不抽**（见专题 12 ⑧）：两处在同一个函数相隔 19 行，抽到 `constants.py` 反而要跨文件才看得懂发的是什么帧；登记触发条件（新增第 2 条 SSE 路由 / `tests/` 落地 / 再错一次）
+| 10-28 | ⚠️ **「超时该用哪个时钟」——这个坑我们没踩，但极易踩**：自己写超时计时器时用 `time.time()` 算 `deadline` | `time.time()` 是**唯一** `adjustable=True` 的时钟（📎 本机 `get_clock_info` 实测，底层 `GetSystemTimeAsFileTime()`），会被 NTP / 手动改时间**跳变**。📎 模拟前跳 60 秒：真实只过去 **3 秒**，30 秒超时就**误触发**；反向校正则让 30 秒变 90 秒（表现为「服务偶发卡很久」） | 用 `time.monotonic()` / `perf_counter()`。⭐ 判据：**「多久」用单调钟，「何时」用墙钟**。⚠️ 反过来「为绕过休眠改用系统时钟」是反向的 —— 拿高频故障（时钟跳变，服务器常态）换低频故障（休眠不计时，笔记本才有）。详见 [tools-reference §12](tools-reference.md) |
+| 10-28 | 🔴 **`httpx` 的 `read timeout` 不是「请求总时长」**：以为 `request_timeout=30` 是「最多跑 30 秒」 | httpx 只有 `connect / read / write / pool` 四个**间隔型**超时，**没有总时长上限**。📎 实测：`httpx.Timeout(1.0)` 下假上游每 0.4 秒滴一帧，请求跑满 **4.95 秒不超时**；只有间隔超过 1 秒才 `[1.03s] ReadTimeout` | 慢速滴答的上游能让请求**无限期挂着**（占连接、占并发名额、账单继续涨）—— 对 LLM 应用尤其危险：**慢速滴答比直接失败更费钱**。要总上限就自己 `asyncio.timeout(总秒数)` 包住（**用单调钟**）。待办 #55 |
 
 ---
 
@@ -432,6 +434,8 @@
 | 10-25 | ⭐ **`finally` 里 `rollback` 是错的**：📎 实测正常路径也变成 `COMMIT, ROLLBACK, CLOSE` —— **提交完又被回滚掉**。`rollback` 只该在出错那条路上跑，而 `finally` 两条路都会跑 |
 | 10-25 | ⭐ **DELETE 的幂等性 ≠ 每次都返回同一个码**（📎 实测 204 → 404）。「幂等」指连续调用 N 次后**最终状态一样**。第二次返 404 或 204 都合法；本项选 404，理由是**和「查详情」保持一致** —— 一致性优先于"哪种更优雅"。另📎 漏写 `await db.delete(conv)` 的 `await` 不报错但删除不生效（静默失效） |
 | 10-25 | ⭐ **`yield` 依赖的异常是被框架「塞回」`yield` 那一行的**，不是依赖自己发现的。所以 `try` 必须包住 `yield`、`commit` 必须在 `yield` 之后 —— 这样「路由正常结束」才等于「走到 commit」。📎 实测：`/ok` 入库 1 行、`/boom` 0 行，同一个函数两条路径各走各的。另📎 实测：同一个 session `commit()` 两次**不报错**（自动开新事务），但路由里自己 `commit` 会让**后续修改不再属于同一事务**，无法整体回滚 |
+| 10-28 | ⭐ **「多久」和「何时」是两个问题，用两种时钟。** 📎 本机实测三个时钟：`time.time()` 是唯一 `adjustable=True`（可被 NTP 改跳）；`monotonic()` / `perf_counter()` 都是 `adjustable=False` 且 `monotonic=True`。**超时、耗时统计、重试等待**用单调钟；**落库时间戳、JWT `exp`、限流窗口、缓存 TTL** 用墙钟（且限流必须跨进程 —— 单调钟起点每次启动重置，跨进程对不上）。⚠️ 「换成系统时钟以避免休眠不计时」是反的：拿服务器常态的时钟跳变，去换笔记本才有的休眠问题 |
+| 10-28 | ⭐ **一个「间隔型超时」不能当「总时长上限」用。** 📎 实测 httpx `read timeout=1s` 而请求跑满 4.95 秒不超时（上游每 0.4s 滴一帧）。⭐ 判据：看到 `timeout` 参数先问「它是**间隔**还是**总量**」—— 两者差一个数量级的保护效果 |
 
 ---
 
