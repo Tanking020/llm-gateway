@@ -1014,6 +1014,43 @@
     > ⭐ 触发条件都是产品环境常见的：磁盘满 / 连接池耗尽 / 唯一约束冲突 / 连接被掐断。
     > 修法方向（待办 #54）：`commit()` 提到路由函数内、`return` 之前。
 
+73. `time.time()` / `time.monotonic()` / `time.perf_counter()` 有什么区别？做超时该用哪个？
+    > 📎 本机 `get_clock_info` 实测：
+    > ```text
+    > time          monotonic=False  adjustable=True   GetSystemTimeAsFileTime()
+    > monotonic     monotonic=True   adjustable=False  GetTickCount64()
+    > perf_counter  monotonic=True   adjustable=False  QueryPerformanceCounter()
+    > ```
+    > ⭐⭐ 判据：**「多久」用单调钟（`monotonic` / `perf_counter`），「何时」用墙钟（`time.time()` / 数据库 `now()`）。**
+    > 📎 实测模拟 NTP 前跳 60 秒（做 30 秒超时）：
+    > ```text
+    > 真实过去 2s，剩余 30.0s → 继续等
+    > 真实过去 3s，剩余 -30.0s → 触发超时  [时钟跳到 +60s]
+    > ```
+    > 只过去 3 秒，墙钟方案就**误触发**；单调钟剩余 `27.0s` 正常继续等。
+
+74. 「为了避免机器休眠导致超时不触发，把超时改成系统时钟」这个做法对吗？
+    > ❌ **反了，这是用一个更严重的故障去换一个更轻的故障。**
+    > | | 墙钟 | 单调钟 |
+    > |---|---|---|
+    > | 时钟被 NTP 校正 | 🔴 **跳变** → 超时误触发 / 永不触发 | ✅ 不受影响 |
+    > | 机器休眠 | ✅ 照算 | ⚠️ 可能不计（依平台） |
+    > - 休眠时没人等你的请求，超时晚一点触发**通常无害**
+    > - 时钟跳变在任何**长期运行的服务器**上都会发生，一次就误杀一片请求
+    > ⭐ 真需要「含休眠的经过时间」：Linux 用 `time.clock_gettime(time.CLOCK_BOOTTIME)`，不要退回 `time.time()`。
+    > ⚠️ 诚实标注：「休眠期间单调钟到底走不走」我**没有真休眠实测过**，属未实测推断。
+
+75. `httpx` 的 `read timeout = 30` 是指「请求最多跑 30 秒」吗？
+    > ❌ **不是。它是「两次读取之间的最长间隔」。**
+    > 📎 实测（假上游每 0.4s 发一帧，客户端 `httpx.Timeout(1.0)`）：
+    > ```text
+    > 收完 12 块，总耗时 4.95 秒 —— 没有超时
+    > 对照组：单帧后停 2.5s → [1.03s] ReadTimeout
+    > ```
+    > ⚠️ httpx 只有 `connect / read / write / pool` 四个**间隔型**超时，**没有总时长上限**。
+    > ⭐ 后果：上游每 0.9 秒滴一帧就能让请求**无限期挂着** —— 占连接、占并发名额、账单还在涨。
+    > 对一个 LLM 应用尤其危险：**慢速滴答比直接失败更费钱**（待办 #55）。
+
 ### Step 11 · 工程化：配置 / 日志 / 安全
 
 1. 为什么"前端直连 LLM API"必然泄露 Key？F12 能看到吗？
@@ -1117,4 +1154,5 @@
 | 2026-10-26 | 阶段 1 · **Step 10** 补第 34~36 题（**索引内部结构**）：索引项 = `(列值, rowid)` 不需要算 / 顺序按列值不按 rowid、键可重复 / 删行要动所有索引、主键为何不用额外索引。配套笔记 §10.6b-补 |
 | 2026-10-26 | 阶段 1 · **Step 10** 补第 37 题（**PRAGMA foreign_keys**）：SQLite 默认不强制外键 / 为什么必须挂 `connect` 事件 / `sync_engine` 与事件名的选择。配套笔记 §10.6b-1 |
 | 2026-10-28 | 阶段 1 · **Step 10** 补第 69~72 题（**时间字段 / validator mode / 提交时机**）：UTC 在哪一步丢（📎 `_storage_format` 无时区占位符）/ `DateTime(timezone=True)` 在 SQLite 下 DDL 不变（📎 对比 PostgreSQL）/ before vs after 判据（📎 字符串输入下 before 静默失效、after 返回值不重校验）/ 「返回 201」≠「已提交」（📎 commit 抛异常后客户端仍收到完整响应体）。配套笔记 §10.6d-4a、待办 #30 #54 |
+| 2026-10-28 | 阶段 1 · **Step 10** 补第 73~75 题（**时钟选择 / 超时语义**）：三个时钟的 `adjustable` 差异（📎 `get_clock_info` 实测）/ 「改系统时钟避免休眠不计时」为何是反向做法（📎 模拟 NTP 前跳 60s 时墙钟 3 秒误触发）/ `read timeout` 是间隔不是总时长（📎 read=1s 而请求跑满 4.95s 不超时）。配套 [tools-reference §12](tools-reference.md)、待办 #55 |
 | 2026-10-23 | 阶段 1 · **Step 9** 补第 56 题（**宽松字段三档**）：静默收窄 / warning / error 的判据（📎 `finish_reason=''` 误报警那次的教训）。配套规范 §14.4 ⑥、笔记专题 12 ⑤ |

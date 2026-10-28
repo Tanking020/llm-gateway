@@ -37,6 +37,7 @@
 | 库 | **SQLAlchemy** | 用 Python 类映射数据库表，并组织查询与事务 | `uv add "sqlalchemy[asyncio]>=2.1,<2.2"` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步-orm-与-aiosqlite) |
 | 库 | **aiosqlite** | 让 SQLite 操作可以 `await`（SQLAlchemy 的异步 SQLite 驱动） | `uv add aiosqlite` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步-orm-与-aiosqlite) |
 | 概念 | **健康探针** | 编排平台定期打一个 HTTP 路径来判断「进程活着 / 能接流量」；**配置在 YAML 里，不在代码里** | 无需安装（k8s / Docker 能力） | 阶段 1 · 10.6d-3（端点）/ Step 13（配置） | [§11](#11-健康探针k8s--docker-配置层不是代码层) |
+| 标准库 | **time**（时钟） | `time` / `monotonic` / `perf_counter` 三个时钟**不能互换**：一个会被改表，两个不会 | Python 自带，无需安装 | 阶段 1 · Step 7（请求计时） | [§12](#12-时钟time--monotonic--perf_counter) |
 
 **本机版本基线（实测）**：`uv 0.12.23` / `pydantic 2.13.5` / `pydantic-settings 2.15.0` / `mypy 2.4.0` / `ruff 0.16.10` / `httpx 0.28.1` / `fastapi 0.143.0` / `uvicorn 0.54.0` / `starlette 1.8.0` / `sqlalchemy 2.1.6` / `greenlet 3.5.6` / `aiosqlite 0.22.1`
 
@@ -1447,7 +1448,107 @@ GET /health/live     -> 404     ← 同上
 ---
 
 
-## 12. 本文件更新日志
+## 12. 时钟：`time` / `monotonic` / `perf_counter`
+
+**解决什么问题**：写超时、算耗时、盖时间戳都需要「时间」，但**这三个时钟不能互换** —— 选错会在特定场景下静默出错。
+
+### 📎 本机实测（Python 3.12.15 / Windows 11）
+
+```text
+time          monotonic=False  adjustable=True   GetSystemTimeAsFileTime()
+monotonic     monotonic=True   adjustable=False  GetTickCount64()
+perf_counter  monotonic=True   adjustable=False  QueryPerformanceCounter()
+```
+
+| 字段 | 含义 |
+|---|---|
+| `monotonic=False` | **可以倒退**（时钟被调整时） |
+| `adjustable=True` | **会被 NTP / 手动改时间改掉** |
+
+⭐⭐ 只有 `time.time()` 是 `adjustable=True`，另两个不会被调整。
+
+### ⭐⭐ 判据：先问「你要回答哪个问题」
+
+| 你要回答的问题 | 用哪个 | 代表场景 |
+|---|---|---|
+| 「到 30 秒了吗 / 花了多久」 | `monotonic()` / `perf_counter()` | **超时**、重试等待、耗时统计、限速令牌 |
+| 「现在是什么时刻 / 什么时候过期」 | `time.time()` 或数据库 `now()` | **时间戳落库**、JWT `exp`、限流窗口、缓存 TTL |
+
+⭐ 一句话：**「多久」用单调钟，「何时」用墙钟。**
+
+### 🔴 两个方向相反的失效模式（都要知道）
+
+| | 墙钟 `time.time()` | 单调钟 `time.monotonic()` |
+|---|---|---|
+| 系统时钟被 NTP 校正 | 🔴 **跳变** → 超时提前误触发 / 永不触发 | ✅ 完全不受影响 |
+| 机器休眠 / 挂起 | ✅ 休眠时间照算 → 醒来可能已「超时」 | ⚠️ 依平台而定，**可能不计休眠** → 超时被推迟 |
+
+📎 实测（模拟 NTP 向前校正 60 秒，做 30 秒超时）：
+
+```text
+真实过去   1s，剩余预算   30.0s  → 继续等
+真实过去   2s，剩余预算   30.0s  → 继续等
+真实过去   3s，剩余预算  -30.0s  → 触发超时  [时钟跳到 +60s]
+```
+
+只过去 3 秒，30 秒超时就**误触发**了。换成单调钟，同样场景剩余预算 `27.0s`，正常继续等。
+
+⚠️ **反向校正（时钟后退）更常见也更隐蔽**：30 秒超时变成 90 秒，表现为「服务偶发卡很久」。
+
+### ⭐⭐ 所以「为了避免休眠导致超时不触发，改用系统时钟」是错的
+
+这是**用一个更高频、更严重的故障（时钟跳变）去换一个更低频的故障（休眠不计时）**。
+
+- 休眠时没人等你的请求，超时晚一点触发**通常无害**（甚至是期望行为：不该因为机器睡了就立刻杀掉请求）
+- 时钟跳变在任何**长期运行的服务器**上都会发生（NTP 守护进程定期对齐），一次就误杀一片请求
+
+⭐ 如果确实需要「包含休眠的经过时间」：Linux 用 `time.clock_gettime(time.CLOCK_BOOTTIME)`；
+不要退回 `time.time()`。
+
+### 📎 本项目实际用到的两个（都正确）
+
+| 位置 | 使用 | 判断 |
+|---|---|---|
+| `app.py` 请求耗时日志 | `time.perf_counter()` | ✅ 单调，测耗时正确 |
+| `httpx` 的 `request_timeout` | 库内部 `anyio.fail_after()` → `loop.time()` → `time.monotonic()` | ✅ 库替我们选对了 |
+| `models.py` 的 `created_at` | `datetime.now(UTC)`（墙钟） | ✅ 落库时间戳**必须**墙钟 |
+
+📎 实测 `loop.time()` 与 `time.monotonic()` **完全相等**（diff 0），与 `perf_counter()` 差 163 秒（不同起点）：
+
+```text
+loop.time()         = 1153308.546000
+time.monotonic()    = 1153308.546000   diff=0.000000000   ← 同一个时钟
+time.perf_counter() = 1153471.840602   diff=163.294602200 ← 不同起点
+```
+
+### ⚠️ 未实测的部分（诚实标注）
+
+「Windows 的 `GetTickCount64()` / Linux 的 `CLOCK_MONOTONIC` 在休眠期间到底走不走」——
+**我无法在这台机器上真休眠来实测**。上面的判断来自平台机制文档，属**未实测推断**。
+⭐ 如果将来真要在笔记本上跑长任务，正确做法不是换时钟，而是**在请求层加总时长上限**（见下）。
+
+### 🔴 顺带发现：`read timeout` 不是「总时长」
+
+📎 实测（假上游每 0.4 秒发一帧，客户端 `read timeout = 1.0` 秒）：
+
+```text
+收完 12 块，总耗时 4.95 秒
+read timeout 是 1 秒，但请求跑了 4.95 秒 —— 没有超时
+```
+
+📎 对照组（单帧后停 2.5 秒 > 1 秒间隔）：
+
+```text
+[1.03s] ReadTimeout ✅ 间隔超限被抓到
+```
+
+⭐⭐ **`read timeout` 管的是「两次读取之间的最长间隔」，不是「整个请求的总时长」。**
+只要上游每 0.9 秒滴一帧，请求可以**无限期**挂着 —— httpx 只有 `connect / read / write / pool`
+四个**间隔型**超时，**没有总时长上限**（待办 #55）。
+
+---
+
+## 13. 本文件更新日志
 
 | 日期 | 变更 |
 |---|---|
@@ -1466,4 +1567,5 @@ GET /health/live     -> 404     ← 同上
 | 2026-10-28 | §10 新增「`Result` 的五个取值方法 + 「一次性游标」陷阱」（10.6d-2 实测）：`execute()` 返回的是结果集容器不是值；`.all()` / `.first()` / `.one()` / `.scalar()` / `.scalar_one()` 在「1 行 / 多行 / 0 行」三种情况下的行为对照表；⭐⭐ `COUNT` 用 `.scalar_one()` 而不是 `.scalar()` —— 把「假设恰好一行」写进代码，改查询时立刻炸而不是静默返回错的数；⚠️⚠️ `Result` 是一次性游标，第 2 次 `.all()` 返回 `[]`、`.first()` 返回 `None`，**都不报错** |
 | 2026-10-28 | 新增 **§11 健康探针（k8s / Docker）**（原更新日志顺延为 §12）：区分「端点（代码里的路由）」与「探针（YAML 里的配置）」两个层；三种探针（liveness 重启 / readiness 摘流量 / startup 等启动完）；⭐ HTTP 探针判定规则 **200~399 算成功**，拼错路径 → 404 → 无限重启；⭐⭐ **把数据库放
 | 2026-10-28 | §2 新增「`field_validator` 的 `mode="before"` vs `"after"`」（10.6d-4a 实测）：📎 「补 UTC」场景下 before 遇到**字符串**输入时 `isinstance` 失败 → **静默不补**；after 唯一缺点 **返回值不重校验**（📎 返回字符串竟建对象成功）；⭐⭐ 判据「转换类型用 before，修正已校验的值用 after」；⚠️ `@classmethod` 与 mode **无关**，两种都要求 |
-| 2026-10-28 | §10 新增「SQLite 下 `datetime` 的时区必然丢失」（10.6d-4a 实测）：📎 丢失点在 `sqlite.DATETIME()._storage_format` —— **格式串里没有时区占位符**；📎 `DateTime(timezone=True)` 在 SQLite 下展开，DDL 与 plain 完全相同，PostgreSQL 才变 `TIMESTAMP WITH TIME ZONE`；⭐ 判据「SQLite 阶段在出口补 UTC，换 PG 时列才加 `timezone=True`」 |进 liveness = 雪崩**（重启治不好数据库）；⚠️ FastAPI 一个健康端点都不自带（只自带 4 个文档路由）；📎 实测本项目 `/health` 200 / `/health/ready` 200 / `/healthz` 404 / `/health/live` 404 |
+| 2026-10-28 | §10 新增「SQLite 下 `datetime` 的时区必然丢失」（10.6d-4a 实测）：📎 丢失点在 `sqlite.DATETIME()._storage_format` —— **格式串里没有时区占位符**；📎 `DateTime(timezone=True)` 在 SQLite 下展开，DDL 与 plain
+| 2026-10-28 | 新增 **§12 时钟**（原更新日志顺延为 §13）：📎 本机 `get_clock_info` 实测只有 `time.time()` 是 `adjustable=True`；📎 模拟 NTP 前跳 60s → 墙钟方案在真实过去 3 秒时误触发 30 秒超时，单调钟正常；⭐⭐ 判据「**「多久」用单调钟，「何时」用墙钟**」；⭐⭐ 订正「为避免休眠不计时改用系统时钟」这个反向做法（用高频故障换低频故障）；📎 实测 `loop.time()` == `time.monotonic()`；🔴 顺带实测 **`read timeout` 是「每次读取的间隔」不是「总时长」**（read=1s 而请求跑满 4.95s 不超时）→ 新增待办 #55 | 完全相同，PostgreSQL 才变 `TIMESTAMP WITH TIME ZONE`；⭐ 判据「SQLite 阶段在出口补 UTC，换 PG 时列才加 `timezone=True`」 |进 liveness = 雪崩**（重启治不好数据库）；⚠️ FastAPI 一个健康端点都不自带（只自带 4 个文档路由）；📎 实测本项目 `/health` 200 / `/health/ready` 200 / `/healthz` 404 / `/health/live` 404 |
