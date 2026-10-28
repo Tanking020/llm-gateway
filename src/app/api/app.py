@@ -29,7 +29,7 @@ from typing import Annotated, Any
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep
@@ -185,6 +185,28 @@ async def health() -> dict[str, str]:
     """健康检查：最轻的接口，用来确认【服务活着】"""
     # 部署后 Docker / 负载均衡 会定期打这个接口来判断实例是否可用
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready(db: DbDep) -> dict[str, str]:
+    """
+    就绪检查：和 /health 【不能合并】 ——
+    /health         liveness  = 进程活着吗？不检查外部依赖
+    /health/ready   readiness = 能接流量吗？检查数据库这类关键依赖
+    把探库放进 liveness 的话，数据库抖动时编排系统会不停重启全部实例，
+        而重启治不好数据库 —— 只是雪崩
+    """
+    # text 用于让我们能直接写原生 SQL 语句，适合 ORM 写不出的复杂语句
+    # 另外也用来做健康检查、PRAGMA、EXPLAIN 这类 SQLAlchemy 不需要理解的操作
+    # 【注意】：用 text 绝对不能直接拼用户输入，这会导致【数据库注入漏洞】
+    #   要用参数绑定方法：db.execute(stmt, {"id": user_input})
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception as exc:
+        # 只记类型，不回显 str(exc)（可能带库路径 / 连接串等）
+        logger.error("就绪检查失败：%s", type(exc).__name__)
+        raise AppError(code="DB_UNAVAILABLE", message="数据库不可用") from exc
+    return {"status": "ready"}
 
 
 # ===== 1.3 三段参数：路径 / 查询 / 请求体 =====

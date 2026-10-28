@@ -46,6 +46,8 @@ _STATUS_BY_CODE: dict[str, int] = {
     "UPSTREAM_BAD_STATUS": status.HTTP_502_BAD_GATEWAY,
     # L3: 上游回了 200，但 body 不是我们约定的结构（HTML / 空 / 字段改名 / null）
     "UPSTREAM_MALFORMED": status.HTTP_502_BAD_GATEWAY,
+    # 503 = 我暂时不能服务（不是我的错误，依赖挂了）—— 负载均衡看到它会摘掉本实例
+    "DB_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
 # 以模块名为 logger 名，日志里能一眼看出是哪一行代码打的

@@ -918,6 +918,44 @@
     > ✅ 正确写法：`stmt = stmt.where(...)`。
     > ⭐ 同类坑：`stmt.limit(...)` / `stmt.order_by(...)` 也必须赋值回去（或直接链式调在 `execute` 里）。
 
+65. 为什么不能把「探数据库」放进 `/health`（liveness）？会引发什么后果？
+    > **liveness 失败 = 编排系统重启容器，而重启治不好数据库。**
+    > ```text
+    > 数据库抖动 → 全部实例 /health 失败 → 全部重启
+    >            → 重启后启动要连库，还是失败 → 雪崩
+    > ```
+    > ⭐ 正确做法：拆两个端点 —— `/health` 只证明进程活着（不检查外部依赖）、
+    > `/health/ready` 探库，失败回 **503**（摘流量，不重启）。
+    > ⭐ 判据：**liveness 只回答「我的事件循环还在转吗」；任何「别人的问题」都归 readiness。**
+    > ⚠️ 反过来：readiness 也只探**自己的关键依赖**（数据库），不探第三方 API。
+
+66. `/health/ready` 探库为什么用 `SELECT 1` 而不是 `SELECT count(*) FROM conversations`？
+    > 健康检查会被每秒调用很多次，**不能自己成为瓶颈**。
+    > | 方式 | 成本 | 证明什么 |
+    > |---|---|---|
+    > | `SELECT 1` | 最便宜，不碰表 | 连接可用、能执行语句、能返回结果 |
+    > | `count(*) FROM 大表` | 要扫表 | 同上 + 表存在 |
+    > ⭐ 另外 SQLAlchemy 2.0 起裸字符串不能执行，必须用 `text("SELECT 1")` 包一下。
+
+67. `curl` 返回 `[000]` 是什么意思？和 503 怎么区分？
+    > 📎 实测：`[000]` + **退出码 7** = **连接被拒，服务根本没在跑**。
+    > ```text
+    > curl.exe -s -o NUL -w "[%{http_code}]" http://127.0.0.1:9999/health
+    > [000]      exit code = 7
+    > ```
+    > 而 503 是**有服务在监听**、只是它自己说「我暂时不能服务」。
+    > ⭐⭐ 判据：**看到 `[000]` 先检查服务是否在监听，别急着怀疑代码。**
+
+68. `DATABASE_URL` 指向不存在的目录时，服务会怎样？这说明什么架构问题？
+    > 📎 实测：**启动直接失败** —— `lifespan` 里 `engine.begin()` / `create_all` 抛
+    > `OperationalError: unable to open database file` → `Application startup failed. Exiting.`
+    > | 看法 | 说明 |
+    > |---|---|
+    > | ✅ 好 | fail-fast，不会带着坏依赖对外服务 |
+    > | 🔴 坏 | docker-compose / K8s 里 DB 未就绪时应用 **crash loop**；`/health/ready` 根本没机会回 503（进程已死）|
+    > ⭐⭐ 根因：**`create_all` 在启动路径上**（待办 #50）。把 DDL 移到 Alembic 独立部署步骤后，
+    > 启动就不需要 DB，`/health/ready` 才能真正承担「报告 503」的职责。
+
 ### Step 11 · 工程化：配置 / 日志 / 安全
 
 1. 为什么"前端直连 LLM API"必然泄露 Key？F12 能看到吗？

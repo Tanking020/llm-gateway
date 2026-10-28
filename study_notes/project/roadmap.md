@@ -74,7 +74,7 @@
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
-  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅**；下一步 **10.6d-3 `/health` 探库**
+  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅**；下一步 **10.6d-4 响应形状统一**（#30 #39 #52）
   - ✅ **笔记章节顺序已于 2026-10-28 整理**：`§10.6c`（N+1）原来排在 `§10.6b-2` 之前，现已移到 `§10.6b-5` 之后，编号与物理顺序一致
 
 ### 阶段 2：LLM 原生 API（2 周）
@@ -224,7 +224,7 @@
 | 10.6b-4a | 流开始前 `add` + `flush` 一行 `pending`（`yield thinking` 必须挪到其后） | ✅ 学习者手写；📎 两次真实调用都是 `completed` 且 token 非 0 |
 | 10.6b-4b | 两个 `except` 去掉 `rollback`，改成同步赋值 `aborted` | ✅ 学习者手写；📎 端到端：断开 `aborted 0/0/0`、正常 `completed 33/49/82`；⚠️ 首次验收拿到 404 `对话不存在：1`（库被删过）导致测试空转 |
 | 10.6c | N+1 原理 + `selectinload` 实测 | ✅ 2026-10-28；📎 三种写法实测（N=5：6/2/1 条），规模曲线 N=100 时 **101 条 57.7ms vs 2 条 4.9ms**；📎 async 下惰性加载是 `MissingGreenlet` 报错不是变慢；落地成 `GET /v1/conversations` 加 `call_count` + `total_tokens`（`outerjoin` + `coalesce`） |
-| 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39 #30 #52） | 🟡 10.6d-1 `updated_at` ✅ / **10.6d-2 游标分页 ✅** / 10.6d-3 `/health` 探库 ⬜ / 10.6d-4 形状统一 ⬜ |
+| 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39 #30 #52） | ✅ 10.6d-1 `updated_at` / 10.6d-2 游标分页 / **10.6d-3 `/health` 拆 liveness + readiness** / ⬜ 10.6d-4 形状统一 |
 
 > ✅ **Step 9 于 2026-10-23 正式收口**：代码（9a → 9b-4b-3）、文档（§9.1~§9.11）、自检题 1~61、待办 #1~#23 全部关闭。
 > **下一个动作 = Step 10 数据库**。开工前注意两条与本步相关的遗留：待办 **#8**（`/v1/chat` 仍是 echo）与 **#11**（`/docs` 把流式接口标成 `application/json`）。
@@ -258,7 +258,7 @@
 | 23 | ~~**`usage` / `delta` / `finish_reason` 拿到非预期类型时会中止整条流**~~（📎 实测 `usage` 是字符串 → `STREAM_FAILED`，内容明明能送达） | ✅ **9b-4b-2d 已修**（`_as_dict()` + `isinstance(finish_reason, str)`）；📎 12 用例全 `DONE=True` | — |
 | 24 | 🔴 **CORS `allow_methods` 缺 `PATCH` / `DELETE`**：浏览器预检 `OPTIONS` 直接 400，前端完全无法调用这两个接口 | 📎 2026-10-25 实测：`OPTIONS /v1/conversations/1` + `Access-Control-Request-Method: PATCH` → **400**，`allow-methods: GET, POST`。⚠️ `curl` 测不出来（CORS 只在浏览器生效），实际请求本身还是 200/204 且带 `ACAO` 头。根因：10.5d / 10.5e 加路由时没同步 CORS 列表 | ✅ **已修**（2026-10-25）：`allow_methods=["GET","POST","PATCH","DELETE"]`；📎 复测四种方法预检全 200，`PUT` 仍正确拒绝 |
 | 25 | ✅ **`GET /v1/conversations` 无分页** | 已解决（2026-10-28，10.6d-2）：改为**游标分页** `?limit=20&after_id=N`，响应 `{items, total, limit, next_cursor, has_more}`。⚠️ **不用 offset**：📎 实测 offset 在「翻页期间删数据」时会**漏掉一条**（用户永远看不到），游标用「值」`id > N` 不受影响（[决策 #22](decisions.md)）| — |
-| 26 | 🟠 **`/health` 不检查数据库连通性**：库挂了仍返回 ok | `async def health()` 只 `return {"status": "ok"}` —— 只证明进程活着。Docker / 负载均衡据此不会摘掉不健康实例 | **10.6d** 或 **Step 13 部署**：加 `SELECT 1` 探活，失败返回 503 |
+| 26 | ✅ **`/health` 不检查数据库连通性** | 已解决（2026-10-28，10.6d-3）：拆成两个端点 —— `/health` 保持 liveness（**不检查外部依赖**）、新增 `/health/ready` 探库（`SELECT 1`，失败 → 新错误码 `DB_UNAVAILABLE` → **503**）。⚠️ **不能把探库塞进 liveness**：K8s 里 liveness 失败 = 重启容器，而重启治不好数据库 → 全部实例一起崩 = 雪崩 | — |
 | 27 | 🟡 **`.env.example` 缺 `DATABASE_URL`**：别人 clone 后不知道有这个配置项 | 📎 2026-10-25 核对：模板里有 `APP_NAME` / `APP_ENV` / `DEBUG` / `HOST` / `PORT` / `LLM_*` / `REQUEST_TIMEOUT`，**唯独没有 `DATABASE_URL`**（10.3a 新增了 `config.database_url` 但没同步模板） | **随时可做**（1 行）：补 `DATABASE_URL` 及注释 |
 | 28 | 🟡 **`settings.debug` 定义了但没传给 `FastAPI(debug=...)`** | 📎 核对：`app = FastAPI(title=..., description=..., version=..., lifespan=lifespan)` —— **没有 `debug` 参数**。`settings.debug` 只在 `main.py:77` 的 CLI 演示里打印一次 | **Step 11**：与日志 / 配置一起收拾；顺带决定生产环境是否关闭 `/docs` |
 | 29 | 🟡 **`settings.host` / `settings.port` 完全未被使用**：配置漂移 | 📎 核对：这两个字段在 `.env.example` 里写得清清楚楚，但代码里**零引用** —— 实际监听地址由 `uvicorn app.api.app:app --reload` 命令行决定 | **Step 13 部署**：改成 `uvicorn.run(app, host=settings.host, port=settings.port)`，或删掉这两个字段 |
@@ -281,7 +281,7 @@
 | 47 | 🔴 **`X-Request-ID` 客户端可任意注入 → 日志注入 / 伪造** | 📎 实测：传 `"abc123\n2026-10-28 ... INFO app.api.app \| FAKE LOG LINE"` → **原样回写响应头**；300 字符也接受。⚠️ 换行会被写进 `logger.info` 的日志行，攻击者可**伪造日志、撑爆日志文件** | **随时**（修法：`re.fullmatch(r"[A-Za-z0-9-]{1,64}", v)` 不匹配就丢弃改为自己生成） |
 | 48 | 🟠 **`ChatRequest.model` 完全不校验** | 📎 实测 `""` / `"不存在的模型"` / 500 个 `x` **全部通过 pydantic**（`model: str \| None = None` 无任何约束）→ 直接打到上游 → 上游 4xx → 我们回 **502**（本该是客户端错误 400/422）。⚠️ 与 `/v1/models/{model_name}` 已有的 404 校验**自相矛盾** | **阶段 2**（`KNOWN_MODELS` 改真实数据时一起做） |
 | 49 | 🟠 **没有 `Dockerfile`**（阶段 0 的交付物清单里写了「多阶段 Docker」） | 📎 核对仓库根目录：`Dockerfile` / `.dockerignore` **都不存在**，但 [工程规范 §7.0](../../工程规范与协作约定.md) 阶段 0 一行写的是「uv 锁依赖 / mypy strict / 测试覆盖 / **多阶段 Docker**」—— 交付物与计划不符 | **Step 13 部署前** |
-| 50 | 🟠 **`create_all` 在每次启动都跑 DDL** | `lifespan` 启动段执行 `Base.metadata.create_all`。⚠️ 产品环境应由**迁移工具独占 DDL**（Alembic）；多副本同时启动会有建表竞态；且 `create_all` **不会改已有表**，所以它给人一种「已经管了 schema」的错觉 | **有真实数据之前**（阶段 3 前，与 #13 PostgreSQL 一起） |
+| 50 | 🟠 **`create_all` 在每次启动都跑 DDL** | `lifespan` 启动段执行 `Base.metadata.create_all`。⚠️ 产品环境应由**迁移工具独占 DDL**（Alembic）；多副本同时启动会有建表竞态；且 `create_all` **不会改已有表**，给人一种「已经管了 schema」的错觉。🔴 **10.6d-3 实测发现更严重的后果**：DB 不可用时**服务根本起不来**（📎 `DATABASE_URL` 指向不存在目录 → `lifespan` 抛 `OperationalError: unable to open database file` → `Application startup failed. Exiting.`）→ docker-compose / K8s 里 DB 还没就绪时 **应用会 crash loop**。⭐ 根治办法正是把 DDL 移出启动路径（Alembic 作为独立部署步骤）—— 那时启动不需要 DB，`/health/ready` 就能正常报 503 而不是进程直接死 | **有真实数据之前**（阶段 3 前，与 #13 PostgreSQL 一起） |
 | 51 | 🟡 **日志只有 `logging.basicConfig` 纯文本到 stdout** | 无 **JSON 结构化**（Loki / ELK 采集要结构化）、无**轮转**（磁盘写满会挂）、无级别分级。⚠️ 且 `basicConfig` 只在 root 没 handler 时才生效 —— 被 uvicorn 抢先配置时会静默失效 | **Step 11**（`dictConfig`，属 #7 的一部分） |
 | 52 | 🟡 **`GET /v1/conversations/{id}` 不返回账单统计，与列表不一致** | 列表返回 `call_count` / `total_tokens`，详情只返回基础字段 —— **同一个资源两种形状**。前端点进详情会拿不到列表上显示的那两个数 | **10.6d-4 统一形状时**（与 #30 #39 一起） |
 | 53 | 🟢 **`_as_int` 把 `bool` 当 `int`** | 📎 实测 `_as_int(True)` 返回 `True`（Python 里 `isinstance(True, int)` 为真），SQLite 会存成 `1`。上游给 `true` 时账单会记 1 token | 低优先，修法：`isinstance(value, int) and not isinstance(value, bool)` |
@@ -298,7 +298,7 @@
 | **10.6b-4** | **两阶段记账**：`status` 三态（`pending` / `completed` / `aborted`） | #41（`LlmCall` 出参 schema 也要带 `status`） |
 | **10.6c** | N+1 原理 + `selectinload` 实测 + 列表加账单统计 | #43（账单统计的第一步） |
 | **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #30 #39 #52** |
-| **10.8** | Step 10 自检（64 题） | — |
+| **10.8** | Step 10 自检（68 题） | — |
 | **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |

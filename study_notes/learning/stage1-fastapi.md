@@ -4997,7 +4997,7 @@ error: Statement is unreachable  [unreachable]
 | ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ✅ 2026-10-28 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 ✅ / `/health` 探库 #26 / `updated_at` #31 ✅ / 形状统一 #39 #30 #52 | 🟡 10.6d-1 ✅ / **10.6d-2 游标分页 ✅** / 10.6d-3 ⬜ / 10.6d-4 ⬜ |
-| ⑮ §10.8 自检 | 本节自检 64 题 | ⬜ 待做 |
+| ⑮ §10.8 自检 | 本节自检 68 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -7824,6 +7824,125 @@ async def list_conversations(
 ```
 
 ⚠️ offset 版本在同样操作下**会漏掉**（见 [§10.6d-2 的对比实验](#106d-2-分页为什么必须是游标而不是-offset)）。
+
+---
+
+
+### 10.6d-3 `/health` 拆成 liveness + readiness
+
+#### 为什么不能把探库塞进 `/health`
+
+| 端点 | 语义 | 检查什么 | 失败时编排系统会做什么 |
+|---|---|---|---|
+| `/health` | **liveness**：进程活着吗 | **不检查外部依赖** | ⚠️ **重启容器** |
+| `/health/ready` | **readiness**：能接流量吗 | 数据库 | **摘掉流量，不重启** |
+
+⭐⭐ **liveness 失败 = 重启进程，而重启治不好数据库。**
+
+```text
+数据库抖动 30 秒
+   ↓
+所有实例 /health 失败（如果探库）
+   ↓
+编排系统认为"实例坏了" → 全部重启
+   ↓
+重启后的实例启动要连数据库 → 还是连不上 → 又失败
+   ↓
+雪崩：数据库没恢复，应用全挂了
+```
+
+⭐ 判据：**liveness 只回答「我的事件循环还在转吗」；任何「别人的问题」都归 readiness。**
+⚠️ 反过来也要注意：readiness **只探自己的关键依赖（数据库）**，不探第三方 API —— 上游一抖动你就会被摘流量，那也不是你的错。
+
+#### 代码形状
+
+```python
+@app.get("/health")
+async def health() -> dict[str, str]:
+    """liveness：不碰数据库，只证明进程活着"""
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready(db: DbDep) -> dict[str, str]:
+    """readiness：探数据库"""
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.error("就绪检查失败：%s", type(exc).__name__)   # 只记类型
+        raise AppError(code="DB_UNAVAILABLE", message="数据库不可用") from exc
+    return {"status": "ready"}
+```
+
+配套在 `errors.py` 的 `_STATUS_BY_CODE` 加一行：
+
+```python
+"DB_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+```
+
+⭐ **为什么用 `AppError` 而不是 `HTTPException(503)`**：
+
+| 写法 | 响应形状 |
+|---|---|
+| `HTTPException(503, detail=...)` | `{"detail": "..."}` ⚠️ 与项目统一形状不一致 |
+| **`AppError(code="DB_UNAVAILABLE")`** | `{"error": {"code": ..., "message": ...}}` ✅ 一致 |
+
+#### 三个细节
+
+| 细节 | 为什么 |
+|---|---|
+| **`SELECT 1`** 而不是 `SELECT count(*) FROM 表` | 健康检查每秒被调用很多次，不能自己成为瓶颈；`SELECT 1` 不碰任何表 |
+| **`text("...")`** 包一下 | SQLAlchemy 2.0 起裸字符串不能执行；`text()` = 「这是原生 SQL，别按 ORM 规则解析」 |
+| **`except Exception` + `raise ... from exc`** | ⚠️ 不 catch → 落到兜底 → **500**（编排系统以为是我方 bug）；⚠️ `detail=str(exc)` → **把库路径/连接串回显给客户端** |
+
+#### 📎 实测（3 组）
+
+```text
+① 正常
+  /health          [200] {"status":"ok"}
+  /health/ready    [200] {"status":"ready"}
+
+② 数据库坏掉（patch AsyncSession.execute 抛 OperationalError）
+  /health          [200] {"status":"ok"}          ← 不受影响 ✅
+  /health/ready    [503] {"error":{"code":"DB_UNAVAILABLE","message":"数据库不可用"}}
+  ✅ 形状统一 ✅ 不泄露内部详情（响应里没有 "unable to open database file"）
+
+③ 数据库恢复后立刻回到 200（不需要重启进程）
+  /health/ready    [200] {"status":"ready"}
+```
+
+#### ⚠️ 验证方法的坑：curl `[000]` 不是 503
+
+📎 实测：对没有服务监听的端口发请求，`curl` 返回 **`[000]`**、退出码 **7** = **连接被拒**。
+
+```text
+curl.exe -s -o NUL -w "[%{http_code}]" --max-time 3 http://127.0.0.1:9999/health
+[000]
+exit code = 7        ← 7 = Failed to connect，即服务没在跑
+```
+
+⭐ 所以「起了服务 → 改了数据库 → curl」这套流程里，如果中途 `Ctrl+C` 关过服务，看到的 `[000]` 是**服务没跑**，不是 503。
+⭐⭐ 判据：**看到 `[000]` 先检查服务是否在监听，别急着怀疑代码。**
+
+⚠️ 而且 **SQLite 下很难在服务运行时把库搞坏** —— 文件被进程持有，Windows 上改不了名（`Rename-Item` 会报文件占用）。
+所以可靠的做法是**进程内 patch `AsyncSession.execute`**（见 `verify_ready_503.py`），造出「连接已断」这个真实故障。
+
+#### 🔴 顺带发现的真问题：DB 不可用时**服务根本起不来**
+
+📎 实测（`DATABASE_URL` 指向不存在的目录）：
+
+```text
+ERROR:    Application startup failed. Exiting.
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) unable to open database file
+   ↑ 来自 lifespan 的 engine.begin() / create_all
+```
+
+| 看法 | 说明 |
+|---|---|
+| ✅ 好的一面 | **fail-fast**：不会带着坏依赖对外提供服务 |
+| 🔴 坏的一面 | docker-compose / K8s 里 DB 还没就绪时，应用会 **crash loop**；而且 `/health/ready` 这时**根本没机会回 503**（进程已经死了） |
+
+⭐⭐ **根因是 `create_all` 在启动路径上**（待办 #50）—— 把 DDL 移出启动流程（Alembic 作为独立部署步骤）后，启动就不需要 DB，`/health/ready` 才能真正承担「报告 503」的职责。
 
 ---
 
