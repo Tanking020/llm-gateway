@@ -275,6 +275,8 @@
 | 40 | 🟡 **没有 `tests/` 目录**：全部验证靠手工 curl + 临时脚本 | 📎 核对：项目根下 `tests/` **不存在**。每次改动靠手跑 curl 或临时探针脚本（用完即删），无法回归 | **Step 12**（测试 FastAPI）：建 `tests/` + `TestClient` + 关键路径用例 |
 | 41 | 🟠 **写 `LlmCall` 出参 schema 时 `conversation_id` 必须 `int \| None`**，且要带 `status` | 📎 实测同一条 `conversation_id=None` 的记录：schema 写 `int` → **500 Internal Server Error**（客户端完全不知道是 NULL 导致）；写 `int \| None` → **200 `null`**。⚠️ 另：`call.conversation` 在 NULL 时是 `None`，取 `.title` 会 `AttributeError` → 也必须判空。⭐ 10.6b-4 之后还要暴露 `status`（`pending`/`completed`/`aborted`）。详见笔记 §10.6b-2 / §10.6b-4 | **10.6b-3 之后做查询接口时**（或现在就先定好 schema 形状） |
 | 42 | 🟠 **账单还扛不住进程崩溃（`flush` 不是持久化）** | 📎 强杀 uvicorn 实测：流进行中 `pending` 行已 `flush` 过，进程一死 `llm_calls = []` —— **一行都没有**。要真扛崩溃，得在流开始前**用独立会话 `commit` 一次**（`async with SessionMaker() as acct: acct.add(...); await acct.commit()`），代价是每请求多一次独立事务提交。⚠️ 另：断开时 token 只能记 `0`（usage 帧永远到不了），**金额算不出来** —— 要不要按已转发内容估算 `completion_tokens`？详见笔记 §10.6b-4 | **要做「账单统计 / 成本看板」时**（10.6d 或阶段 2 末） |
+| 43 | 🟠 **`aborted` 行 token 全 `0`，攻击成本在账面上隐形** | 📎 实测 `prompt_tokens` **只由输入决定**（同样 `'hi'` 三次都是 `31`，长文本 `52`）→ 断开时它其实**可预知**，记 `0` 是不必要的。建议：`aborted` 行至少记 `prompt_tokens`（发请求前算），`completion_tokens` 按已转发字符数估算。⚠️ 估算值只能用于**对账**，不能用于计费（真实金额以上游账单为准）。详见 [decisions #21](decisions.md#21-防刷靠限流不靠记账准确度) | **10.6d 做账单相关接口时** |
+| 44 | 🔴 **完全没有限流 / 配额 / 并发上限** | 📎 实测：客户端断开后 `aclose()` 能让上游 **4ms 内停止生成**（40 帧只发出 3 帧，6 秒只花 455ms），所以单次攻击损失有上界；⚠️ 但**高频请求 + 高并发**完全敞开。⭐⭐ **记账再准也拦不住，防护必须独立**。优先级：① 并发上限（`asyncio.Semaphore`，不需要 token 数）② 每用户速率 ③ 日配额。⚠️ 单进程 `Semaphore` 在 `--workers 4` 下就是 4 倍，真正上线要放 Redis / 网关层。详见 [decisions #21](decisions.md#21-防刷靠限流不靠记账准确度) | **阶段 3 部署前必须做**（与 #36 #37 一起） |
 
 
 **待办 → 步骤 对照（2026-10-25 审计后新增）**：
