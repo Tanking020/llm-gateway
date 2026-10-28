@@ -4996,8 +4996,8 @@ error: Statement is unreachable  [unreachable]
 | ⑪ §10.6b-2 `conversation_id` + pre-flight + 可空外键链条 | `ChatRequest` 加可选字段；不存在 → 404（流开始前拦）；📎 可空列四环链条实测；⭐ 5 处重复抽成 `require_conversation`，两条 chat 校验顺序统一（先语义后查库） | ✅ 2026-10-27 |
 | ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ✅ 2026-10-28 |
-| ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 / 形状统一 #39 | ⬜ 待做 |
-| ⑮ §10.8 自检 | 本节自检 55 题 | ⬜ 待做 |
+| ⑭ §10.6d 收尾专项 | 分页 #25 / `/health` 探库 #26 / `updated_at` #31 ✅ / 形状统一 #39 | 🟡 进行中（10.6d-1 已完成） |
+| ⑮ §10.8 自检 | 本节自检 59 题 | ⬜ 待做 |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -7573,6 +7573,107 @@ stmt = (
 
 ⭐⭐ **循环里访问「关系属性」或循环里 `await` 查子表 → 几乎一定是 N+1。**
 ⭐ 这和 ML 里的「**特征工程要向量化，不要 for 循环**」是同一种思维：**把 N 次操作合成 1 次批量操作**。
+
+---
+
+## 10.6d Step 10 收尾专项
+
+### 10.6d-1 给 `Conversation` 加 `updated_at`
+
+#### 📎 取证：`onupdate` 到底是什么
+
+```sql
+CREATE TABLE convs (
+    id INTEGER NOT NULL,
+    title VARCHAR(50) NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id)
+)
+触发器数量: 0
+```
+
+⭐⭐ **DDL 里一个触发器都没有** —— `onupdate` 是 **SQLAlchemy 在 Python 侧算好时间，再塞进 `UPDATE` 语句**。
+
+📎 实际发出的 SQL：
+
+```sql
+UPDATE convs SET title=?, updated_at=? WHERE convs.id = ?
+                              ↑ 时间由 Python 填，不是数据库
+```
+
+⚠️ 含义：**绕过 ORM 直接写 SQL 时，`updated_at` 不会自动更新**。
+
+#### 📎 四处行为实测
+
+| 场景 | 结果 |
+|---|---|
+| 首次插入 | `created_at == updated_at`（差 0 秒，两个 lambda 同微秒内求值） |
+| PATCH 改 title | `created_at` 不变，`updated_at` 变晚 ✅ |
+| **PATCH 成同一个值** | **`updated_at` 不变** ⭐ dirty check 发现没变化就不发 UPDATE |
+| DDL | 0 个 trigger |
+
+⚠️ 「首次插入两者相等」**不是保证** —— 慢机器上可能差几微秒。需要「严格相等」的场景应该显式设 `updated_at = created_at`。
+
+#### ⚠️ 坑 1：`Row` 只装 `select()` 里点名的列
+
+📎 实测（select 漏选一列但组装时用它）：
+
+```text
+Row._fields = ('id', 'title', 'created_at', 'call_count')
+访问 r.created_at  -> datetime.datetime(2026, 10, 28, 5, 48, 48, 508212)  ✅
+访问 r.updated_at  -> ❌ AttributeError: updated_at
+```
+
+⭐ `AttributeError` 不是客户端错误 → 被兜底处理器转成 **500 INTERNAL_ERROR**。
+
+| 接口 | 返回什么 | 有 `updated_at` 属性吗 |
+|---|---|---|
+| `POST` / `PATCH` / `GET` 详情 | **完整 ORM 对象** | ✅ 有 |
+| **`GET` 列表**（手动组装） | **`Row`** | ❌ 只有点名的那几列 |
+
+⭐⭐ 判据：**手动组装时，「`select()` 选了哪些列」和「用了哪些属性」必须一一对应。**
+
+#### ⚠️ 坑 2：SQLite 读回的 `datetime` 不带 `tzinfo`
+
+📎 实测直接崩：
+
+```text
+TypeError: can't compare offset-naive and offset-aware datetimes
+```
+
+⭐ SQLite 把 `DATETIME` 存成**字符串**，读回来就是 naive datetime。
+
+📎 这也造成了一个**接口间的格式不一致**（已记待办 #45）：
+
+```text
+POST  -> "created_at":"2026-10-28T05:51:54.604445Z"    ← 有 Z（Python 现算，aware）
+GET   -> "created_at":"2026-10-28T05:51:54.604445"     ← 无 Z（从库里读回，naive）
+```
+
+⚠️ 前端 `new Date("2026-10-28T05:51:54.604445")` 会按**本地时间**解析 → 时区差 8 小时。
+
+#### 代码形状
+
+```python
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+    # 【注意】：onupdate 是 SQLAlchemy 在 Python 侧算好再塞进 UPDATE 的，
+    #   不是数据库触发器 —— 绕过 ORM 直接写 SQL 时它不会更新
+    updated_at: Mapped[datetime] = mapped_column(
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+```
+
+| 问题 | 答案 |
+|---|---|
+| `default` vs `onupdate` | `default` 只在 **INSERT** 用；`onupdate` 只在 **UPDATE** 用 |
+| 为什么必须 lambda | 直接写 `datetime.now(UTC)` 会在 **import 时求值一次**，全表共用 |
+| 是数据库触发器吗 | ❌ 不是，Python 侧算好了塞进 SQL |
+| 值没变会更新吗 | ❌ 不会，dirty check 不通过就不发 UPDATE |
+
+⚠️ **`create_all` 不会给已有表加列** → 必须删库重建（本阶段可以）。
 
 ---
 

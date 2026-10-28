@@ -402,6 +402,8 @@ async def list_conversations(db: DbDep) -> list[ConversationStatsOut]:
             Conversation.id,
             Conversation.title,
             Conversation.created_at,
+            Conversation.updated_at,
+            # 通过在数据库内计算好再拿出来而不是全查出来再到 Python 中计算来规避 1 + N
             func.count(LlmCall.id).label("call_count"),
             func.coalesce(func.sum(LlmCall.total_tokens), 0).label("total_tokens"),
         )
@@ -409,12 +411,16 @@ async def list_conversations(db: DbDep) -> list[ConversationStatsOut]:
         .group_by(Conversation.id)
         .order_by(Conversation.id)
     )
+    # 由于 select 的是具体几列而不是整个表，SQLAlchemy 返回 Row 而不是 ORM 对象
+    # （Row 只装 select 里点名的列 —— 少点名一个就 AttributeError → 500）
+    # 所以不能靠 from_attributes=True 自动转换，而是手动传值组装
     rows = (await db.execute(stmt)).all()
     return [
         ConversationStatsOut(
             id=r.id,
             title=r.title,
             created_at=r.created_at,
+            updated_at=r.updated_at,
             call_count=r.call_count,
             total_tokens=r.total_tokens,
         )

@@ -855,6 +855,28 @@
     > ⭐ 所以必须单独定义 `ConversationStatsOut`（继承 `ConversationOut` 加两个字段）：列表用它，CRUD 三接口继续用 `ConversationOut`。
     > ⭐ 这是 [决策 #10](../project/decisions.md#10-契约按用途分家in--patch--out)「契约按用途分家」的又一处落地。
 
+56. `onupdate=lambda: datetime.now(UTC)` 是数据库触发器吗？绕过 ORM 直接写 SQL 会怎样？
+    > **不是触发器。** 📎 实测 `sqlite_master` 里 **0 个 trigger**，DDL 里也没有 `ON UPDATE`；实际 SQL 是 `UPDATE convs SET title=?, updated_at=? WHERE id=?` —— **时间由 Python 填好再传进去**。
+    > ⭐ 所以**绕过 ORM 手写 `UPDATE` 时 `updated_at` 不会变**。
+
+57. PATCH 一个新标题和 PATCH 同一个标题（内容没变），`updated_at` 一样吗？
+    > **不一样。** 📎 实测：改成新值 → `updated_at` 变晚 ✅；改成**同一个值** → **`updated_at` 不变**。
+    > ⭐ 因为 SQLAlchemy 有 **dirty check**：新旧值一样就不生成 `UPDATE` 语句，`onupdate` 自然不会触发。
+
+58. 列表接口用 `select(具体列)` 手动组装，但忘了把 `updated_at` 加进 `select()`，会报什么？
+    > 📎 实测 **`AttributeError: updated_at`**（`Row._fields` 里没有它）→ 不是客户端错误 → 被兜底处理器转成 **500 INTERNAL_ERROR**。
+    > ⭐ 对比：`POST` / `PATCH` / GET 详情返回的是**完整 ORM 对象**，属性都在，所以只有列表接口会炸。
+    > ⭐⭐ 判据：**手动组装时，「`select()` 选了哪些列」和「用了哪些属性」必须一一对应。**
+
+59. 为什么同一个 `created_at`，`POST` 返回 `...Z` 而 `GET` 返回没有 `Z`？
+    > 值的来源不同：
+    > | 场景 | 来源 | tzinfo | 序列化 |
+    > |---|---|---|---|
+    > | `POST` 刚创建 | Python 侧 lambda 现算 | ✅ aware | `...Z` |
+    > | `GET` / `PATCH` | 从 SQLite 读回 | ❌ naive | 无 `Z` |
+    > ⭐ SQLite 把 `DATETIME` 存成字符串，读回来就丢了时区。
+    > ⚠️ 前端 `new Date("2026-10-28T05:51:54.604445")` 会按**本地时间**解析 → 时区差 8 小时。修法见待办 #45（`AwareDatetime` + `field_serializer`）。
+
 ### Step 11 · 工程化：配置 / 日志 / 安全
 
 1. 为什么"前端直连 LLM API"必然泄露 Key？F12 能看到吗？

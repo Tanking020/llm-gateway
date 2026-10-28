@@ -263,7 +263,7 @@
 | 28 | 🟡 **`settings.debug` 定义了但没传给 `FastAPI(debug=...)`** | 📎 核对：`app = FastAPI(title=..., description=..., version=..., lifespan=lifespan)` —— **没有 `debug` 参数**。`settings.debug` 只在 `main.py:77` 的 CLI 演示里打印一次 | **Step 11**：与日志 / 配置一起收拾；顺带决定生产环境是否关闭 `/docs` |
 | 29 | 🟡 **`settings.host` / `settings.port` 完全未被使用**：配置漂移 | 📎 核对：这两个字段在 `.env.example` 里写得清清楚楚，但代码里**零引用** —— 实际监听地址由 `uvicorn app.api.app:app --reload` 命令行决定 | **Step 13 部署**：改成 `uvicorn.run(app, host=settings.host, port=settings.port)`，或删掉这两个字段 |
 | 30 | 🟡 **`created_at` 时区不统一**：POST 返回带 `Z`，GET 返回不带 | 📎 实测：POST → `...318091Z`；GET → `...318091`（无 Z）。根因：POST 返回**内存对象**（`tzinfo=UTC`），GET 从库读回（SQLite 不存时区）。`DateTime(timezone=True)` **同样丢失** | **触发条件**：前端开始用 `created_at` 做时间计算时。修法：出参统一 `astimezone(UTC)` 或在 schema 层加 `field_serializer` |
-| 31 | 🟡 **`Conversation` 无 `updated_at`**：PATCH 后无法知道最后修改时间 | 模型只有 `id` / `title` / `created_at`。PATCH 改了 `title` 但没有字段记录「什么时候改的」 | **10.6d**（与分页一起）：加 `updated_at` + `onupdate=...`；⚠️ `create_all` **不会**给已有表加列，需删库重建或写迁移 |
+| 31 | ✅ **`Conversation` 无 `updated_at`** | 已解决（2026-10-28，10.6d-1）：`updated_at` 加 `default` + `onupdate` 双 lambda。📎 实测：首次插入 `created_at == updated_at`；PATCH 后 `created_at` 不变、`updated_at` 变晚；**值没变（dirty check）就不发 UPDATE、`updated_at` 也不动**。⚠️ `onupdate` 是 **SQLAlchemy 在 Python 侧**算好塞进 SQL 的，**不是数据库触发器**（`sqlite_master` 里 0 个 trigger）—— 绕过 ORM 直接写 SQL 时不会更新。⚠️ 另：SQLite 读回的 `datetime` **不带 tzinfo**，引出待办 #45 | — |
 | 32 | 🟡 **PATCH 无并发控制**：两个客户端同时改，后写覆盖前写（lost update） | PATCH 直接 `conv.title = payload.title`，无版本号 / `If-Match` 校验。将来加字段后，A 与 B 各改不同字段会互相覆盖 | **阶段 2 之后**（当前只有一个可改字段，风险低） |
 | 33 | ~~**无索引**：除主键外没有任何索引~~ | 📎 核对 `models.py`：`Index` / `unique` 出现次数均为 **0**。将来按 `created_at` 排序或按 `conversation_id` 查 `llm_calls` 会全表扫 | ✅ **已完成**（10.6a，2026-10-26）：`llm_calls.conversation_id` 已加 `index=True`，📎 实测 25 倍 |
 | 34 | 🟡 **无软删除**：`DELETE` 是真删，误删无法恢复 | `await db.delete(conv)` 直接从表里删行。⚠️ 注意：这**不影响账单**（10.6b 已改 `ondelete="SET NULL"`，计费记录保留）。📎 若要做软删除，实测代价：所有列表查询必须加 `deleted_at IS NULL`（漏一处返回已删数据）/ 外键失效（能给已软删的对话挂新计费）/ 表无限增长 / 与「被遗忘权」冲突 | **产品出现「回收站 / 撤销删除」需求时**（属产品决策，见 decisions #16 的「两个正交决策」） |
@@ -272,6 +272,7 @@
 | 37 | 🟡 **无速率限制**：会被刷爆（真金白银） | `/v1/chat` 与 `/v1/chat/stream` 每次调用都花钱，但没有限流。一个循环就能烧完余额 | **阶段 3 部署前**：加 IP / key 维度限流（`slowapi` 或网关层） |
 | 38 | 🟢 **无请求体大小限制**：超大 body 会占满内存 | FastAPI 默认不限制 body 大小。`title` 有 `max_length=100`，但 `messages` 列表与单条 `content` 只有长度下限 | **阶段 3 部署前**：网关（nginx `client_max_body_size`）或中间件层限制 |
 | 39 | 🟡 **`/v1/models` 与 `/v1/upstream/models` 形状不一致** | 前者返回 `{"total": int, "items": list[str]}`，后者返回 `ModelListResponse`（`items` 是 `ModelItem` 对象）。同一概念两种形状 | **10.6d**（与分页一起）：统一成 `ModelListResponse` |
+| 45 | 🟠 **同一字段两种时间格式：`...Z` vs 无 `Z`** | 📎 实测同一个 `created_at`：`POST` 返回 `"2026-10-28T05:51:54.604445Z"`（**带 Z**），`GET` / `PATCH` 返回 `"2026-10-28T05:51:54.604445"`（**无 Z**）。根因：新建时值来自 Python 侧 `lambda`（aware），读回时来自 SQLite（**naive，tzinfo 丢了**）。⚠️ 前端 `new Date("2026-10-28T05:51:54.604445")` 会按**本地时间**解析 → 时区差 8 小时。修法：`ConversationOut` 用 `AwareDatetime` 类型 + `field_serializer`，或统一在 schema 层补 `tzinfo=UTC` | **10.6d 最后统一形状时**（与 #39 一起，只需一次测试） |
 | 40 | 🟡 **没有 `tests/` 目录**：全部验证靠手工 curl + 临时脚本 | 📎 核对：项目根下 `tests/` **不存在**。每次改动靠手跑 curl 或临时探针脚本（用完即删），无法回归 | **Step 12**（测试 FastAPI）：建 `tests/` + `TestClient` + 关键路径用例 |
 | 41 | 🟠 **写 `LlmCall` 出参 schema 时 `conversation_id` 必须 `int \| None`**，且要带 `status` | 📎 实测同一条 `conversation_id=None` 的记录：schema 写 `int` → **500 Internal Server Error**（客户端完全不知道是 NULL 导致）；写 `int \| None` → **200 `null`**。⚠️ 另：`call.conversation` 在 NULL 时是 `None`，取 `.title` 会 `AttributeError` → 也必须判空。⭐ 10.6b-4 之后还要暴露 `status`（`pending`/`completed`/`aborted`）。详见笔记 §10.6b-2 / §10.6b-4 | **10.6b-3 之后做查询接口时**（或现在就先定好 schema 形状） |
 | 42 | 🟠 **账单还扛不住进程崩溃（`flush` 不是持久化）** | 📎 强杀 uvicorn 实测：流进行中 `pending` 行已 `flush` 过，进程一死 `llm_calls = []` —— **一行都没有**。要真扛崩溃，得在流开始前**用独立会话 `commit` 一次**（`async with SessionMaker() as acct: acct.add(...); await acct.commit()`），代价是每请求多一次独立事务提交。⚠️ 另：断开时 token 只能记 `0`（usage 帧永远到不了），**金额算不出来** —— 要不要按已转发内容估算 `completion_tokens`？详见笔记 §10.6b-4 | **要做「账单统计 / 成本看板」时**（10.6d 或阶段 2 末） |
@@ -290,7 +291,7 @@
 | **10.6b-4** | **两阶段记账**：`status` 三态（`pending` / `completed` / `aborted`） | #41（`LlmCall` 出参 schema 也要带 `status`） |
 | **10.6c** | N+1 原理 + `selectinload` 实测 + 列表加账单统计 | #43（账单统计的第一步） |
 | **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #39** |
-| **10.8** | Step 10 自检（55 题） | — |
+| **10.8** | Step 10 自检（59 题） | — |
 | **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |
