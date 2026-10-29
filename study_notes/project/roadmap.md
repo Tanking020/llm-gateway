@@ -74,7 +74,21 @@
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
-  - 子进度与提交号见第六节；**Step 10 数据库进行中**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；下一步 **10.8 自检（77 题）**
+  - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**；下一步 **Step 11 工程化**
+
+### 自检统一安排（2026-10-29 决定）
+
+> 学习者原话：「我们的进度稍微有点慢，自检题后续做完阶段一统一看吧」
+>
+> | 阶段 | 自检题范围 | 何时做 |
+> |---|---|---|
+> | 阶段 0 | 1 ~ 61 | 已完成 |
+> | 阶段 1 · Step 1~9 | 1 ~ 68 | 已完成 |
+> | **阶段 1 · Step 10** | **69 ~ 77（9 题）** | ⏭️ 推后 |
+> | 阶段 1 · Step 11~13 | 待补 | 随步骤走，或一并推后 |
+>
+> ⚠️ **推后的代价（记录在案，不粉饰）**：自检题的价值是「趁热发现理解缺口」，推后意味着缺口会累积到阶段末一起爆发，届时补漏成本更高。
+> ⭐ **缓解措施**：Step 11~13 期间若出现「同一个概念被问第二次」，说明那里有真缺口 → 当场补讲，不等自检。
   - ✅ **笔记章节顺序已于 2026-10-28 整理**：`§10.6c`（N+1）原来排在 `§10.6b-2` 之前，现已移到 `§10.6b-5` 之后，编号与物理顺序一致
 
 ### 阶段 2：LLM 原生 API（2 周）
@@ -225,6 +239,7 @@
 | 10.6b-4b | 两个 `except` 去掉 `rollback`，改成同步赋值 `aborted` | ✅ 学习者手写；📎 端到端：断开 `aborted 0/0/0`、正常 `completed 33/49/82`；⚠️ 首次验收拿到 404 `对话不存在：1`（库被删过）导致测试空转 |
 | 10.6c | N+1 原理 + `selectinload` 实测 | ✅ 2026-10-28；📎 三种写法实测（N=5：6/2/1 条），规模曲线 N=100 时 **101 条 57.7ms vs 2 条 4.9ms**；📎 async 下惰性加载是 `MissingGreenlet` 报错不是变慢；落地成 `GET /v1/conversations` 加 `call_count` + `total_tokens`（`outerjoin` + `coalesce`） |
 | 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39 #30 #52） | ✅ 10.6d-1 `updated_at` / 10.6d-2 游标分页 / 10.6d-3 `/health` 拆 liveness + readiness / 10.6d-4a 时间格式统一 / **10.6d-4b 四接口形状统一** |
+| 11a | 启动入口 `src/app/__main__.py`（`uv run python -m app`）+ `.env.example` 补 `DATABASE_URL` | ✅ 2026-10-29 学习者手写；📎 `PORT=8131` 启动 → `Uvicorn running on http://127.0.0.1:8131`，curl `[200]`；📎 8000 端口 `[000]` 无人听（证明 settings 真的生效）；📎 `DEBUG=true` → `Started reloader process [...] using WatchFiles`；📎 `DEBUG=false` → 无 reloader。关闭待办 **#27** #29 |
 
 > ✅ **Step 9 于 2026-10-23 正式收口**：代码（9a → 9b-4b-3）、文档（§9.1~§9.11）、自检题 1~61、待办 #1~#23 全部关闭。
 > **下一个动作 = Step 10 数据库**。开工前注意两条与本步相关的遗留：待办 **#8**（`/v1/chat` 仍是 echo）与 **#11**（`/docs` 把流式接口标成 `application/json`）。
@@ -259,9 +274,9 @@
 | 24 | 🔴 **CORS `allow_methods` 缺 `PATCH` / `DELETE`**：浏览器预检 `OPTIONS` 直接 400，前端完全无法调用这两个接口 | 📎 2026-10-25 实测：`OPTIONS /v1/conversations/1` + `Access-Control-Request-Method: PATCH` → **400**，`allow-methods: GET, POST`。⚠️ `curl` 测不出来（CORS 只在浏览器生效），实际请求本身还是 200/204 且带 `ACAO` 头。根因：10.5d / 10.5e 加路由时没同步 CORS 列表 | ✅ **已修**（2026-10-25）：`allow_methods=["GET","POST","PATCH","DELETE"]`；📎 复测四种方法预检全 200，`PUT` 仍正确拒绝 |
 | 25 | ✅ **`GET /v1/conversations` 无分页** | 已解决（2026-10-28，10.6d-2）：改为**游标分页** `?limit=20&after_id=N`，响应 `{items, total, limit, next_cursor, has_more}`。⚠️ **不用 offset**：📎 实测 offset 在「翻页期间删数据」时会**漏掉一条**（用户永远看不到），游标用「值」`id > N` 不受影响（[决策 #22](decisions.md)）| — |
 | 26 | ✅ **`/health` 不检查数据库连通性** | 已解决（2026-10-28，10.6d-3）：拆成两个端点 —— `/health` 保持 liveness（**不检查外部依赖**）、新增 `/health/ready` 探库（`SELECT 1`，失败 → 新错误码 `DB_UNAVAILABLE` → **503**）。⚠️ **不能把探库塞进 liveness**：K8s 里 liveness 失败 = 重启容器，而重启治不好数据库 → 全部实例一起崩 = 雪崩 | — |
-| 27 | 🟡 **`.env.example` 缺 `DATABASE_URL`**：别人 clone 后不知道有这个配置项 | 📎 2026-10-25 核对：模板里有 `APP_NAME` / `APP_ENV` / `DEBUG` / `HOST` / `PORT` / `LLM_*` / `REQUEST_TIMEOUT`，**唯独没有 `DATABASE_URL`**（10.3a 新增了 `config.database_url` 但没同步模板） | **随时可做**（1 行）：补 `DATABASE_URL` 及注释 |
+| 27 | ~~🟡 **`.env.example` 缺 `DATABASE_URL`**~~ | ✅ **已解决**（11a，2026-10-29）：补进 `.env.example`，含「三个斜杠＝相对路径」与「换 PostgreSQL 的形态」两条注释。⚠️ 真值（带密码的连接串）只放 `.env`。原记录：模板里有 `APP_NAME` / `APP_ENV` / `DEBUG` / `HOST` / `PORT` / `LLM_*` / `REQUEST_TIMEOUT`，**唯独没有 `DATABASE_URL`** | **已完成** |
 | 28 | 🟡 **`settings.debug` 定义了但没传给 `FastAPI(debug=...)`** | 📎 核对：`app = FastAPI(title=..., description=..., version=..., lifespan=lifespan)` —— **没有 `debug` 参数**。`settings.debug` 只在 `main.py:77` 的 CLI 演示里打印一次 | **Step 11**：与日志 / 配置一起收拾；顺带决定生产环境是否关闭 `/docs` |
-| 29 | 🟡 **`settings.host` / `settings.port` 完全未被使用**：配置漂移 | 📎 核对：这两个字段在 `.env.example` 里写得清清楚楚，但代码里**零引用** —— 实际监听地址由 `uvicorn app.api.app:app --reload` 命令行决定 | **Step 13 部署**：改成 `uvicorn.run(app, host=settings.host, port=settings.port)`，或删掉这两个字段 |
+| 29 | ~~🟡 **`settings.host` / `settings.port` 完全未被使用**：配置漂移~~ | ✅ **已解决**（11a，2026-10-29）：新增 `src/app/__main__.py`，`uv run python -m app` 走 `uvicorn.run("app.api.app:app", host=settings.host, port=settings.port, reload=settings.debug)`。📎 实测 `PORT=8131` → `Uvicorn running on http://127.0.0.1:8131`，而 8000 返回 `[000]`。⚠️ 原记录：两个字段在 `.env.example` 里写得清清楚楚，但代码里**零引用** | **已完成**（原计划 Step 13，11a 提前做了） |
 | 30 | ~~🟠 **同一个时间字段两种格式：带 `Z` / 不带 `Z`**~~ | ✅ **已解决**（10.6d-4a，2026-10-28）：`ConversationOut` 加 `field_validator(..., mode="after")` 补 `tzinfo=UTC`，`ConversationStatsOut` 继承 → 列表 / 详情 / `POST` / `PATCH` 全部带 `Z`。📎 原实测：`POST` 带 Z（Python 侧 aware）、`GET`/`PATCH` 无 Z（SQLite 读回 naive）。📎 根因：SQLite 方言 `_storage_format` **无时区占位符**；`DateTime(timezone=True)` 在 SQLite 下 **DDL 完全不变**（对比 PostgreSQL 才生成 `TIMESTAMP WITH TIME ZONE`）。⚠️ AI 最初给的 `mode="before"` 方案是错的（📎 字符串时间输入时 `isinstance` 失败 → 静默不补 Z），已订正为 `after` | **已完成** |
 | 31 | ✅ **`Conversation` 无 `updated_at`** | 已解决（2026-10-28，10.6d-1）：`updated_at` 加 `default` + `onupdate` 双 lambda。📎 实测：首次插入 `created_at == updated_at`；PATCH 后 `created_at` 不变、`updated_at` 变晚；**值没变（dirty check）就不发 UPDATE、`updated_at` 也不动**。⚠️ `onupdate` 是 **SQLAlchemy 在 Python 侧**算好塞进 SQL 的，**不是数据库触发器**（`sqlite_master` 里 0 个 trigger）—— 绕过 ORM 直接写 SQL 时不会更新。⚠️ 另：SQLite 读回的 `datetime` **不带 tzinfo**，引出待办 #45 | — |
 | 32 | 🟡 **PATCH 无并发控制**：两个客户端同时改，后写覆盖前写（lost update） | PATCH 直接 `conv.title = payload.title`，无版本号 / `If-Match` 校验。将来加字段后，A 与 B 各改不同字段会互相覆盖 | **阶段 2 之后**（当前只有一个可改字段，风险低） |
@@ -300,7 +315,7 @@
 | **10.6b-4** | **两阶段记账**：`status` 三态（`pending` / `completed` / `aborted`） | #41（`LlmCall` 出参 schema 也要带 `status`） |
 | **10.6c** | N+1 原理 + `selectinload` 实测 + 列表加账单统计 | #43（账单统计的第一步） |
 | **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #30 #39 #52 #54** |
-| **10.8** | Step 10 自检（68 题） | — |
+| **10.8** | ~~Step 10 自检（77 题）~~ | ⏭️ **推后**：2026-10-29 学习者决定「进度优先，自检题统一放到阶段一结束后一次过」。10.8 不再单独执行，改为**阶段一收口前置项**（见下方「自检统一安排」） |
 | **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |

@@ -4997,7 +4997,7 @@ error: Statement is unreachable  [unreachable]
 | ⑫ §10.6b-3 / 10.6b-4 / 10.6b-5 记账与取消机制 | 第一版「断开回滚守卫」❌ 被推翻（守卫的是编造的帧序 + 业务方向反了）；最终**两阶段记账** + 同步赋值 `aborted`；📎 §10.6b-5 拆解「asyncio 取消是消息 / anyio 取消是状态」，并订正「`asyncio.shield` 也挡不住、只有 anyio shield scope 能」 | ✅ 2026-10-27 |
 | ⑬ §10.6c N+1 | `selectinload` 预加载，实测查询次数对比 | ✅ 2026-10-28 |
 | ⑭ §10.6d 收尾专项 | 分页 #25 ✅ / `/health` 探库 #26 ✅ / `updated_at` #31 ✅ / 形状统一 #39 #30 ✅ #52 ✅ | ✅ 10.6d-1 ~ 10.6d-4b 全部完成 |
-| ⑮ §10.8 自检 | 本节自检 77 题 | ⬜ 待做 |
+| ⑮ §10.8 自检 | 本节自检 77 题 | ⏭️ **推后**（2026-10-29 决定：进度优先，阶段一收口前统一做） |
 
 ## 10.1 ⚠️ 第一个坑：装 `sqlalchemy` 不够（这是 **2.1 起**的行为）
 
@@ -8306,6 +8306,113 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 > ⭐ **为什么包一层 `get_settings()`**：测试里 `dependency_overrides[get_settings]` 就能换配置，
 > 而不用改环境变量、不用 reload 模块。
+
+### 11a 实操：让 `settings.host` / `settings.port` 真的生效
+
+#### 问题：配置漂移（待办 #29）
+
+📎 核对：`host` / `port` 在 `.env.example` 里写得清清楚楚，但 `src/` 里**零引用** ——
+实际监听地址由命令行 `uvicorn app.api.app:app --reload` 决定，`.env` 写 `PORT=9001` 毫无作用。
+
+⭐ 这类问题最阴险的地方：**它不报错、不警告，配置项看起来"应该生效"**，只有主动 grep 才发现。
+
+#### 解法：新增启动入口 `src/app/__main__.py`
+
+```python
+import uvicorn
+
+from app.config import settings
+
+uvicorn.run(
+    "app.api.app:app",          # 【必须是字符串】
+    host=settings.host,
+    port=settings.port,
+    reload=settings.debug,
+)
+```
+
+启动方式从 `uvicorn app.api.app:app --reload` 变成 **`uv run python -m app`**。
+
+#### 📎 实测四组
+
+| 验证 | 结果 |
+|---|---|
+| `PORT=8131` 启动 | `Uvicorn running on http://127.0.0.1:8131` |
+| `curl 127.0.0.1:8131/health` | `[200] {"status":"ok"}` |
+| `curl 127.0.0.1:8000/health` | **`[000]`** 无人监听（证明 settings 真的接管了） |
+| `DEBUG=true` | `Started reloader process [...] using WatchFiles` |
+| `DEBUG=false` | 日志里**没有** reloader 字样 |
+
+#### ⭐⭐ 三条判据
+
+**① `python -m 包名` → 找 `__main__.py`；`python -m 包.模块` → 直接找那个 `.py`**
+
+📎 实测：`importlib.util.find_spec("app.__main__")` 在加文件前返回 `None`，加之后可用。
+
+**② `uvicorn.run()` 第一个参数必须是 import 字符串，不能传 app 对象**
+
+| 写法 | reload / workers | 为什么 |
+|---|---|---|
+| `uvicorn.run(app)`（对象） | ❌ **静默失效** | 子进程不能继承父进程造好的对象，只能自己重新 import |
+| `uvicorn.run("app.api.app:app")` | ✅ 可用 | 子进程拿到「去哪 import」的地址 |
+
+📎 uvicorn 源码原话：`logger.warning("You must pass the application as an import string to enable 'reload' or 'workers'.")`
+
+🔴 **最坏情况**：它只 `warning` 不报错，服务照常起 —— 你会以为 reload 开着，改代码却没反应。
+
+**③ `reload` 与 `debug` 绑在一起的理由与代价**
+
+| | 作用 | 该在何时开 |
+|---|---|---|
+| `reload` | 改代码自动重启 | 只有开发 |
+| `debug` | 错误页显示堆栈 | 只有开发（生产会泄露内部细节） |
+
+⭐ 共同点是「只该在开发开」，所以用 `reload=settings.debug` 绑起来。
+⚠️ 代价：**「开发但不想 reload」做不到**。真需要时拆成两个配置项。
+
+#### 🔴 顺带实测出的安全问题：`FastAPI(debug=True)` 会绕过统一错误处理器
+
+📎 实测（同一份抛 `RuntimeError("内部细节：数据库密码是 xxx")` 的路由）：
+
+| `FastAPI(debug=...)` | status | content-type | body |
+|---|---|---|---|
+| `debug=False` | 500 | `application/json` | `{"error":{"code":"INTERNAL_ERROR",...}}` |
+| `debug=True` | 500 | **`text/plain`** | **`Traceback (most recent call last): ...`** |
+
+| 检查 | `debug=False` | `debug=True` |
+|---|---|---|
+| body 含「密码」 | ❌ | 🔴 **True** |
+| body 含 `Traceback` | ❌ | 🔴 **True** |
+
+⭐⭐ `debug=True` 时 `register_exception_handlers` 里的 `@app.exception_handler(Exception)` **根本不执行** —— Starlette 的 `ServerErrorMiddleware` 走 debug 分支直接回 traceback。
+
+⚠️ 不只是「形状不统一」：traceback 带着**异常消息、局部变量、文件路径**，而真实异常消息常含 SQL、连接串、上游返回体。
+
+⭐ 所以待办 #28（`settings.debug` 没传给 FastAPI）**不能简单接一行**，接之前必须加 prod 强制关保护（见 11b）。
+
+#### ⚠️ Windows 两个坑（实测踩到）
+
+**坑 1：会有多个 python 进程**
+
+📎 `DEBUG=false` → 2 个；`DEBUG=true` → 3 个（uv 包装 + reloader + server）。
+⭐ 杀进程要**按端口找**：`Get-NetTCPConnection -LocalPort 8131 -State Listen`，或直接在启动窗口按 `Ctrl+C`。
+
+**坑 2：reload 盯的是 cwd，不是 `src/`**
+
+📎 日志：`Will watch for changes in these directories: ['C:\\...\\llm-app-engineering']`
+⭐ 必须在**项目根**跑 `uv run python -m app`，跑错目录会盯错地方。
+
+#### 📎 `.env.example` 补 `DATABASE_URL`（待办 #27）
+
+```text
+# 数据库连接串。格式是「方言+驱动://路径」
+#   sqlite+aiosqlite:///./app.db  -> 当前工作目录下的 app.db（相对路径，带三个斜杠）
+#   换 PostgreSQL 时形如 postgresql+asyncpg://user:pass@host:5432/dbname
+# ⚠️ 真值（尤其带密码的连接串）只放 .env，绝不写进这一份
+DATABASE_URL=sqlite+aiosqlite:///./app.db
+```
+
+⭐ 「三个斜杠」的含义：`sqlite:///` 后接**相对路径**，`sqlite:////abs/path`（四个）才是绝对路径。
 
 ## 11.2 日志
 
