@@ -7,11 +7,12 @@
 """
 
 # Literal 是 Python 标准库 typing 里的类型，用来表达“只能是这几个值之一”
-from typing import Literal
+from typing import Literal, Self
 
 # BaseSettings: pydantic 普通模型（BaseModel）的子类
 # 额外具备 "从环境变量 / .env 文件自动读取并填充字段" 的能力
 # SettingsConfigDict：专门描述"去哪里读、怎么读"的配置字典类型
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -76,6 +77,14 @@ class Settings(BaseSettings):
     # 单次上游请求的超时时间（秒）
     # httpx 默认只有 5 秒，LLM 生成动辄十几秒
     request_timeout: float = 30.0
+
+    @model_validator(mode="after")
+    def _forbid_debug_in_prod(self) -> Self:
+        # 【注意】：debug=True 会让 @app.exception_handler(Exception) 不执行，
+        #   traceback 直接进响应体。所以写错配置要启动即崩，不能静默改成 False
+        if self.app_env == "prod" and self.debug:
+            raise ValueError("APP_ENV=prod 时不允许 DEBUG=true：traceback 会返回给客户端")
+        return self
 
 
 # 模块级单例：整个应用共用这一个 settings 对象。

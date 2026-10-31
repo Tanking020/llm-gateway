@@ -36,6 +36,7 @@ from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep
+from app.config import settings
 from app.constants import HEADER_REQUEST_ID
 from app.database import engine
 from app.errors import AppError, register_exception_handlers
@@ -99,6 +100,9 @@ app = FastAPI(
     title="llm-app-engineering",
     description="LLM 应用后端（学习项目，阶段 1）",
     version="0.1.0",
+    # 只有开发才开：debug=True 时异常处理器被绕过，traceback 直接进响应体
+    #   （APP_ENV=prod 时 config.py 已禁止 DEBUG=true，这里才敢直接接）
+    debug=settings.debug,
     lifespan=lifespan,
 )
 
