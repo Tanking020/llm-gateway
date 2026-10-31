@@ -10,6 +10,7 @@
 |---|---|---|
 | [stage0-engineering-basics.md](stage0-engineering-basics.md) | 阶段 0：uv / Git / pydantic / 异步 / mypy / ruff | 想起工程基础原理时 |
 | [stage1-fastapi.md](stage1-fastapi.md) | 阶段 1：路由 / 依赖注入 / 中间件 / SSE / 数据库（**最大的一个文件**） | 查 FastAPI 与 SQLAlchemy 的机制、看实测数据 |
+| [logging.md](logging.md) | **日志专题**：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数 / 14 条注意事项 | 写日志、查"为什么没输出"、配生产日志 |
 | [tools-reference.md](tools-reference.md) | 第三方包与工程工具速查（uv / pydantic / mypy / ruff / httpx / FastAPI / SQLAlchemy…） | 忘了某个 API 怎么用 |
 | [self-check-questions.md](self-check-questions.md) | 全部自检题 + 简要答案（按阶段编号） | 复习、检验理解 |
 | [learning-log.md](learning-log.md) | 学习流水 / 踩坑 / 结论表 / 重点专题 | 查「那天为什么改成这样」 |

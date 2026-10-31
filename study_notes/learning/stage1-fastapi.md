@@ -8497,6 +8497,9 @@ app = FastAPI(
 
 ### 11c 实操：日志交给 `dictConfig(force=True)`
 
+> 本步只记**改动与实测**；`propagate` / 级别闸 / Handler / Formatter 的**系统原理**见
+> [logging.md](logging.md)（独立章节）。
+
 #### 三个症状（都是 11c 之前的样子）
 
 📎 实测 `python -m app` 的一屏日志：
@@ -8558,33 +8561,18 @@ INFO:     127.0.0.1:62657 - "GET /health HTTP/1.1" 200 OK                  ← u
 
 ## 11.2 日志
 
-```python
-import logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-logger = logging.getLogger("app")
-
-
-@app.get("/x")
-async def x() -> dict[str, bool]:
-    logger.info("handling request", extra={"path": "/x"})
-    return {"ok": True}
-```
-
-| 原则 | 说明 |
-|------|------|
-| **不要用 `print`** | 没有级别、没有时间戳、无法过滤、无法输出到文件 |
-| **日志要能关联请求** | ⭐ 配合 Step 7 的请求 ID（`X-Request-Id`） |
-| **不要记录密钥** | ⚠️ 日志会被收集、被搜索、被分享 |
-| 记录**耗时和 token 数** | LLM 应用必须盯成本 |
-| 结构化（JSON） | 便于日志平台检索 |
-
-> ⭐ **LLM 应用该记什么**：`request_id`、`model`、`prompt_tokens`、`completion_tokens`、
-> `latency_ms`、`ttft_ms`、`是否有缓存命中`。
-> **这些都是优化产品和核算成本的原料。**
+> ⭐ **系统讲解见独立章节 [logging.md](logging.md)**（四道闸 / Logger 树与 `propagate` / 级别语义 /
+> Handler 与轮转 / Formatter 字段 / `dictConfig` 四个关键参数 / 14 条注意事项 / 踩坑表）。
+> 本节只留三条**本项目特有**的结论，不重复上面那份知识：
+>
+> | 结论 | 出处 |
+> |---|---|
+> | 日志配置**必须**用 `dictConfig(force=True)`，`basicConfig` 会被抢先配置后静默失效 | §11c、待办 #7 |
+> | 两个调用点不是重复：`app.py` 模块级覆盖 CLI/测试，`__main__.py` 覆盖 reloader 父进程 | §11c、决策 24 |
+> | 关掉 `uvicorn.access` 的代价是**丢了客户端 IP** | 待办 #56 |
+>
+> 📎 LLM 应用该记的字段（`request_id` / `model` / `prompt_tokens` / `latency_ms` / `ttft_ms`）
+> 见 [logging.md §10](logging.md#10-llm-应用该记什么)。
 
 ## 11.3 ⚠️ 500 错误与日志的配合
 

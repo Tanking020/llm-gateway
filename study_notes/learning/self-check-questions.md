@@ -1106,6 +1106,10 @@
     > `basicConfig` 的判据是「root 有没有 handler」，有就**什么都不做**（📎 连调两次，第二次的 format 完全不生效）。`force=True` 的语义是「先拆掉 root 上已有的 handler 再装」，所以它覆盖别人配过的结果。⭐ 判据：**配全局状态时要问「别人先配过了怎么办」**。
 11. 为什么 `__main__.py` 里要再调一次 `configure_logging()`？`app.py` 模块级那次不够吗？
     > 因为 `reload=True` 时有一个 **reloader 父进程**，它负责监听文件变化、**永远不 import 应用** → 模块级调用对它无效。同理 `log_config=None` 也是为它准备：否则 uvicorn 会再装一遍自己的 dictConfig，把 `uvicorn.*` 的 handler 抢回去。📎 实测：去掉 `log_config=None`，父进程那 3 行立刻退回 `INFO:     `。
+12. 📎 `logger.info(f"x={x}")` 和 `logger.info("x=%s", x)` 有什么区别？级别不够时分别发生了什么？
+    > `%s` 是**惰性**的：先过级别闸，被拦下就**不展开**参数（📎 实测：`Boom.__str__` 会 raise，用 `logger.debug("值=%s", Boom())` 没有抛异常）。f-string 是**立即求值**，日志没输出也已经付过拼接/序列化的代价。⭐ 判据：**日志参数一律用 `%s` 占位，不要 f-string。**
+13. 什么情况下**同一条日志会打印两行**？怎么修？
+    > 某个 logger 自己挂了 handler，同时 `propagate` 又是默认的 `True` → 记录既交给自己的 handler，又冒泡给祖先的 handler。📎 实测（`CHILD |…` + `PARENT|…` 两行）。修法二选一：删掉自己加的 handler，或 `propagate=False`。⚠️ 注意 handler **不会继承**，只有 `propagate` 才会把记录送给祖先的 handler。
 
 ### Step 12 · 测试 FastAPI
 
@@ -1206,3 +1210,5 @@
 | 2026-10-23 | 阶段 1 · **Step 9** 补第 56 题（**宽松字段三档**）：静默收窄 / warning / error 的判据（📎 `finish_reason=''` 误报警那次的教训）。配套规范 §14.4 ⑥、笔记专题 12 ⑤ |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 6~8 题，11a/11b）：`debug=True` 为何绕过异常处理器（答：`ServerErrorMiddleware` 截住）/ 跨字段校验为何必须放 `Settings` 而不是 `__main__.py` / 为何 fail-fast 而不自动纠正。配套笔记 §11a、§11b。⭐ 同时确立新约定：**每次只放 1~3 道，对话里只问 1 道最核心的** |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 9~11 题，11c）：`disable_existing_loggers=True` 到底禁谁（🟡 学习者答错过：不是"全部"，是"未命名的那些"）/ `basicConfig` 为何静默失效 / 为何 `__main__.py` 还要再配一次。配套笔记 §11c、决策 24 |
+| 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
+| 2026-10-31 | 新增独立章节 [logging.md](logging.md)：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数与幂等 / 14 条注意事项 / 踩坑表。同时把 `stage1-fastapi.md §11.2` 收缩成指针（避免同一份事实两处维护） |
