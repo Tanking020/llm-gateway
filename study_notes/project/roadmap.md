@@ -401,11 +401,11 @@ llm-app-engineering\                       # 项目根
 | 笔记 | 规模 | 覆盖内容 |
 |---|---|---|
 | [learning/stage0-engineering-basics.md](../learning/stage0-engineering-basics.md) | 2457 行 | uv / Git / pydantic / 类型注解 / 异步 / 测试 / lint / Docker + 11 个难点拓展 |
-| [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) | 9912 行 | HTTP/ASGI → SSE 流式 → 数据库 → 工程化 → 测试 → 部署，共 13 步 + 10 个难点拓展；**Step 6 后有「前半程回顾」**（复习入口） |
+| [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) | 10278 行 | HTTP/ASGI → SSE 流式 → 数据库 → 工程化 → 测试 → 部署，共 13 步 + 10 个难点拓展；**Step 6 后有「前半程回顾」**（复习入口）；**§11d-1 中间件栈七层 + 装饰器↔栈层映射** |
 | [learning/logging.md](../learning/logging.md) | 470 行 | **日志专题**：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数 / 14 条注意事项 / 踩坑表 |
-| [learning/learning-log.md](../learning/learning-log.md) | 1897 行 | 步骤流水 / 踩坑 / 重要结论 / 重点专题（每步自动追加） |
+| [learning/learning-log.md](../learning/learning-log.md) | 1907 行 | 步骤流水 / 踩坑 / 重要结论 / 重点专题（每步自动追加） |
 | [learning/tools-reference.md](../learning/tools-reference.md) | 1571 行 | 每个依赖与工具的定位、安装、常用语法与命令、实测默认值、易错点（§9 起含标准库 logging） |
-| [learning/self-check-questions.md](../learning/self-check-questions.md) | 1218 行 | **全部自检题 + 简要答案**，按阶段/步骤排列；⭐ 标高频、🟡 标答错过、📎 标有配套实测 |
+| [learning/self-check-questions.md](../learning/self-check-questions.md) | 1240 行 | **全部自检题 + 简要答案**，按阶段/步骤排列；⭐ 标高频、🟡 标答错过、📎 标有配套实测 |
 | [工程规范与协作约定.md](../../工程规范与协作约定.md) | 2231 行 | 协作节奏、步骤卡模板、质量门、目录与命名、安全约定 |
 
 > ⭐ 两篇阶段笔记的代码**全部在真实环境实测过**（本仓库实测版本：fastapi **0.143.0** / starlette **1.8.0** /
