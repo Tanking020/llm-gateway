@@ -1122,6 +1122,14 @@
     > 因为 500 由**最外层 `ServerErrorMiddleware`** 产出，**不经过 `CORSMiddleware`**（后者在它里层）。浏览器里表现为「网络错误」：JS **读不到 body、也读不到 `request_id`**。⚠️ 而 500 恰恰是最需要那个 ID 的场景（待办 #57）。另外同原因导致 500 的 `X-Request-ID` 头必须由**处理器自己**写。
 19. 📎 为什么**路由里**抛 `AppError` 变成 400，而**同一个 `AppError` 在 `@app.middleware("http")` 里抛**却变成 500？
     > 因为 `build_middleware_stack()` 把 `app.exception_handlers` **分成了两拨**：`Exception` / `500` 交给最外层的 `ServerErrorMiddleware`，其余（`AppError`、`StarletteHTTPException`、`RequestValidationError`）交给里层的 `ExceptionMiddleware`。中间件在 `ExceptionMiddleware` **外面**抛 → 里层够不着 → 只剩最外层那个 `Exception` 处理器接 → 500。⭐ 判据：**异常往「外」冒，谁在外层谁才有机会接。**
+    >
+    > **完整路径（路由）**：路由函数 / 依赖 → `APIRouter` → ⑥ `AsyncExitStackMiddleware` → **⑤ `ExceptionMiddleware`**（查表：先 `status_code`，再沿 MRO）→ 命中 `_app_error_handler` → `_error_response()` → Response 再往外穿过 ④ CORS（补 ACAO）→ ③ `BaseHTTPMiddleware`（补 `X-Request-ID`、记访问日志 `-> 400`）→ 客户端。
+    >
+    > **完整路径（中间件）**：③ 里抛 → 异常只能往外冒（②、①）→ ⑤ 在它**里面**，**永远看不到** → ① 用登记的 `Exception` 处理器 → `500 INTERNAL_ERROR`。⚠️ 500 的 JSON 是**我们的处理器**拼的；没登记 `Exception` 时 ① 才回纯文本 `Internal Server Error`。
+    >
+    > **本项目映射**：① 和 ⑤ 都来自 `errors.py` 的 `register_exception_handlers(app)`；③ 来自 `@app.middleware("http")`；④ 来自 `app.add_middleware(CORSMiddleware, …)`；⑦ 来自 `@app.get/@app.post`。
+20. 📎 `@app.middleware("http")` 的括号里没有 `BaseHTTPMiddleware`，那我们的 `add_request_id` 是**继承**了它吗？
+    > **不是继承，是组合。** 📎 源码：`decorator(func)` 里只做 `self.add_middleware(BaseHTTPMiddleware, dispatch=func)` —— 把 `BaseHTTPMiddleware` **类本身**登记进 `user_middleware`，把我们的函数作为 `dispatch=` 关键字参数。📎 实测 `app.user_middleware` 里就是 `BaseHTTPMiddleware` + `kwargs={'dispatch': 'add_request_id'}`，构建后的实例上 `dispatch_func` 指向我们的函数。所以：**壳是框架的，回调是我们的**；`call_next` 这个参数也是 `BaseHTTPMiddleware` 运行时传进来的。装饰器最后 `return func`，所以原函数名还能用。
 
 ### Step 12 · 测试 FastAPI
 
@@ -1224,5 +1232,6 @@
 | 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 9~11 题，11c）：`disable_existing_loggers=True` 到底禁谁（🟡 学习者答错过：不是"全部"，是"未命名的那些"）/ `basicConfig` 为何静默失效 / 为何 `__main__.py` 还要再配一次。配套笔记 §11c、决策 24 |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 16~18 题，11d）：`HTTPException` 该挂哪个类 / 为什么用 `raise` 而不是 `return` 错误响应 / 500 为什么没有 CORS 头。配套笔记 §11d、待办 #57 |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 1 题（第 19 题，11d 收口）：同一个 `AppError` 为什么在路由里是 4xx、在中间件里变 500。配套笔记 §11d-1「分家」、决策 25 |
+| 2026-10-31 | 阶段 1 · **Step 11** 补 1 题（第 20 题）+ 扩写第 19 题答案（异常上抛完整路径 + 本项目装饰器↔栈层映射）：`@app.middleware("http")` 为什么不需要写 `BaseHTTPMiddleware`（是组合不是继承）。配套笔记 §11d-1 |
 | 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
 | 2026-10-31 | 新增独立章节 [logging.md](logging.md)：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数与幂等 / 14 条注意事项 / 踩坑表。同时把 `stage1-fastapi.md §11.2` 收缩成指针（避免同一份事实两处维护） |

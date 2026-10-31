@@ -8685,6 +8685,59 @@ while node is not None:
 
 ⭐⭐ 一句判据：**异常往「外」冒，谁在它外面，谁才有机会接；响应往「外」流，谁在它外面，谁才有机会改。**
 
+#### 📎 本项目的「装饰器 / 函数调用」↔ 栈层对照
+
+| 栈层 | 本项目里写在哪 | 写法 | 备注 |
+|---|---|---|---|
+| ① `ServerErrorMiddleware`（的 handler） | `errors.py` `register_exception_handlers` | `@app.exception_handler(Exception)` | 表里 `Exception` / `500` 键被**单独挑出来**给它 |
+| ② `ExceptionTelemetryMiddleware` | — | 框架自带 | 我们没有配置项 |
+| ③ `BaseHTTPMiddleware` | `api/app.py` | `@app.middleware("http")` + `async def add_request_id(...)` | ⭐ 见下方「它到底做了什么」 |
+| ④ `CORSMiddleware` | `api/app.py` | `app.add_middleware(CORSMiddleware, allow_origins=..., ...)` | 显式传类 |
+| ⑤ `ExceptionMiddleware`（的表） | `errors.py` `register_exception_handlers` | `@app.exception_handler(AppError)` 等 3 个 | 除 `Exception`/`500` 之外全给它 |
+| ⑥ `AsyncExitStackMiddleware` | — | 框架自带 | 关 `yield` 依赖 / 文件 |
+| ⑦ `APIRouter` | `api/app.py` | `@app.get(...)` / `@app.post(...)` | 路由表 |
+
+⭐ 看这张表能直接得到两个结论：
+① **`errors.py` 一个文件同时喂了栈的两头**（① 和 ⑤）—— 这就是"`register_exception_handlers` 一次调用、两种覆盖范围"的来源；
+② **只有 ③④ 是"我们的中间件"**，其他都是框架固定层。
+
+#### ⭐ `@app.middleware("http")` 到底做了什么（📎 源码 + 实测）
+
+📎 源码（`fastapi/applications.py`，`FastAPI.middleware`）：
+
+```python
+def middleware(self, middleware_type: str) -> ...:
+    def decorator(func: DecoratedCallable) -> DecoratedCallable:
+        self.add_middleware(BaseHTTPMiddleware, dispatch=func)   # ★ 关键
+        return func
+    return decorator
+```
+
+**我们的 `add_request_id` 并没有被"继承"，而是被当作 `dispatch=` 回调塞进了 `BaseHTTPMiddleware` 这个壳。**
+—— 是**组合（注册同一个类 + 注入回调）**，不是继承。📎 实测 `app.user_middleware`：
+
+```text
+cls=starlette.middleware.base.BaseHTTPMiddleware
+    kwargs={'dispatch': 'add_request_id'}        ← 我们的函数在这里
+cls=starlette.middleware.cors.CORSMiddleware
+    kwargs={'allow_origins': [...], ...}
+```
+
+📎 构建出的实例上也挂着它：
+
+```text
+starlette.middleware.base.BaseHTTPMiddleware  dispatch_func=app.api.app.add_request_id
+```
+
+| 事实 | 说明 |
+|---|---|
+| `call_next` 是谁给的 | `BaseHTTPMiddleware` 在运行时把"调用内层"的能力作为第 2 个参数传给 `dispatch` —— 所以签名里的 `Callable[[Request], Awaitable[Response]]` 是**它规定**的 |
+| 装饰器返回什么 | `return func`（原函数）→ 所以 `add_request_id` 这个名字还在，能直接 import 来测试 |
+| 忘了 import `BaseHTTPMiddleware`？ | 不需要 import —— **你根本没写这个类名**，是框架替你传的 |
+| `add_middleware` 的顺序 | `user_middleware.insert(0, ...)` → **后注册的在外层**；且 app 启动后再调用会 `RuntimeError` |
+| ⚠️ `BaseHTTPMiddleware` 的隐藏代价 | 它用 **AnyIO task group** 跑下游 → 会创建 **contextvars 副本**、多一层 task 开销。FastAPI 源码注释里明说：正因为这个，`AsyncExitStackMiddleware` 必须放在**所有用户中间件里面**才能保住 context |
+
+
 ### 11d-2 改前：5 种错误来源 → 5 种归宿
 
 | # | 谁 raise | 被哪一层接住 | 最终形状 |
