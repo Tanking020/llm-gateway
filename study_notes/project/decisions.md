@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-10-31 · 共 23 条
+**最后更新**：2026-10-31 · 共 24 条
 
 ---
 
@@ -44,6 +44,7 @@
 | [21](#21-防刷靠限流不靠记账准确度) | 防刷靠什么 | **靠限流，不靠记账** | 2026-10-28 |
 | [22](#22-列表分页用游标为主total-为辅) | 列表分页形状 | **游标为主 + `total` 为辅** | 2026-10-28 |
 | [23](#23-prod--debug-组合在启动时报错退出而不是自动纠正) | `prod` + `debug` 组合 | **启动即报错退出（fail-fast）** | 2026-10-31 |
+| [24](#24-日志用一个-dictconfig-接管整个进程并关掉-uvicornaccess) | 日志配置归属 | **单一 `dictConfig` 接管，关 `uvicorn.access`** | 2026-10-31 |
 
 ---
 
@@ -542,6 +543,20 @@
 | **重审条件** | 真需要「线上临时开 traceback」时 → 加显式逃生阀 + 日志告警（**不允许**退回静默纠正的 B） |
 
 > 📍 相关：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §11b、待办 #28（已关闭）、[决策 5](#5-三种错误形状并存暂不统一)（错误形状）
+
+---
+
+## 24. 日志用一个 `dictConfig` 接管整个进程，并关掉 `uvicorn.access`
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 11c 之前是 `basicConfig` + uvicorn 自带配置并存。📎 实测三个症状：一屏日志**两种格式**（`INFO:     ` + 我们的）、每请求**两行**（中间件 + `uvicorn.access`）、`basicConfig` 第二次调用**静默失效**。📎 根因：uvicorn 的 `LOGGING_CONFIG` **没有 root 项**，只配自己那 3 个 logger |
+| **方案对比** | A 继续 `basicConfig`，接受两套格式与两行日志<br>B `dictConfig(force=True)` 接管 root，把 `uvicorn.*` 归拢到同一 handler，**保留** access 日志<br>C 同 B，但**关掉** `uvicorn.access`（中间件那行已经带 `request_id` 与耗时） |
+| **决定** | **C**。另加两处调用点：`app.py` 模块级（覆盖 `uvicorn app.api.app:app` 与测试 import）+ `__main__.py` 在 `uvicorn.run` 前（reloader 父进程不 import app），并传 `log_config=None` 阻止 uvicorn 再装一套 |
+| **代价** ⚠️ | ① **丢了客户端 IP** —— access 日志原本有，现在只能靠中间件那行（新增待办 #56）；② 维护两个调用点，漏一处就出现格式不一致；③ `log_config=None` 等于放弃 uvicorn 的 `--log-config` 能力；④ JSON 结构化与轮转仍未做（#51） |
+| **重审条件** | 需要按客户端 IP 排查 / 限流分析时 → 把 `request.client.host` 加进中间件那行（**不要**重新打开 `uvicorn.access`，否则又变两行）；接入日志平台时 → 换 JSON formatter |
+
+> 📍 相关：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §11c、待办 #7（已关闭）/ #51（拆分）/ #56（新增）
 
 ---
 

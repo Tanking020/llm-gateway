@@ -8495,6 +8495,67 @@ app = FastAPI(
 
 ⭐ 顺带一条：环境变量与 `.env` 同时存在时**环境变量赢**。📎 实测 `.env` 里是 `APP_ENV=dev`，命令行设 `prod`，最终生效的是 `prod`。
 
+### 11c 实操：日志交给 `dictConfig(force=True)`
+
+#### 三个症状（都是 11c 之前的样子）
+
+📎 实测 `python -m app` 的一屏日志：
+
+```text
+INFO:     Started server process [17252]                                    ← uvicorn 的格式
+2026-10-31 20:21:43,893 INFO    app.api.app | GET /health -> 200 3.1ms …   ← 我们的格式
+INFO:     127.0.0.1:62657 - "GET /health HTTP/1.1" 200 OK                  ← uvicorn.access 又打一行
+```
+
+| 症状 | 根因 |
+|---|---|
+| 一个文件里两种格式 | uvicorn 只配了自己那 3 个 logger（`uvicorn` / `uvicorn.error` / `uvicorn.access`），**它的 `LOGGING_CONFIG` 里根本没有 root** —— root 由我们的 `basicConfig` 负责 |
+| 每个请求两行 | `uvicorn.access` 一行 + 我们中间件一行（后者还带 `request_id`，信息更多） |
+| 一旦被抢先配置就静默失效 | 📎 `basicConfig` 调两次：第二次的格式化**完全不生效**，输出仍是第一次的 `A\|hello` |
+
+#### 解法：`src\app\logging_setup.py` + 三处调用
+
+| 位置 | 做什么 | 为什么 |
+|---|---|---|
+| `logging_setup.py` | `dictConfig({..., "disable_existing_loggers": False, "loggers": {uvicorn 三个: propagate 到 root}, "root": {console}})` | 一处定义，`force=True` 强制接管 |
+| `app.py` 模块级 | `configure_logging()` | 覆盖 **`uvicorn app.api.app:app`** 与测试 import 这两条路径 |
+| `__main__.py` 的 `main()` | 先 `configure_logging()`，再 `uvicorn.run(..., log_config=None)` | reloader **父进程永远不 import app**，只能在这里配 |
+
+#### 📎 实测对照
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| `python -m app` 启动 4 行 | `INFO:     …` | `… INFO    uvicorn.error \| …` |
+| 每个请求 | 2 行 | **1 行** |
+| `DEBUG=true`（reload 父进程） | `INFO:     Started reloader process` | `… INFO    uvicorn.error \| Started reloader process […]` |
+| `uvicorn app.api.app:app`（不走 `__main__`） | 两套格式 | **也是我们的格式**（证明模块级调用覆盖了 CLI 路径） |
+| 去掉 `log_config=None` | — | reloader 父进程那 3 行**退回** `INFO:     ` |
+
+#### ⭐ 三条判据
+
+**① `force=True` 是"覆盖"，`basicConfig` 只是"没有才装"**
+
+📎 `basicConfig` 第二次调用静默失效；`dictConfig` 不带 `force=True` 时也不会清掉已有 handler。
+
+**② `disable_existing_loggers` 只禁用「未在 `loggers` 里命名」的已有 logger**
+
+📎 用与项目同结构的配置实测（把默认值 `True` 留着）：
+
+| logger | 出现在 `loggers` 里 | 结果 |
+|---|---|---|
+| `app.errors` | 否 | **`disabled=True`** 🔴 500 的 traceback 日志会静默消失 |
+| `uvicorn.error` | 是 | `disabled=False` |
+| `httpx` | 否 | `disabled=True` |
+
+⭐⭐ 所以真正危险的是 **`app.errors`**（它在 `errors.py` 被 import 时就创建了，早于 `configure_logging()`），
+**不是** `uvicorn.error` —— 后者恰好在 `loggers` 里被命名了。
+⚠️ 这一点我在步骤卡里写错过（原文写"默认 True 会禁用所有已存在的 logger（uvicorn.error 等）"），已订正。
+
+**③ `log_config=None` 只为一个进程：reloader 的父进程**
+
+父进程负责监听文件变化、**从不 import 应用**，所以模块级那次 `configure_logging()` 对它无效。
+不传 `None` 时，uvicorn 的 `Config` 会再装一遍自己的 dictConfig，把 `uvicorn.*` 的 handler 抢回去 → 那 3 行变成 `INFO:     `。
+
 ## 11.2 日志
 
 ```python

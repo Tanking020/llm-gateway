@@ -1100,6 +1100,12 @@
    > `__main__.py` **只覆盖 `python -m app` 一条入口**：`uvicorn app.api.app:app`、甚至只 `from app.config import settings` 都不会经过它（📎 实测两条路径都能绕过计划中的入口层检查，但都会被 `Settings` 的校验拦住）。而 `settings = Settings()` 是**模块级单例**，任何启动方式都要先 import 它。
 8. 为什么选「启动报错退出」而不是「检测到就自动把 `debug` 改成 `False`」？
    > ① 自动纠正属于**静默失效**：你以为配置生效了，其实被系统悄悄改了；② 这个组合的错误后果是**把 traceback（含 SQL / 连接串 / 路径）发给客户端**，必须在"最便宜的时刻"暴露；③ fail-fast 的代价是服务起不来，但只要报错文案写清原因，这个代价可接受。
+9. 🟡 📎 `dictConfig` 的 `disable_existing_loggers` 默认是 `True`。不写这一行会怎样？**范围是"全部已有 logger"还是别的？**
+   > 只禁用「**没出现在本次 `loggers` 段里**」的已有 logger（已命名的会被重新配置，不会禁用）。📎 用与项目同结构的配置实测：`app.errors` → `disabled=True`；`uvicorn.error` → `disabled=False`；`httpx` → `disabled=True`。⭐⭐ 所以真正的危险是 **`app.errors` 被静默禁用**（它在 `errors.py` 被 import 时就创建，早于 `configure_logging()`）→ **500 的 traceback 一条都不打**。
+10. 为什么 `basicConfig` 会静默失效，而 `dictConfig(force=True)` 不会？
+    > `basicConfig` 的判据是「root 有没有 handler」，有就**什么都不做**（📎 连调两次，第二次的 format 完全不生效）。`force=True` 的语义是「先拆掉 root 上已有的 handler 再装」，所以它覆盖别人配过的结果。⭐ 判据：**配全局状态时要问「别人先配过了怎么办」**。
+11. 为什么 `__main__.py` 里要再调一次 `configure_logging()`？`app.py` 模块级那次不够吗？
+    > 因为 `reload=True` 时有一个 **reloader 父进程**，它负责监听文件变化、**永远不 import 应用** → 模块级调用对它无效。同理 `log_config=None` 也是为它准备：否则 uvicorn 会再装一遍自己的 dictConfig，把 `uvicorn.*` 的 handler 抢回去。📎 实测：去掉 `log_config=None`，父进程那 3 行立刻退回 `INFO:     `。
 
 ### Step 12 · 测试 FastAPI
 
@@ -1199,3 +1205,4 @@
 | 2026-10-28 | 阶段 1 · **Step 10** 补第 76~77 题（**形状统一两个坑**）：pydantic `model_validate` **不裁剪** vs FastAPI `response_model` **会裁剪**（📎 同一份数据两种结果，因为 pydantic 有子类实例快速路径）/ `outerjoin` 三种错法对比（📎 `conversation.id` 运行时 AttributeError → 服务照常启动但两接口 500；📎 主键互对 → 不报错但数字全是别人的）。配套笔记 §10.6d-4b、待办 #52 |
 | 2026-10-23 | 阶段 1 · **Step 9** 补第 56 题（**宽松字段三档**）：静默收窄 / warning / error 的判据（📎 `finish_reason=''` 误报警那次的教训）。配套规范 §14.4 ⑥、笔记专题 12 ⑤ |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 6~8 题，11a/11b）：`debug=True` 为何绕过异常处理器（答：`ServerErrorMiddleware` 截住）/ 跨字段校验为何必须放 `Settings` 而不是 `__main__.py` / 为何 fail-fast 而不自动纠正。配套笔记 §11a、§11b。⭐ 同时确立新约定：**每次只放 1~3 道，对话里只问 1 道最核心的** |
+| 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 9~11 题，11c）：`disable_existing_loggers=True` 到底禁谁（🟡 学习者答错过：不是"全部"，是"未命名的那些"）/ `basicConfig` 为何静默失效 / 为何 `__main__.py` 还要再配一次。配套笔记 §11c、决策 24 |

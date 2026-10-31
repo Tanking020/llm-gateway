@@ -9,14 +9,19 @@ settings.host / settings.port 只有走这里才生效，命令行 uvicorn 会�
 import uvicorn
 
 from app.config import settings
+from app.logging_setup import configure_logging
 
 
 def main() -> None:
+    # reloader 父进程不会 import app.api.app，所以这里也要配一次（force=True，重复调用无害）
+    configure_logging()
     uvicorn.run(
         "app.api.app:app",
         host=settings.host,
         port=settings.port,
         reload=settings.debug,
+        # 【注意】：必须 None。默认 uvicorn 会装它自己那套格式，日志就变成两种样式
+        log_config=None,
     )
 
 
