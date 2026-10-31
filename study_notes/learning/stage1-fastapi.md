@@ -8414,6 +8414,87 @@ DATABASE_URL=sqlite+aiosqlite:///./app.db
 
 ⭐ 「三个斜杠」的含义：`sqlite:///` 后接**相对路径**，`sqlite:////abs/path`（四个）才是绝对路径。
 
+### 11b 实操：把 `settings.debug` 接进 `FastAPI`（先加闸，再接参数）
+
+#### 顺序：为什么必须先加保护
+
+| 顺序 | 会发生什么 |
+|---|---|
+| 先接线、后加闸 | 中间那段时间（哪怕只有几分钟）`prod` + `DEBUG=true` 会把 traceback 发给用户 |
+| **先加闸、后接线**（本步做法） | 接线那一刻保护已在，不存在"裸奔窗口" |
+
+#### 改动一：`src\app\config.py` 跨字段校验（fail-fast）
+
+```python
+from typing import Literal, Self
+
+from pydantic import model_validator
+```
+
+```python
+    @model_validator(mode="after")
+    def _forbid_debug_in_prod(self) -> Self:
+        if self.app_env == "prod" and self.debug:
+            raise ValueError("APP_ENV=prod 时不允许 DEBUG=true：traceback 会返回给客户端")
+        return self
+```
+
+#### 改动二：`src\app\api\app.py` 接线
+
+```python
+from app.config import settings
+```
+
+```python
+app = FastAPI(
+    title="llm-app-engineering",
+    version="0.1.0",
+    debug=settings.debug,
+    lifespan=lifespan,
+)
+```
+
+#### 📎 实测四组（学习者手写代码复验）
+
+| 用例 | 结果 |
+|---|---|
+| `APP_ENV=prod` + `DEBUG=true` → `python -m app` | `ValidationError: Value error, APP_ENV=prod 时不允许 DEBUG=true…`，**`exit_code=1`，uvicorn 一行都没启动** |
+| 同配置 → `uvicorn app.api.app:app` | 同样 `exit_code=1`（**两条入口都被拦**） |
+| `dev` + `DEBUG=true` | `app.debug` = **`True`** |
+| `dev` + `DEBUG=false` | `app.debug` = **`False`** |
+
+📎 前三道门全绿（ruff / `format --check` / mypy，19 files）。
+📎 泄露对照（同一份抛 `RuntimeError("内部细节：数据库密码是 xxx")` 的路由）：`debug=True` → `text/plain` + `Traceback` + 能读到「密码」；`debug=False` → `application/json` + `INTERNAL_ERROR`。
+
+#### ⭐ 三条判据
+
+**① 跨字段校验放 `Settings` 里，不要放入口函数**
+
+📎 `uvicorn app.api.app:app` 与 `from app.config import settings` 都**不经过** `__main__.py`；
+而 `settings = Settings()` 是模块级单例 —— 任何入口都要先 import 它。
+
+**② fail-fast > 自动纠正**
+
+| | 静默改成 `False` | 启动报错退出 ✅ |
+|---|---|---|
+| 配置写错时 | 服务照常起，你以为配置生效了 | 立刻停，报错文案直接说原因 |
+| 属于哪类问题 | 静默失效（最常见、最难查） | 显式失败 |
+| 代价 | 线上带着未知配置跑 | 服务完全起不来（连 `/health` 都没有） |
+
+**③ `mode="after"` 才能拿到「转好类型的值」**
+
+| 模式 | `self.debug` 是什么 | 保护是否有效 |
+|---|---|---|
+| `before` | 原始值：`"true"` / `"false"`（**非空字符串都是真值**） | ❌ 恒成立，形同虚设 |
+| `after` | 真正的 `bool` | ✅ |
+
+#### ⚠️ PowerShell 残留坑
+
+`$env:APP_ENV` 设在当前窗口**一直有效** → 验完必须 `Remove-Item Env:APP_ENV, Env:DEBUG`，
+否则之后随便跑 `uv run python -m app` 都会"启动就崩"，然后怀疑代码。
+
+⭐ 顺带一条：环境变量与 `.env` 同时存在时**环境变量赢**。📎 实测 `.env` 里是 `APP_ENV=dev`，命令行设 `prod`，最终生效的是 `prod`。
+
 ## 11.2 日志
 
 ```python

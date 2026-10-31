@@ -74,7 +74,7 @@
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
-  - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**；下一步 **Step 11 工程化**
+  - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**；**Step 11 工程化进行中：11a ✅（启动入口）/ 11b ✅（debug 接线 + prod 保护），下一步 11c `dictConfig`**
 
 ### 自检统一安排（2026-10-29 决定）
 
@@ -207,7 +207,7 @@
 | 7a | 请求 ID + 耗时中间件（`@app.middleware("http")`）；500 复用同一 ID 并补响应头 | ✅ 实测：沿用客户端 ID / 500 头体一致 / 日志覆盖 200·404·500 |
 | 7a-补 | 新建 `src/app/constants.py`（`HEADER_REQUEST_ID`），三处硬编码收敛到一处 | ✅ 实测 `X-Request-ID` 与 `X-Request_ID` 是两个不同的头（大小写则不敏感） |
 | 7b | CORS（预检、`allow_credentials` 的禁忌） | ✅ 实测：白名单返 ACAO / 非白名单仍 200 无 ACAO / 预检打不存在路径 200 / 非法方法 400 |
-| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 已完成；Step 10 进行中（10.1 ✅）；Step 11~13 未开始 |
+| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 / 10 已完成；**Step 11 进行中（11a ✅ / 11b ✅）**；Step 12~13 未开始 |
 | 8 | Step 8 异步正确姿势（`blocking_demo.py`） | ✅ 实测 25 倍 / 排队 / GIL |
 | 9a | SSE 假数据流式：`/v1/chat/stream` + `StreamingResponse` | ✅ 实测 TTFB 0.014s / total 1.85s / chunked |
 | 9a-补 | 机制补讲四轮（学习者反馈"没看懂"）：§9.2b f-string 与 `\n\n`、§9.2c 帧 vs 时间、§9.2d 生成器与 `StreamingResponse` 分工（含调用栈铁证）、§9.3a 六层生成器讲解 | ✅ 提交 `ee8b4e2` / `696d7ae` / `98ec498` / 收尾提交；详见流水 1.24~1.29 |
@@ -240,6 +240,7 @@
 | 10.6c | N+1 原理 + `selectinload` 实测 | ✅ 2026-10-28；📎 三种写法实测（N=5：6/2/1 条），规模曲线 N=100 时 **101 条 57.7ms vs 2 条 4.9ms**；📎 async 下惰性加载是 `MissingGreenlet` 报错不是变慢；落地成 `GET /v1/conversations` 加 `call_count` + `total_tokens`（`outerjoin` + `coalesce`） |
 | 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39 #30 #52） | ✅ 10.6d-1 `updated_at` / 10.6d-2 游标分页 / 10.6d-3 `/health` 拆 liveness + readiness / 10.6d-4a 时间格式统一 / **10.6d-4b 四接口形状统一** |
 | 11a | 启动入口 `src/app/__main__.py`（`uv run python -m app`）+ `.env.example` 补 `DATABASE_URL` | ✅ 2026-10-29 学习者手写；📎 `PORT=8131` 启动 → `Uvicorn running on http://127.0.0.1:8131`，curl `[200]`；📎 8000 端口 `[000]` 无人听（证明 settings 真的生效）；📎 `DEBUG=true` → `Started reloader process [...] using WatchFiles`；📎 `DEBUG=false` → 无 reloader。关闭待办 **#27** #29 |
+| 11b | `settings.debug` 接进 `FastAPI(debug=...)` + **prod 强制关保护**（`model_validator` 跨字段校验） | ✅ 2026-10-31 学习者手写一次通过；📎 `APP_ENV=prod`+`DEBUG=true` → `ValidationError` / `exit_code=1` / **uvicorn 未启动**（`python -m app` 与 `uvicorn app.api.app:app` 两条路径都拦）；📎 `dev`+`DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`；📎 复验 `debug=True` 响应 `text/plain` 含 traceback 与异常消息、`debug=False` 为 `application/json`。关闭待办 **#28** |
 
 > ✅ **Step 9 于 2026-10-23 正式收口**：代码（9a → 9b-4b-3）、文档（§9.1~§9.11）、自检题 1~61、待办 #1~#23 全部关闭。
 > **下一个动作 = Step 10 数据库**。开工前注意两条与本步相关的遗留：待办 **#8**（`/v1/chat` 仍是 echo）与 **#11**（`/docs` 把流式接口标成 `application/json`）。
@@ -275,7 +276,9 @@
 | 25 | ✅ **`GET /v1/conversations` 无分页** | 已解决（2026-10-28，10.6d-2）：改为**游标分页** `?limit=20&after_id=N`，响应 `{items, total, limit, next_cursor, has_more}`。⚠️ **不用 offset**：📎 实测 offset 在「翻页期间删数据」时会**漏掉一条**（用户永远看不到），游标用「值」`id > N` 不受影响（[决策 #22](decisions.md)）| — |
 | 26 | ✅ **`/health` 不检查数据库连通性** | 已解决（2026-10-28，10.6d-3）：拆成两个端点 —— `/health` 保持 liveness（**不检查外部依赖**）、新增 `/health/ready` 探库（`SELECT 1`，失败 → 新错误码 `DB_UNAVAILABLE` → **503**）。⚠️ **不能把探库塞进 liveness**：K8s 里 liveness 失败 = 重启容器，而重启治不好数据库 → 全部实例一起崩 = 雪崩 | — |
 | 27 | ~~🟡 **`.env.example` 缺 `DATABASE_URL`**~~ | ✅ **已解决**（11a，2026-10-29）：补进 `.env.example`，含「三个斜杠＝相对路径」与「换 PostgreSQL 的形态」两条注释。⚠️ 真值（带密码的连接串）只放 `.env`。原记录：模板里有 `APP_NAME` / `APP_ENV` / `DEBUG` / `HOST` / `PORT` / `LLM_*` / `REQUEST_TIMEOUT`，**唯独没有 `DATABASE_URL`** | **已完成** |
-| 28 | 🟡 **`settings.debug` 定义了但没传给 `FastAPI(debug=...)`** | 📎 核对：`app = FastAPI(title=..., description=..., version=..., lifespan=lifespan)` —— **没有 `debug` 参数**。`settings.debug` 只在 `main.py:77` 的 CLI 演示里打印一次 | **Step 11**：与日志 / 配置一起收拾；顺带决定生产环境是否关闭 `/docs` |
+| 28 | ~~🟡 **`settings.debug` 定义了但没传给 `FastAPI(debug=...)`**~~ | 📎 核对：`app = FastAPI(title=..., description=..., version=..., lifespan=lifespan)` —— **没有 `debug` 参数**。`settings.debug` 只在 `main.py:77` 的 CLI 演示里打印一次 | **Step 11**：与日志 / 配置一起收拾；顺带决定生产环境是否关闭 `/docs` |
+
+> ✅ **#28 已关闭**（11b，2026-10-31）：`app = FastAPI(..., debug=settings.debug, ...)`；📎 实测 `DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`。⚠️ 前置保护同时落地：`config.py` 用 `@model_validator(mode="after")` 拦住 `APP_ENV=prod` + `DEBUG=true`（启动 `exit_code=1`，uvicorn 一行都没起）。另：**生产关 `/docs` 仍待做**（11e）
 | 29 | ~~🟡 **`settings.host` / `settings.port` 完全未被使用**：配置漂移~~ | ✅ **已解决**（11a，2026-10-29）：新增 `src/app/__main__.py`，`uv run python -m app` 走 `uvicorn.run("app.api.app:app", host=settings.host, port=settings.port, reload=settings.debug)`。📎 实测 `PORT=8131` → `Uvicorn running on http://127.0.0.1:8131`，而 8000 返回 `[000]`。⚠️ 原记录：两个字段在 `.env.example` 里写得清清楚楚，但代码里**零引用** | **已完成**（原计划 Step 13，11a 提前做了） |
 | 30 | ~~🟠 **同一个时间字段两种格式：带 `Z` / 不带 `Z`**~~ | ✅ **已解决**（10.6d-4a，2026-10-28）：`ConversationOut` 加 `field_validator(..., mode="after")` 补 `tzinfo=UTC`，`ConversationStatsOut` 继承 → 列表 / 详情 / `POST` / `PATCH` 全部带 `Z`。📎 原实测：`POST` 带 Z（Python 侧 aware）、`GET`/`PATCH` 无 Z（SQLite 读回 naive）。📎 根因：SQLite 方言 `_storage_format` **无时区占位符**；`DateTime(timezone=True)` 在 SQLite 下 **DDL 完全不变**（对比 PostgreSQL 才生成 `TIMESTAMP WITH TIME ZONE`）。⚠️ AI 最初给的 `mode="before"` 方案是错的（📎 字符串时间输入时 `isinstance` 失败 → 静默不补 Z），已订正为 `after` | **已完成** |
 | 31 | ✅ **`Conversation` 无 `updated_at`** | 已解决（2026-10-28，10.6d-1）：`updated_at` 加 `default` + `onupdate` 双 lambda。📎 实测：首次插入 `created_at == updated_at`；PATCH 后 `created_at` 不变、`updated_at` 变晚；**值没变（dirty check）就不发 UPDATE、`updated_at` 也不动**。⚠️ `onupdate` 是 **SQLAlchemy 在 Python 侧**算好塞进 SQL 的，**不是数据库触发器**（`sqlite_master` 里 0 个 trigger）—— 绕过 ORM 直接写 SQL 时不会更新。⚠️ 另：SQLite 读回的 `datetime` **不带 tzinfo**，引出待办 #45 | — |

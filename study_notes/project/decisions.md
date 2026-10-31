@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-10-27 · 共 19 条
+**最后更新**：2026-10-31 · 共 23 条
 
 ---
 
@@ -43,6 +43,7 @@
 | [20](#20-流式接口记账先落-pending-行不在断开路径上写) | 流式落库的事务边界 | **两阶段：先 pending 再改状态** | 2026-10-27 |
 | [21](#21-防刷靠限流不靠记账准确度) | 防刷靠什么 | **靠限流，不靠记账** | 2026-10-28 |
 | [22](#22-列表分页用游标为主total-为辅) | 列表分页形状 | **游标为主 + `total` 为辅** | 2026-10-28 |
+| [23](#23-prod--debug-组合在启动时报错退出而不是自动纠正) | `prod` + `debug` 组合 | **启动即报错退出（fail-fast）** | 2026-10-31 |
 
 ---
 
@@ -527,6 +528,20 @@
 | **`total` 与 `items` 长度区分清楚** | 📎 `total` 是「命中总数」，不是本页条数 |
 
 > 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6d；相关待办 [#25](roadmap.md) 分页、[#39](roadmap.md) 形状统一
+
+---
+
+## 23. `prod` + `debug` 组合在启动时报错退出，而不是自动纠正
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 11b 要把 `settings.debug` 接进 `FastAPI(debug=...)`。📎 实测：`debug=True` 时 `@app.exception_handler(Exception)` **根本不执行** —— 响应变成 `text/plain` + 完整 traceback（含异常消息、文件路径、局部变量）。也就是说「prod 误开 debug」= 主动把内部细节发给客户端 |
+| **方案对比** | **A fail-fast**：`prod` 且 `debug` → 启动时 `raise`，进程退出<br>B 静默纠正：检测到就把 `debug` 改成 `False`，服务照常起<br>C 只写文档：部署清单里注明"生产别开 debug" |
+| **决定** | **A**。校验放 `config.py` 的 `Settings`（`@model_validator(mode="after")`）：`settings = Settings()` 是模块级单例，**任何**启动方式（`python -m app` / `uvicorn app.api.app:app` / 只 `import app.config`）都先经过它，一处保护覆盖全部入口 |
+| **代价** ⚠️ | ① 配置写错时**服务完全起不来**（连 `/health` 都没有），本地残留一个环境变量就会"莫名崩" → 所以 `ValueError` 文案必须写清原因；② 放弃了 B 的"服务总能起"；③ 将来若要线上临时开 traceback 排障，得另加显式逃生阀 |
+| **重审条件** | 真需要「线上临时开 traceback」时 → 加显式逃生阀 + 日志告警（**不允许**退回静默纠正的 B） |
+
+> 📍 相关：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §11b、待办 #28（已关闭）、[决策 5](#5-三种错误形状并存暂不统一)（错误形状）
 
 ---
 

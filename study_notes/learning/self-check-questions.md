@@ -1094,6 +1094,12 @@
    > ① **不泄露**内部细节 ② 又能**被定位**。做法：返回客户端一个请求 id，服务端日志里带同一个 id。
 5. `get_settings()` 为什么要包一层而不是直接 import `settings`？
    > 造出**可替换的接缝**：测试能 `dependency_overrides` 换掉它，不改业务代码。
+6. 📎 `FastAPI(debug=True)` 时，`@app.exception_handler(Exception)` 为什么"不执行"？被谁截在链路哪一层？
+   > 被 **`ServerErrorMiddleware`**（Starlette）截住：`debug=True` 时它走自己的 debug 分支，直接返回 `text/plain` + traceback，**根本不会把异常交给 `ExceptionMiddleware` 里的自定义处理器**。📎 同一份抛异常的路由：`debug=False` → `application/json` + `INTERNAL_ERROR`；`debug=True` → 响应体里能读到异常消息（实测含「密码」字样）。
+7. 跨字段校验（`APP_ENV=prod` 时禁止 `DEBUG=true`）为什么必须写在 `Settings` 里，而不能写在 `__main__.py` 的 `main()` 开头？
+   > `__main__.py` **只覆盖 `python -m app` 一条入口**：`uvicorn app.api.app:app`、甚至只 `from app.config import settings` 都不会经过它（📎 实测两条路径都能绕过计划中的入口层检查，但都会被 `Settings` 的校验拦住）。而 `settings = Settings()` 是**模块级单例**，任何启动方式都要先 import 它。
+8. 为什么选「启动报错退出」而不是「检测到就自动把 `debug` 改成 `False`」？
+   > ① 自动纠正属于**静默失效**：你以为配置生效了，其实被系统悄悄改了；② 这个组合的错误后果是**把 traceback（含 SQL / 连接串 / 路径）发给客户端**，必须在"最便宜的时刻"暴露；③ fail-fast 的代价是服务起不来，但只要报错文案写清原因，这个代价可接受。
 
 ### Step 12 · 测试 FastAPI
 
@@ -1127,6 +1133,10 @@
 
 - **新增自检题**时：题目与简要答案写进本文件对应阶段/步骤，**不要在阶段笔记里复制一份**；
   阶段笔记里保留一个指向本文件的小节标题即可（便于跳转与锚点不变）。
+- ⭐ **一次只放 1 ~ 3 道，对话里只问 1 道最核心的**（2026-10-31 学习者定，规范 §3.1c）。
+  「最核心」= 答错会直接写错代码、或能暴露真实理解缺口的那一问；**不放只考记忆的定义题**。
+- 步骤卡里**不再出「你的笔记」思考题** —— 那些"想清楚再动笔"的结论由 AI 直接写进
+  [learning-log.md](learning-log.md)「三、重要结论」。
 - **深度原理、实测过程、完整实验数据**仍留在阶段笔记里（本文件只放"要点级"答案）。
 - 标记 `📎` 的题，笔记里有配套实测数据，复习时值得回看。
 
@@ -1188,3 +1198,4 @@
 | 2026-10-28 | 阶段 1 · **Step 10** 补第 73~75 题（**时钟选择 / 超时语义**）：三个时钟的 `adjustable` 差异（📎 `get_clock_info` 实测）/ 「改系统时钟避免休眠不计时」为何是反向做法（📎 模拟 NTP 前跳 60s 时墙钟 3 秒误触发）/ `read timeout` 是间隔不是总时长（📎 read=1s 而请求跑满 4.95s 不超时）。配套 [tools-reference §12](tools-reference.md)、待办 #55 |
 | 2026-10-28 | 阶段 1 · **Step 10** 补第 76~77 题（**形状统一两个坑**）：pydantic `model_validate` **不裁剪** vs FastAPI `response_model` **会裁剪**（📎 同一份数据两种结果，因为 pydantic 有子类实例快速路径）/ `outerjoin` 三种错法对比（📎 `conversation.id` 运行时 AttributeError → 服务照常启动但两接口 500；📎 主键互对 → 不报错但数字全是别人的）。配套笔记 §10.6d-4b、待办 #52 |
 | 2026-10-23 | 阶段 1 · **Step 9** 补第 56 题（**宽松字段三档**）：静默收窄 / warning / error 的判据（📎 `finish_reason=''` 误报警那次的教训）。配套规范 §14.4 ⑥、笔记专题 12 ⑤ |
+| 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 6~8 题，11a/11b）：`debug=True` 为何绕过异常处理器（答：`ServerErrorMiddleware` 截住）/ 跨字段校验为何必须放 `Settings` 而不是 `__main__.py` / 为何 fail-fast 而不自动纠正。配套笔记 §11a、§11b。⭐ 同时确立新约定：**每次只放 1~3 道，对话里只问 1 道最核心的** |

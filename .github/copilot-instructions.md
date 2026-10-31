@@ -76,7 +76,8 @@
 
 1. 跑质量门：`uv run ruff check . ; uv run ruff format --check . ; uv run mypy .`
 2. 更新 `study_notes/learning/learning-log.md`：**流水表加一行**；有新踩坑/新结论就各加一行
-3. 新增自检题 → 写进 `study_notes/learning/self-check-questions.md`（**不要**在阶段笔记里复制一份）
+3. 新增自检题 → 写进 `study_notes/learning/self-check-questions.md`（**不要**在阶段笔记里复制一份）；
+   **每次放 1~3 道，对话里只问 1 道最核心的**；步骤卡**不再出「你的笔记」思考题** —— 结论由 AI 直接写进 `learning-log.md`（规范 §3.1c，2026-10-31 学习者定）
 4. 更新进度标记（路线图 / 规范 §7.0b / 阶段笔记）——**同一事实记在多处时要全部更新**
 5. 提交并 push（见 4.5）
 
