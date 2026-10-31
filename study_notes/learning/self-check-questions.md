@@ -1114,6 +1114,12 @@
     > `app.api` 只是 **`PlaceHolder`**（只有名字占位，没有 level / handler）；真正的 logger 是 `app.api.app`。**不能用 `getLogger` 探测** —— 它是「获取或创建」，📎 实测 `logging.getLogger("app.core.probe")` 之后 `app.core` 就从"不存在"变成"PlaceHolder"。正确做法：查 `logging.root.manager.loggerDict`，并用 `isinstance(obj, logging.PlaceHolder)` 区分。
 15. 📎 `%s` 能保证"不调用 `str()`"，它能不能保证"不计算参数"？举个反例，怎么写才对？
     > **不能。** 反例：`logger.debug("body=%s", await request.body())` —— `await` 在读参数那一行就已经执行了；`logger.debug("rows=%s", [r.dict() for r in rows])` 同理。写法：先加闸 `if logger.isEnabledFor(logging.DEBUG):` 再调。⭐ 判据：`%s` 管的是**格式化**开销，`isEnabledFor` 才管**计算**开销，两件事要分开看。
+16. 📎 `@app.exception_handler(...)` 要挂 `starlette.exceptions.HTTPException` 还是 `fastapi.HTTPException`？为什么？
+    > 挂 **Starlette 的**。① FastAPI 那个是它的**子类**，挂父类才能同时罩住两者；② **`GET /nope` 的 404 是 Starlette 的 Router 自己抛的**，只挂子类会漏（📎 实测：只挂 FastAPI 的 → 路径不存在仍返回 `{"detail":"Not Found"}`；只挂 Starlette 的 → 三种情况全覆盖）。⭐ 判据：**处理器要挂在「所有可能被抛出的类型的祖先」上**。
+17. 为什么路由里出错要 `raise`，而不是直接 `return` 一个错误响应？
+    > ① `return` 的语义是"交给你，你继续" → 每一层都要写 `if`，📎 忘了写就变成 `[200] {'ok': True}` **静默吞错**；`raise` 是"到此为止"，📎 中间层 `print` 一次都不执行。② 依赖里（`get_db`）**没有返回值可用**。③ 流式接口响应头已发出，**没法 return 一个响应**。④ 形状改一次只改 `_error_response`。⭐ 判据：**「这不是成功的结果」→ raise；「这就是要交给客户端的数据」→ return。**
+18. 📎 500 的响应为什么没有 `Access-Control-Allow-Origin`？这在浏览器里表现成什么？
+    > 因为 500 由**最外层 `ServerErrorMiddleware`** 产出，**不经过 `CORSMiddleware`**（后者在它里层）。浏览器里表现为「网络错误」：JS **读不到 body、也读不到 `request_id`**。⚠️ 而 500 恰恰是最需要那个 ID 的场景（待办 #57）。另外同原因导致 500 的 `X-Request-ID` 头必须由**处理器自己**写。
 
 ### Step 12 · 测试 FastAPI
 
@@ -1214,5 +1220,6 @@
 | 2026-10-23 | 阶段 1 · **Step 9** 补第 56 题（**宽松字段三档**）：静默收窄 / warning / error 的判据（📎 `finish_reason=''` 误报警那次的教训）。配套规范 §14.4 ⑥、笔记专题 12 ⑤ |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 6~8 题，11a/11b）：`debug=True` 为何绕过异常处理器（答：`ServerErrorMiddleware` 截住）/ 跨字段校验为何必须放 `Settings` 而不是 `__main__.py` / 为何 fail-fast 而不自动纠正。配套笔记 §11a、§11b。⭐ 同时确立新约定：**每次只放 1~3 道，对话里只问 1 道最核心的** |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 9~11 题，11c）：`disable_existing_loggers=True` 到底禁谁（🟡 学习者答错过：不是"全部"，是"未命名的那些"）/ `basicConfig` 为何静默失效 / 为何 `__main__.py` 还要再配一次。配套笔记 §11c、决策 24 |
+| 2026-10-31 | 阶段 1 · **Step 11** 补 3 题（第 16~18 题，11d）：`HTTPException` 该挂哪个类 / 为什么用 `raise` 而不是 `return` 错误响应 / 500 为什么没有 CORS 头。配套笔记 §11d、待办 #57 |
 | 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
 | 2026-10-31 | 新增独立章节 [logging.md](logging.md)：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数与幂等 / 14 条注意事项 / 踩坑表。同时把 `stage1-fastapi.md §11.2` 收缩成指针（避免同一份事实两处维护） |

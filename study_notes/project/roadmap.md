@@ -3,7 +3,7 @@
 > **用途**：本文档是长期学习的唯一上下文来源（single source of truth）。
 > 每次开启新对话时，请先让 AI 阅读本文档，再继续讨论。
 >
-> **最后更新**：2026-10-18（阶段 1 · Step 6 完成）
+> **最后更新**：2026-10-31（阶段 1 · Step 11 进行中：11a / 11b / 11c ✅，11d 待做）
 
 ---
 
@@ -70,11 +70,13 @@
 - **产出**：一个可运行的「聊天接口后端」（业务逻辑先用 echo 占位）
 - **验收**：能用 curl / Swagger 调通接口，能流式返回内容
 - **笔记**：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md)（13 步 + 10 个难点拓展 + 5 个附录）
-- **状态**：🟡 **进行中**（2026-10-14 起，Step 1~9 已完成）
+- **状态**：🟡 **进行中**（2026-10-14 起，**Step 1~10 已全部完成**，Step 11 进行中）
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
-  - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**；**Step 11 工程化进行中：11a ✅（启动入口）/ 11b ✅（debug 接线 + prod 保护），下一步 11c `dictConfig`**
+  - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**
+  - **Step 11 工程化（2026-10-29 起）**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ⬜ 统一错误形状（下一步，步骤卡已发）** / 11e ⬜ 生产关 `/docs` `/redoc` `/openapi.json` / 11f ⬜ 流式接口在 `/docs` 标 `text/event-stream`
+  - **Step 12 / 13 未开始**（测试、部署）
 
 ### 自检统一安排（2026-10-29 决定）
 
@@ -84,8 +86,9 @@
 > |---|---|---|
 > | 阶段 0 | 1 ~ 61 | 已完成 |
 > | 阶段 1 · Step 1~9 | 1 ~ 68 | 已完成 |
-> | **阶段 1 · Step 10** | **69 ~ 77（9 题）** | ⏭️ 推后 |
-> | 阶段 1 · Step 11~13 | 待补 | 随步骤走，或一并推后 |
+> | **阶段 1 · Step 10** | **69 ~ 77（9 题）** | ⏭️ 推后（阶段一收口前一次做完） |
+> | 阶段 1 · Step 11 | **6 ~ 18（13 题）**—— 已在 11a/11b/11c 期间**当场问过 8 道**（11b 2 道、11c 1 道、日志专题 3 道…） | 🟡 已入库；**未全问**，剩余随 11d~11f 走 |
+> | 阶段 1 · Step 12~13 | 待补 | 随步骤走，或一并推后 |
 >
 > ⚠️ **推后的代价（记录在案，不粉饰）**：自检题的价值是「趁热发现理解缺口」，推后意味着缺口会累积到阶段末一起爆发，届时补漏成本更高。
 > ⭐ **缓解措施**：Step 11~13 期间若出现「同一个概念被问第二次」，说明那里有真缺口 → 当场补讲，不等自检。
@@ -207,7 +210,7 @@
 | 7a | 请求 ID + 耗时中间件（`@app.middleware("http")`）；500 复用同一 ID 并补响应头 | ✅ 实测：沿用客户端 ID / 500 头体一致 / 日志覆盖 200·404·500 |
 | 7a-补 | 新建 `src/app/constants.py`（`HEADER_REQUEST_ID`），三处硬编码收敛到一处 | ✅ 实测 `X-Request-ID` 与 `X-Request_ID` 是两个不同的头（大小写则不敏感） |
 | 7b | CORS（预检、`allow_credentials` 的禁忌） | ✅ 实测：白名单返 ACAO / 非白名单仍 200 无 ACAO / 预检打不存在路径 200 / 非法方法 400 |
-| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 / 10 已完成；**Step 11 进行中（11a ✅ / 11b ✅）**；Step 12~13 未开始 |
+| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 / 10 已完成；**Step 11 进行中（11a ✅ / 11b ✅ / 11c ✅ / 11d 待做）**；Step 12~13 未开始 |
 | 8 | Step 8 异步正确姿势（`blocking_demo.py`） | ✅ 实测 25 倍 / 排队 / GIL |
 | 9a | SSE 假数据流式：`/v1/chat/stream` + `StreamingResponse` | ✅ 实测 TTFB 0.014s / total 1.85s / chunked |
 | 9a-补 | 机制补讲四轮（学习者反馈"没看懂"）：§9.2b f-string 与 `\n\n`、§9.2c 帧 vs 时间、§9.2d 生成器与 `StreamingResponse` 分工（含调用栈铁证）、§9.3a 六层生成器讲解 | ✅ 提交 `ee8b4e2` / `696d7ae` / `98ec498` / 收尾提交；详见流水 1.24~1.29 |
@@ -242,6 +245,9 @@
 | 11a | 启动入口 `src/app/__main__.py`（`uv run python -m app`）+ `.env.example` 补 `DATABASE_URL` | ✅ 2026-10-29 学习者手写；📎 `PORT=8131` 启动 → `Uvicorn running on http://127.0.0.1:8131`，curl `[200]`；📎 8000 端口 `[000]` 无人听（证明 settings 真的生效）；📎 `DEBUG=true` → `Started reloader process [...] using WatchFiles`；📎 `DEBUG=false` → 无 reloader。关闭待办 **#27** #29 |
 | 11b | `settings.debug` 接进 `FastAPI(debug=...)` + **prod 强制关保护**（`model_validator` 跨字段校验） | ✅ 2026-10-31 学习者手写一次通过；📎 `APP_ENV=prod`+`DEBUG=true` → `ValidationError` / `exit_code=1` / **uvicorn 未启动**（`python -m app` 与 `uvicorn app.api.app:app` 两条路径都拦）；📎 `dev`+`DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`；📎 复验 `debug=True` 响应 `text/plain` 含 traceback 与异常消息、`debug=False` 为 `application/json`。关闭待办 **#28** |
 | 11c | 日志换 `dictConfig(force=True)`：新增 `src/app/logging_setup.py`，`app.py` 模块级调用，`__main__.py` 提前调 + `log_config=None` | ✅ 2026-10-31 学习者手写；📎 改前两种格式并存（`INFO:     ` + 我们的）+ 每请求 2 行；📎 改后三条路径（`python -m app` / `DEBUG=true` reload / `uvicorn app.api.app:app`）统一 `2026-10-31 … INFO uvicorn.error \| …`，每请求 1 行；📎 去掉 `log_config=None` → reloader 父进程 3 行退回 uvicorn 格式；📎 `disable_existing_loggers=True` → `app.errors` / `httpx` 被禁用（`uvicorn.*` 因被命名反而不受影响）。关闭待办 **#7**，拆 #51 |
+| 11d | **统一错误形状（B 版：业务码）**：`errors.py` 抽 `_error_response` 单一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；`app.py` 两处 404 改抛 `AppError("MODEL_NOT_FOUND"/"CONVERSATION_NOT_FOUND")` | ⬜ **步骤卡已发**（2026-10-31），待学习者手写。📎 设计版已实测通过（8 组用例 + 三道门），目标：三种 404 各有独立 `code`、所有错误都带 `request_id` |
+| 11e | 生产关 `/docs` `/redoc` `/openapi.json` | ⬜ 待做（`docs_url=None` / `redoc_url=None` / `openapi_url=None` 按 `app_env` 决定） |
+| 11f | 流式接口在 `/docs` 标 `text/event-stream` | ⬜ 待做（`responses={200: {"content": {"text/event-stream": {}}}}`） |
 
 > ✅ **Step 9 于 2026-10-23 正式收口**：代码（9a → 9b-4b-3）、文档（§9.1~§9.11）、自检题 1~61、待办 #1~#23 全部关闭。
 > **下一个动作 = Step 10 数据库**。开工前注意两条与本步相关的遗留：待办 **#8**（`/v1/chat` 仍是 echo）与 **#11**（`/docs` 把流式接口标成 `application/json`）。
@@ -257,8 +263,6 @@
 | 5 | ~~client 生命周期按"请求级"还是"应用级"管~~ | ✅ **已定案**（6.4，2026-10-18）：改为 **应用级**（`lifespan` 创建 + `app.state.llm_client` 共享）；实测 startup 后 `is_closed=False`、两次请求同一对象、shutdown 后 `is_closed=True`。性能依据：每请求新建比共享慢 **2.23 倍** | **已完成** |
 | 6 | **三种错误响应形状并存**：400 `{"error":{code,message}}` / 404 `{"detail":"…"}` / 422 `{"detail":[…]}` | 客户端要写三份解析代码。判据：错误形状应让客户端只写一份 | **Step 11（工程化）**：给 `HTTPException` 与 `RequestValidationError` 各注册处理器统一形状 |
 | 7 | **日志只有基础**：无格式化（无时间/级别/模块名）、`logger.info` 被静默丢弃、无文件/集中收集 | 现在只有 ERROR 级能出现在终端；排查时缺上下文 | **Step 11**：`logging.dictConfig` + 统一格式 +（生产）日志收集 |
-
-> ✅ **#7 已关闭**（11c，2026-10-31）：`basicConfig` 换成 `logging_setup.configure_logging()`（`dictConfig(force=True)` + `disable_existing_loggers=False`）；📎 `python -m app` / `DEBUG=true`（reload）/ `uvicorn app.api.app:app` 三条路径都是同一格式 `2026-10-31 … INFO app.api.app | GET /health -> 200 …`。**生产日志收集仍未做**（见 #51）
 | 8 | `/v1/chat` 仍是 `echo` 占位（Step 9 只让**流式**路由接了真上游）；`app.state.llm_client` 是 `Any`（mypy 校验不到属性拼错） | 📎 Step 9 收口后实测：`POST /v1/chat` → `{"content":"[echo] 你好",...}`，未触碰上游。⚠️ 接真上游时**不要照抄流式写法**：建议「**接收流式 + 返回非流式**」（能中途取消省钱 / 逐帧记账 / 防坏帧），判据见笔记 §9.10 ⑦ | **Step 10 之后或阶段 2**；类型问题**随时可做** |
 | 9 | **`HEAD` 请求返回 405**（`allow: GET`） | 实测 `curl -I http://127.0.0.1:8000/health` → `405 Method Not Allowed`。因为 `@app.get(...)` 只注册 GET。有些监控/探活工具用 HEAD 探测会失败 | **随时可做**：`@app.api_route("/health", methods=["GET", "HEAD"])` 或加一个 `@app.head("/health")` |
 | 10 | **流内错误尚未编码**（9b 才做） | 现在 `/v1/chat/stream` 是假数据，不会中途出错；接真实上游后必须用帧报错 + `finally` 发 `[DONE]`，否则前端只看到"连接被掐断" | **9b** |
@@ -280,8 +284,6 @@
 | 26 | ✅ **`/health` 不检查数据库连通性** | 已解决（2026-10-28，10.6d-3）：拆成两个端点 —— `/health` 保持 liveness（**不检查外部依赖**）、新增 `/health/ready` 探库（`SELECT 1`，失败 → 新错误码 `DB_UNAVAILABLE` → **503**）。⚠️ **不能把探库塞进 liveness**：K8s 里 liveness 失败 = 重启容器，而重启治不好数据库 → 全部实例一起崩 = 雪崩 | — |
 | 27 | ~~🟡 **`.env.example` 缺 `DATABASE_URL`**~~ | ✅ **已解决**（11a，2026-10-29）：补进 `.env.example`，含「三个斜杠＝相对路径」与「换 PostgreSQL 的形态」两条注释。⚠️ 真值（带密码的连接串）只放 `.env`。原记录：模板里有 `APP_NAME` / `APP_ENV` / `DEBUG` / `HOST` / `PORT` / `LLM_*` / `REQUEST_TIMEOUT`，**唯独没有 `DATABASE_URL`** | **已完成** |
 | 28 | ~~🟡 **`settings.debug` 定义了但没传给 `FastAPI(debug=...)`**~~ | 📎 核对：`app = FastAPI(title=..., description=..., version=..., lifespan=lifespan)` —— **没有 `debug` 参数**。`settings.debug` 只在 `main.py:77` 的 CLI 演示里打印一次 | **Step 11**：与日志 / 配置一起收拾；顺带决定生产环境是否关闭 `/docs` |
-
-> ✅ **#28 已关闭**（11b，2026-10-31）：`app = FastAPI(..., debug=settings.debug, ...)`；📎 实测 `DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`。⚠️ 前置保护同时落地：`config.py` 用 `@model_validator(mode="after")` 拦住 `APP_ENV=prod` + `DEBUG=true`（启动 `exit_code=1`，uvicorn 一行都没起）。另：**生产关 `/docs` 仍待做**（11e）
 | 29 | ~~🟡 **`settings.host` / `settings.port` 完全未被使用**：配置漂移~~ | ✅ **已解决**（11a，2026-10-29）：新增 `src/app/__main__.py`，`uv run python -m app` 走 `uvicorn.run("app.api.app:app", host=settings.host, port=settings.port, reload=settings.debug)`。📎 实测 `PORT=8131` → `Uvicorn running on http://127.0.0.1:8131`，而 8000 返回 `[000]`。⚠️ 原记录：两个字段在 `.env.example` 里写得清清楚楚，但代码里**零引用** | **已完成**（原计划 Step 13，11a 提前做了） |
 | 30 | ~~🟠 **同一个时间字段两种格式：带 `Z` / 不带 `Z`**~~ | ✅ **已解决**（10.6d-4a，2026-10-28）：`ConversationOut` 加 `field_validator(..., mode="after")` 补 `tzinfo=UTC`，`ConversationStatsOut` 继承 → 列表 / 详情 / `POST` / `PATCH` 全部带 `Z`。📎 原实测：`POST` 带 Z（Python 侧 aware）、`GET`/`PATCH` 无 Z（SQLite 读回 naive）。📎 根因：SQLite 方言 `_storage_format` **无时区占位符**；`DateTime(timezone=True)` 在 SQLite 下 **DDL 完全不变**（对比 PostgreSQL 才生成 `TIMESTAMP WITH TIME ZONE`）。⚠️ AI 最初给的 `mode="before"` 方案是错的（📎 字符串时间输入时 `isinstance` 失败 → 静默不补 Z），已订正为 `after` | **已完成** |
 | 31 | ✅ **`Conversation` 无 `updated_at`** | 已解决（2026-10-28，10.6d-1）：`updated_at` 加 `default` + `onupdate` 双 lambda。📎 实测：首次插入 `created_at == updated_at`；PATCH 后 `created_at` 不变、`updated_at` 变晚；**值没变（dirty check）就不发 UPDATE、`updated_at` 也不动**。⚠️ `onupdate` 是 **SQLAlchemy 在 Python 侧**算好塞进 SQL 的，**不是数据库触发器**（`sqlite_master` 里 0 个 trigger）—— 绕过 ORM 直接写 SQL 时不会更新。⚠️ 另：SQLite 读回的 `datetime` **不带 tzinfo**，引出待办 #45 | — |
@@ -303,16 +305,22 @@
 | 48 | 🟠 **`ChatRequest.model` 完全不校验** | 📎 实测 `""` / `"不存在的模型"` / 500 个 `x` **全部通过 pydantic**（`model: str \| None = None` 无任何约束）→ 直接打到上游 → 上游 4xx → 我们回 **502**（本该是客户端错误 400/422）。⚠️ 与 `/v1/models/{model_name}` 已有的 404 校验**自相矛盾** | **阶段 2**（`KNOWN_MODELS` 改真实数据时一起做） |
 | 49 | 🟠 **没有 `Dockerfile`**（阶段 0 的交付物清单里写了「多阶段 Docker」） | 📎 核对仓库根目录：`Dockerfile` / `.dockerignore` **都不存在**，但 [工程规范 §7.0](../../工程规范与协作约定.md) 阶段 0 一行写的是「uv 锁依赖 / mypy strict / 测试覆盖 / **多阶段 Docker**」—— 交付物与计划不符 | **Step 13 部署前** |
 | 50 | 🟠 **`create_all` 在每次启动都跑 DDL** | `lifespan` 启动段执行 `Base.metadata.create_all`。⚠️ 产品环境应由**迁移工具独占 DDL**（Alembic）；多副本同时启动会有建表竞态；且 `create_all` **不会改已有表**，给人一种「已经管了 schema」的错觉。🔴 **10.6d-3 实测发现更严重的后果**：DB 不可用时**服务根本起不来**（📎 `DATABASE_URL` 指向不存在目录 → `lifespan` 抛 `OperationalError: unable to open database file` → `Application startup failed. Exiting.`）→ docker-compose / K8s 里 DB 还没就绪时 **应用会 crash loop**。⭐ 根治办法正是把 DDL 移出启动路径（Alembic 作为独立部署步骤）—— 那时启动不需要 DB，`/health/ready` 就能正常报 503 而不是进程直接死 | **有真实数据之前**（阶段 3 前，与 #13 PostgreSQL 一起） |
-| 51 | 🟡 **日志只有 `logging.basicConfig` 纯文本到 stdout** | 无 **JSON 结构化**（Loki / ELK 采集要结构化）、无**轮转**（磁盘写满会挂）、无级别分级。⚠️ 且 `basicConfig` 只在 root 没 handler 时才生效 —— 被 uvicorn 抢先配置时会静默失效 | **Step 11**（`dictConfig`，属 #7 的一部分） |
-
-> 🟡 **#51 拆成两半**（11c，2026-10-31）：
-> - ✅ **已解决**：`basicConfig` 的静默失效 + 两套格式并存 + 每请求两行 → `dictConfig(force=True)` 落地，三条启动路径同一格式。
-> - ⬜ **仍未做**：**JSON 结构化**与**按天轮转** —— 它们只在「有日志平台 / 多机」时才有意义，随部署阶段一起做（另见待办 #55 的"无总时长上限"对日志量的影响）。
+| 51 | 🟡 **日志只有 `logging.basicConfig` 纯文本到 stdout** | 无 **JSON 结构化**（Loki / ELK 采集要结构化）、无**轮转**（磁盘写满会挂）、无级别分级。⚠️ 且 `basicConfig` 只在 root 没 handler 时才生效 —— 被 uvicorn 抢先配置时会静默失效 | ~~**Step 11**~~ ✅ **11c 已解决一半**（见表格下方说明） |
 | 52 | ~~🟡 **`GET /v1/conversations/{id}` 不返回账单统计，与列表不一致**~~ | ✅ **已解决**（10.6d-4b，2026-10-28）：抽出 4 个 helper（`_conversation_not_found` / `_conversation_stats_stmt` / `_row_to_stats` / `_fetch_conversation_stats`），**POST / GET 详情 / PATCH / 列表 items 四处统一为 6 字段**。📎 实测：种子对话 1（3 条账单 73/41/5）→ 四处都返回 `call_count=3 total_tokens=119`；没账单的 `0/0`（非 null）；404 文案 GET/PATCH/DELETE 三处一字不差。📎 性能：详情走 `join+group` 单次 **0.467ms**，比原来 `db.get()` 的 0.567ms **更快**（不构造 ORM 对象）。⚠️ 过程中踩了两个坑，见 [stage1-fastapi.md §10.6d-4b](../learning/stage1-fastapi.md)：① `outerjoin` 条件写成 `LlmCall.conversation.id` → 运行时 `AttributeError` → 两个接口 500 而服务照常启动；② 只改返回注解不改 `response_model` → 响应被**静默裁剪** | **已完成** |
 | 53 | 🟢 **`_as_int` 把 `bool` 当 `int`** | 📎 实测 `_as_int(True)` 返回 `True`（Python 里 `isinstance(True, int)` 为真），SQLite 会存成 `1`。上游给 `true` 时账单会记 1 token | 低优先，修法：`isinstance(value, int) and not isinstance(value, bool)` |
 | 54 | 🔴 **「返回 201/200」不等于「已提交」**：`get_db` 的 `commit()` 在路由函数**返回之后**才执行 | 📎 实测（patch `AsyncSession.commit` 抛 `RuntimeError("模拟磁盘满")`）：`POST /v1/conversations` → 客户端收到 **`201` + 完整响应体 `{"id":2,...}`**，而库里**只有 1 行（id=1）**—— `id=2` 从未存在。服务端只在日志里留一条「未处理异常」，客户端毫无感知。⭐ 触发条件都是产品环境常见的：磁盘满 / 连接池耗尽 / 唯一约束冲突 / 连接被中间设备掐断。🔴 又因为**响应已经发出**，`register_exception_handlers` 也救不了（改不了状态码）。📎 10.6d-4a 的同类前兆：`PATCH` 少写 `flush()` → 返回体带旧 `updated_at`（已修） | **产品化前必做**（修法方向：`commit()` 提到路由函数内、`return` 之前；`get_db` 只留 `rollback` + `close`） |
 | 55 | 🟠 **`request_timeout=30` 不是「请求总时长上限」**，是「每次读取的间隔」 | 📎 实测（假上游每 0.4s 发一帧，`httpx.Timeout(1.0)`）：请求跑满 **4.95 秒**不超时；对照组单帧后停 2.5s → `[1.03s] ReadTimeout`。⚠️ httpx 只有 `connect / read / write / pool` 四个**间隔型**超时，**没有总时长上限** → 上游每 0.9 秒滴一帧就能让请求**无限期挂着**（占连接、占并发名额、账单还在涨）。⭐ 对一个 LLM 应用尤其危险：慢速滴答比直接失败更费钱 | **阶段 3 部署前**（修法：`asyncio.timeout(总秒数)` 包住整个上游调用；或用 `anyio.fail_after`。**用单调钟，不要用 `time.time()`**） |
 | 56 | 🟡 **访问日志丢掉了客户端 IP** | 11c 关掉 `uvicorn.access` 后，每请求只剩中间件那一行 `GET /health -> 200 3.1ms request_id=…` —— **没有客户端 IP**。`uvicorn.access` 原本会打 `127.0.0.1:62657 - "GET …"`。出问题时无法区分「一个客户端刷 1 万次」和「一万个客户端各一次」 | **Step 13 部署前**（修法：在中间件那行加 `request.client.host`。⚠️ 上线到反向代理后要读 `X-Forwarded-For`，且该头可伪造 —— 必须只信任自己那层代理写的值） |
+| 57 | 🔴 **500 响应没有任何 CORS 头** | 📎 实测（带 `Origin: http://localhost:5173`）：200 / 404 / 422 都有 `Access-Control-Allow-Origin`，**500 是 `<无>`**。根因：500 的响应由**最外层 `ServerErrorMiddleware`** 产出，**不经过** `CORSMiddleware`（后者在它里层）。⭐ 后果：浏览器里前端拿到的是「网络错误」，**读不到 body、也读不到 `request_id`** —— 用户报障时连 ID 都给不出；而 500 恰恰是最需要这个 ID 的场景 | **产品化前必做**（选项：① 把 CORS 放到最外层 —— 需要改用中间的 `add_middleware` 顺序，或自己包一层 ASGI；② 在 500 处理器里手写 CORS 头 —— 要读 `request.headers["origin"]` 与自己维护白名单，等于复制 CORS 逻辑；③ 用 nginx 统一加 —— 但那样本地/测试环境仍然缺）。⚠️ 决策前要先实测「挪顺序后我们的 `request_id` 中间件还能不能拿到状态码」 |
+| 58 | 🟡 **错误码是裸字符串：拼错 / 漏登记都会静默降级成 400** | 📎 实测：`AppError("MODEL_NOT_FOUNDD", …)`（多一个 D）→ **不报错**，`_STATUS_BY_CODE.get` 落空 → **HTTP 400**，客户端看到 `code='MODEL_NOT_FOUNDD'`。⭐ 对比：**忘传参数**有两道闸（mypy `call-arg` + 运行时 `TypeError`），**拼错码**零道闸。📎 另外 `AppError(404, …)`（少写引号传成 int）运行时也不报错 → 同样静默 400（这个 mypy 能抓） | **11d 收口后决定**（选项：① 模块常量 ② `Literal` 3 ③ `StrEnum` + `dict[ErrorCode, int]` 强制全覆盖 —— ③ 最彻底，改动最大） |
+
+> 🟡 **#51 拆成两半**（11c，2026-10-31）：
+> - ✅ **已解决**：`basicConfig` 的静默失效 + 两套格式并存 + 每请求两行 → `dictConfig(force=True)` 落地，三条启动路径同一格式。
+> - ⬜ **仍未做**：**JSON 结构化**与**按天轮转** —— 它们只在「有日志平台 / 多机」时才有意义，随部署阶段一起做（另见待办 #55 的"无总时长上限"对日志量的影响）。
+>
+> ✅ **#7 已关闭**（11c，2026-10-31）：`basicConfig` 换成 `logging_setup.configure_logging()`（`dictConfig(force=True)` + `disable_existing_loggers=False`）；📎 `python -m app` / `DEBUG=true`（reload）/ `uvicorn app.api.app:app` 三条路径都是同一格式。**生产日志收集仍未做**（见 #51）。
+>
+> ✅ **#28 已关闭**（11b，2026-10-31）：`app = FastAPI(..., debug=settings.debug, ...)`；📎 实测 `DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`。⚠️ 前置保护同时落地：`config.py` 用 `@model_validator(mode="after")` 拦住 `APP_ENV=prod` + `DEBUG=true`（启动 `exit_code=1`，uvicorn 一行都没起）。另：**生产关 `/docs` 仍待做**（11e）。
 
 
 **待办 → 步骤 对照（2026-10-25 审计后新增）**：
@@ -328,10 +336,16 @@
 | **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #30 #39 #52 #54** |
 | **10.8** | ~~Step 10 自检（77 题）~~ | ⏭️ **推后**：2026-10-29 学习者决定「进度优先，自检题统一放到阶段一结束后一次过」。10.8 不再单独执行，改为**阶段一收口前置项**（见下方「自检统一安排」） |
 | **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
+| **11a** | 启动入口 `python -m app`（`settings.host/port` 生效）+ `.env.example` 补 `DATABASE_URL` | ✅ 已完成 · **#27 #29** |
+| **11b** | `settings.debug` → `FastAPI(debug=…)` + prod 强制关保护 | ✅ 已完成 · **#28** |
+| **11c** | 日志 `dictConfig(force=True)`（+ 新增 `learning/logging.md` 专题） | ✅ 已完成 · **#7**（#51 拆半 · 新增 **#56**） |
+| **11d** | 统一错误形状（`_error_response` 单一出口 + 4 个处理器 + 业务码） | ⬜ 进行中 · **#6** · 关联决策 5 |
+| **11e** | 生产关 `/docs` `/redoc` `/openapi.json` | ⬜ 待做 |
+| **11f** | 流式接口在 `/docs` 标 `text/event-stream` | ⬜ 待做 · **#11** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |
 | **阶段 2** | 消息落库 / 软删除 / 并发控制 / KNOWN_MODELS 改真实数据 | **#3 #32 #34 #35** |
-| **随时** | `DATABASE_URL` 补进 `.env.example` | **#27** |
+| **随时** | ~~`DATABASE_URL` 补进 `.env.example`~~ | ✅ **11a 已完成**（#27） |
 
 ---
 
@@ -357,6 +371,7 @@ llm-app-engineering\                       # 项目根
 │   └── learning\                # 【纯学习笔记】换个项目照样有用的知识
 │       ├── stage0-engineering-basics.md   # 阶段 0：工程基础
 │       ├── stage1-fastapi.md              # 阶段 1：FastAPI 速成
+│       ├── logging.md                     # 日志专题（架构 / 参数 / 注意事项）
 │       ├── tools-reference.md             # 第三方包与工程工具速查
 │       ├── self-check-questions.md        # 全部自检题 + 简要答案
 │       └── learning-log.md                # 过程与收获：流水 / 踩坑 / 结论
@@ -364,11 +379,15 @@ llm-app-engineering\                       # 项目根
 ├── .env.example（提交） / .env（不提交）
 ├── src\app\                     # 应用代码
 │   ├── config.py                # 配置（pydantic-settings）
+│   ├── logging_setup.py         # 日志配置（dictConfig，唯一一处）
 │   ├── schemas.py               # 对外数据契约（pydantic）
 │   ├── constants.py             # 必须跨模块一致的常量（如 HTTP 头名）
 │   ├── errors.py                # 业务异常 AppError + 错误码→状态码映射 + 异常处理器注册
 │   ├── llm_client.py            # 上游 HTTP 客户端的唯一构造点
+│   ├── database.py              # 引擎 / 会话工厂 / get_db 依赖 / lifespan 里的建表与释放
+│   ├── models.py                # ORM 模型（Conversation / LlmCall）
 │   ├── main.py                  # 阶段 0 的 CLI（演示 + ping 连通性检查）
+│   ├── __main__.py              # 启动入口：uv run python -m app（让 settings.host/port 生效）
 │   └── api\
 │       ├── app.py               # 阶段 1 的 FastAPI 应用对象 + lifespan + 路由
 │       └── deps.py              # 依赖注入声明（get_settings / get_llm_client）
@@ -382,11 +401,12 @@ llm-app-engineering\                       # 项目根
 | 笔记 | 规模 | 覆盖内容 |
 |---|---|---|
 | [learning/stage0-engineering-basics.md](../learning/stage0-engineering-basics.md) | 2457 行 | uv / Git / pydantic / 类型注解 / 异步 / 测试 / lint / Docker + 11 个难点拓展 |
-| [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) | 4375 行 | HTTP/ASGI → SSE 流式 → 数据库 → 测试 → 部署，共 13 步 + 10 个难点拓展；**Step 6 后有「前半程回顾」**（复习入口） |
-| [learning/learning-log.md](../learning/learning-log.md) | 884 行 | 步骤流水 / 踩坑 / 重要结论 / 重点专题（每步自动追加） |
-| [learning/tools-reference.md](../learning/tools-reference.md) | 914 行 | 每个依赖与工具的定位、安装、常用语法与命令、实测默认值、易错点（§9 起含标准库 logging） |
-| [learning/self-check-questions.md](../learning/self-check-questions.md) | 415 行 | **全部自检题 + 简要答案**，按阶段/步骤排列；⭐ 标高频、🟡 标答错过、📎 标有配套实测 |
-| [工程规范与协作约定.md](../../工程规范与协作约定.md) | 1486 行 | 协作节奏、步骤卡模板、质量门、目录与命名、安全约定 |
+| [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) | 9912 行 | HTTP/ASGI → SSE 流式 → 数据库 → 工程化 → 测试 → 部署，共 13 步 + 10 个难点拓展；**Step 6 后有「前半程回顾」**（复习入口） |
+| [learning/logging.md](../learning/logging.md) | 470 行 | **日志专题**：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数 / 14 条注意事项 / 踩坑表 |
+| [learning/learning-log.md](../learning/learning-log.md) | 1897 行 | 步骤流水 / 踩坑 / 重要结论 / 重点专题（每步自动追加） |
+| [learning/tools-reference.md](../learning/tools-reference.md) | 1571 行 | 每个依赖与工具的定位、安装、常用语法与命令、实测默认值、易错点（§9 起含标准库 logging） |
+| [learning/self-check-questions.md](../learning/self-check-questions.md) | 1218 行 | **全部自检题 + 简要答案**，按阶段/步骤排列；⭐ 标高频、🟡 标答错过、📎 标有配套实测 |
+| [工程规范与协作约定.md](../../工程规范与协作约定.md) | 2231 行 | 协作节奏、步骤卡模板、质量门、目录与命名、安全约定 |
 
 > ⭐ 两篇阶段笔记的代码**全部在真实环境实测过**（本仓库实测版本：fastapi **0.143.0** / starlette **1.8.0** /
 > uvicorn **0.54.0** / pydantic 2.13.5 / httpx 0.28.1），并标注了 2026 年的废弃写法（`on_event`、`TestClient` 的 httpx 依赖等）。

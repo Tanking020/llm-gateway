@@ -8496,7 +8496,6 @@ app = FastAPI(
 ⭐ 顺带一条：环境变量与 `.env` 同时存在时**环境变量赢**。📎 实测 `.env` 里是 `APP_ENV=dev`，命令行设 `prod`，最终生效的是 `prod`。
 
 ### 11c 实操：日志交给 `dictConfig(force=True)`
-
 > 本步只记**改动与实测**；`propagate` / 级别闸 / Handler / Formatter 的**系统原理**见
 > [logging.md](logging.md)（独立章节）。
 
@@ -8573,6 +8572,104 @@ INFO:     127.0.0.1:62657 - "GET /health HTTP/1.1" 200 OK                  ← u
 >
 > 📎 LLM 应用该记的字段（`request_id` / `model` / `prompt_tokens` / `latency_ms` / `ttft_ms`）
 > 见 [logging.md §10](logging.md#10-llm-应用该记什么)。
+
+## 11d 统一错误形状：谁抛、谁接、谁翻译
+
+> **一句话**：`errors.py` 不是"处理错误的地方"，是「**登记翻译器**」的地方；
+> `raise HTTPException(...)` 也不是"调用处理器"，是「**把球扔给框架**」。
+> 📎 本质：`@app.exception_handler(X)` 等价于 `app.exception_handlers[X] = 那个函数`。
+
+### 11d-1 决定一切的一张图：中间件栈（📎 `app.build_middleware_stack()`，从外到内）
+
+```text
+① ServerErrorMiddleware      ← 最外层，兜「没人接的异常」（Exception 处理器挂在这）
+② ExceptionTelemetryMiddleware
+③ BaseHTTPMiddleware         ← 我们的 add_request_id（request_id + 访问日志）
+④ CORSMiddleware             ← 补 Access-Control-*
+⑤ ExceptionMiddleware        ← ★ 查表 dispatch 就发生在这里
+⑥ AsyncExitStackMiddleware
+⑦ APIRouter → 路由函数
+```
+
+⭐⭐ **判据：异常往**外**冒，谁在它外面，谁才有机会接。**
+
+### 11d-2 改前：5 种错误来源 → 5 种归宿
+
+| # | 谁 raise | 被哪一层接住 | 最终形状 |
+|---|---|---|---|
+| 1 | 路由里 `raise AppError` | ⑤ → 查表命中 | `{"error":{code,message}}`（**无 request_id**） |
+| 2 | 路由里 `raise HTTPException` | ⑤ → FastAPI 默认 handler | `{"detail":"…"}` |
+| 3 | **路径不存在** | ⑦ Router 抛，⑤ 接 | `{"detail":"Not Found"}` |
+| 4 | **body 校验失败 422** | FastAPI 在**进路由之前**抛（📎 实测路由函数体没执行） | `{"detail":[…]}` |
+| 5 | 未预期异常 | ⑤ **没登记** → 冒到 ① | `{"error":{…request_id}}` |
+
+📎 改前实测：`/nope` → `{"detail":"Not Found"}`；`/v1/models/xxx` → `{"detail":"模型不存在: xxx"}`；
+`POST /v1/chat {}` → `{"detail":[{"type":"missing",…}]}`；`PUT /health` → `{"detail":"Method Not Allowed"}`。
+**两种字段名、只有 500 带 `request_id`、404 没有 `code`。**
+
+### 11d-3 改后：4 个登记 → 1 个出口
+
+`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception` 全部走
+`_error_response()`（`errors.py` 里唯一出口）→ `{"error":{code,message,request_id}}`，422 多一个 `details`。
+
+### 11d-4 ⭐ 为什么必须挂 `starlette.exceptions.HTTPException`（📎 两个小 app 对比）
+
+| 只挂 `fastapi.HTTPException` | 结果 |
+|---|---|
+| 路由 raise FastAPI 的 | ✅ 被接住 |
+| 路由 raise Starlette 的 | ❌ `{"detail": …}` 原样漏出 |
+| **路径不存在**（框架抛） | ❌ `{"detail": "Not Found"}` |
+
+| 只挂 `starlette.HTTPException` | 结果 |
+|---|---|
+| 路由 raise FastAPI 的 | ✅（子类） |
+| 路由 raise Starlette 的 | ✅ |
+| 路径不存在 | ✅ |
+
+⭐ 判据：**处理器要挂在「所有可能被抛出的那个类型的祖先」上**；`GET /nope` 的 404 是 Starlette 的 Router 抛的。
+
+### 11d-5 为什么不让路由 `return` 一个错误响应，而是 `raise`
+
+📎 反例实测：把「造好 404 响应」写成普通函数但**忘了 return** →
+
+```python
+not_found(conv_id)      # 造好了，忘了 return
+return {"ok": True}     # 业务代码照常跑完
+```
+
+结果 **`[200] {'ok': True}`** —— 错误被静默吞掉。
+
+| | `return` | `raise` |
+|---|---|---|
+| 对调用者的意义 | "交给你，**你继续**" | "到此为止，**谁也别继续**" |
+| 谁决定收场 | 每一层调用者 | 框架（一处） |
+
+📎 `raise` 的三层调用里，中间层的 `print` **一次都没执行** —— 中间层什么都不用写。
+
+另外四条理由：① 依赖（`get_db`）里**没有返回值可以用** ② 流式接口响应头已发出，**没法 return 一个响应** ③ 形状改一次只改 `_error_response` ④ 路由注解得写成 `dict | JSONResponse`，mypy strict 下每处都要改。
+
+⭐ 判据：**「这不是成功的结果」→ `raise`；「这就是要交给客户端的数据」→ `return`。**
+
+### 11d-6 三个由这张图推出的坑（📎 全实测）
+
+| 坑 | 现象 | 原因 |
+|---|---|---|
+| **中间件里抛 `AppError` 变成 500** | 路由里抛 → 400；**中间件里抛 → 500 `INTERNAL_ERROR`** | 我们的中间件在 ③，`ExceptionMiddleware` 在 ⑤ —— **它在里面，接不住外面抛的** |
+| **500 响应没有 CORS 头** | 200/404/422 都有 `Access-Control-Allow-Origin`，**500 是 `<无>`** | 500 的响应由 **① 最外层**直接返回，**不经过 ④** → 前端只能看到"网络错误"，读不到 body 和 `request_id` |
+| **500 的 `X-Request-ID` 只能处理器手写** | 中间件「回写响应头」那行永远到不了 | `call_next` 抛异常 → 只走到 `finally` 记日志 |
+
+⚠️ 后两条已记成待办 **#57**（Product 级，产品化前必做）。
+
+### 11d-7 错误码是裸字符串的代价（📎 实测）
+
+| 错误类型 | mypy | 运行时 | 结果 |
+|---|---|---|---|
+| 忘传 `code` / `message` | ✅ `call-arg` | ✅ `TypeError` | 两道闸，安全 |
+| `code` 类型错（传 int） | ✅ | ❌ | 一道闸，安全 |
+| **`code` 拼错**（`"MODEL_NOT_FOUNDD"`） | ❌ | ❌ | 🔴 **零道闸** → 查表落空 → **静默 400** |
+| 用了码但忘了在 `_STATUS_BY_CODE` 登记 | ❌ | ❌ | 🔴 同上 |
+
+⭐ 已记成待办 **#58**（选项：模块常量 / `Literal` / `StrEnum` + `dict[ErrorCode, int]` 强制全覆盖）。
 
 ## 11.3 ⚠️ 500 错误与日志的配合
 
