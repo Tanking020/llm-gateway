@@ -41,6 +41,7 @@ from app.constants import HEADER_REQUEST_ID
 from app.database import engine
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
+from app.logging_setup import configure_logging
 from app.models import Base, Conversation, LlmCall
 from app.schemas import (
     ChatRequest,
@@ -85,11 +86,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await engine.dispose()
 
 
-# 日志配置：默认 root 级别是 WARNING 且没有 handler, info 会被静默丢弃
-#   format 四段：时间 | 级别（左对齐 7 位）| 模块名 | 消息
-# 【注意】：basicConfig 只在 root 还没有 handler 时生效；
-#   Step 11 会换成 dictConfig(force=True) 做正式配置
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s | %(message)s")
+# 日志设置：整个进程只用一套格式、一个 handler（配置内容在 app/logging_setup.py）
+configure_logging()
 
 logger = logging.getLogger(__name__)
 
