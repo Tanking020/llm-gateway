@@ -185,6 +185,44 @@ PARENT|probe.child|双输出测试      ← 冒泡到父 logger 的 handler
 | `logger.info("x=%s", Boom())` | ✅ **没有异常** —— `__str__` 从未被调用 |
 | `logger.info(f"x={Boom()}")` | 🔴 **抛 `RuntimeError`** —— f-string 在调用**之前**就求值，异常直接进业务代码 |
 
+### 4.1b 📎 求值时机：字节码 + 打点时间线
+
+**字节码（`dis.dis`，关键差别是有没有 `FORMAT_VALUE` 在 `CALL` 之前）**
+
+```text
+log.info("x=%s", x)          log.info(f"x={x}")
+  LOAD_CONST 'x=%s'            LOAD_CONST 'x='
+  LOAD_FAST  x                 LOAD_FAST  x
+  CALL 2                       FORMAT_VALUE 0   ← 调 __format__ 变字符
+                               BUILD_STRING 2   ← 拼成新字符串
+                               CALL 1           ← 参数已是成品 str
+```
+
+**时间线（给 构造 / `__format__` / `__str__` / Handler / Formatter 打点）**
+
+| 顺序 | `log.info("x=%s", Boom())` | `log.info(f"x={Boom()}")` |
+|---|---|---|
+| ① | `Boom()` 构造 | `Boom()` 构造 |
+| ② | — | **`__format__` 被调用**，生成 `'x=<Boom>'` |
+| ③ | `Logger.info` → 级别闸 → `Handler.emit` | 同左 |
+| ④ | `Formatter.format`：`msg='x=%s'`、`args=(<Boom object>,)` | `Formatter.format`：`msg='x=<Boom>'`、`args=()` |
+| ⑤ | **`__str__` 被调用**（`getMessage()` 里，最后） | 无（已是字符串） |
+
+**级别关掉时**：`%s` 停在 ①（级别闸直接 return）；f-string 走完 ①②，**代价已经在闸外付掉了**。
+
+⭐⭐ 一句话：**两边的闸位置一样（都在 `logger.info` 内部），但 f-string 的代价在闸的外面。**
+
+**三个容易忽略的细节**
+
+| 细节 | `%s` | f-string |
+|---|---|---|
+| 用哪个魔法方法 | `__str__`（`%r` 用 `__repr__`） | **`__format__`**（`!r` 用 `__repr__`） |
+| 多个 handler 时格式化几次 | 📎 **每个 handler 一次**：1 / 2 / 3 个 → `__str__` 调 1 / 2 / 3 次 | 📎 **恒 1 次** |
+| `record.args` | 保留原对象，可事后脱敏 / 供 JSON formatter 用 | `()`，参数身份丢了 |
+
+⚠️ 所以 `%s` **不是"永远更快"**：级别关掉时快得多；级别开着 + 多 handler 时反而更贵（格式化 N 次）。
+它稳定的优势只有两条：**级别关掉时零代价**、**参数原样保留**。
+
 ### 4.2 📎 代价量级（1 MB 字符串，INFO 关掉，各 200 次）
 
 | 写法 | 耗时 |

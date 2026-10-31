@@ -1107,7 +1107,7 @@
 11. 为什么 `__main__.py` 里要再调一次 `configure_logging()`？`app.py` 模块级那次不够吗？
     > 因为 `reload=True` 时有一个 **reloader 父进程**，它负责监听文件变化、**永远不 import 应用** → 模块级调用对它无效。同理 `log_config=None` 也是为它准备：否则 uvicorn 会再装一遍自己的 dictConfig，把 `uvicorn.*` 的 handler 抢回去。📎 实测：去掉 `log_config=None`，父进程那 3 行立刻退回 `INFO:     `。
 12. 📎 `logger.info(f"x={x}")` 和 `logger.info("x=%s", x)` 有什么区别？级别不够时分别发生了什么？
-    > `%s` 是**惰性**的：先过级别闸，被拦下就**不展开**参数（📎 实测：`Boom.__str__` 会 raise，用 `logger.debug("值=%s", Boom())` 没有抛异常）。f-string 是**立即求值**，日志没输出也已经付过拼接/序列化的代价。⭐ 判据：**日志参数一律用 `%s` 占位，不要 f-string。**
+    > 差在**求值时机**：f-string 是**表达式**，`__format__` + 拼字符串发生在 `CALL` 之前（📎 字节码里的 `FORMAT_VALUE` / `BUILD_STRING`），所以级别关掉也照样付全价；`%s` 只传对象引用，"变字符串"交给 `Formatter`，级别闸（`isEnabledFor`）先判 → 关掉就 return，`__str__` 一次都不调（📎 实测：`Boom.__str__` 会 raise，`%s` 无异常、f-string 直接抛）。⚠️ `%s` 不是永远更快：📎 多个 handler 时每个 handler 各格式化一次（3 个 handler → `__str__` 3 次），f-string 恒 1 次。⭐ 判据：**日志参数一律用 `%s` 占位，不要 f-string。**
 13. 什么情况下**同一条日志会打印两行**？怎么修？
     > 某个 logger 自己挂了 handler，同时 `propagate` 又是默认的 `True` → 记录既交给自己的 handler，又冒泡给祖先的 handler。📎 实测（`CHILD |…` + `PARENT|…` 两行）。修法二选一：删掉自己加的 handler，或 `propagate=False`。⚠️ 注意 handler **不会继承**，只有 `propagate` 才会把记录送给祖先的 handler。
 14. 📎 `logging.getLogger("app.api")` 之前，`app.api` 在这棵树上是什么？判断一个 logger「有没有被创建」，能不能用 `getLogger` 去试？
