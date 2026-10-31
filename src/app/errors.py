@@ -17,7 +17,9 @@ import logging
 import uuid
 
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.constants import HEADER_REQUEST_ID
 
@@ -48,11 +50,58 @@ _STATUS_BY_CODE: dict[str, int] = {
     "UPSTREAM_MALFORMED": status.HTTP_502_BAD_GATEWAY,
     # 503 = 我暂时不能服务（不是我的错误，依赖挂了）—— 负载均衡看到它会摘掉本实例
     "DB_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+    # 404 有两种来源、两种含义：客户端据此能区分"模型名打错"和"对话 id 不存在"
+    "MODEL_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+    "CONVERSATION_NOT_FOUND": status.HTTP_404_NOT_FOUND,
 }
 
 # 以模块名为 logger 名，日志里能一眼看出是哪一行代码打的
 # 它不会自己输出，要等有人给 root logger 配 handler（uvicorn 默认已配好，输出到终端）
 logger = logging.getLogger(__name__)
+
+
+# 没走 AppError 的错误（框架自己抛的 HTTPException）靠状态码兜底出稳定码
+#   【注意】：同一个状态码会共用这个码 —— 我们自己的代码一律抛 AppError，不要用 HTTPException
+_CODE_BY_STATUS: dict[int, str] = {
+    400: "BAD_REQUEST",
+    401: "UNAUTHORIZED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+    409: "CONFLICT",
+    413: "PAYLOAD_TOO_LARGE",
+    422: "VALIDATION_ERROR",
+    429: "TOO_MANY_REQUESTS",
+    500: "INTERNAL_ERROR",
+    503: "SERVICE_UNAVAILABLE",
+}
+
+
+def _request_id(request: Request) -> str:
+    """优先用中间件分配的；只有中间件没跑到时才自己生成"""
+    return getattr(request.state, "request_id", "") or uuid.uuid4().hex[:12]
+
+
+def _error_response(
+    request: Request,
+    http_status: int,
+    code: str,
+    message: str,
+    details: list[dict[str, object]] | None = None,
+) -> JSONResponse:
+    """所有错误响应的唯一出口：形状只在这里定义一次"""
+    error: dict[str, object] = {
+        "code": code,
+        "message": message,
+        "request_id": _request_id(request),
+    }
+    if details is not None:
+        error["details"] = details
+    return JSONResponse(
+        status_code=http_status,
+        content={"error": error},
+        headers={HEADER_REQUEST_ID: str(error["request_id"])},
+    )
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -66,34 +115,47 @@ def register_exception_handlers(app: FastAPI) -> None:
         """把业务异常 AppError 翻译成统一形状的错误响应（HTTP 状态码由 _STATUS_BY_CODE 决定）"""
         # 用业务码去查表；查不到就用默认 400 —— 兜底防的是"漏登记"，不是"猜对"
         http_status = _STATUS_BY_CODE.get(exc.code, status.HTTP_400_BAD_REQUEST)
-        # JSONResponse：把 content 序列化成 JSON，并自动设好 Content-Type: application/json
-        return JSONResponse(
-            status_code=http_status,  # 回给客户端的 HTTP 状态码（由业务码映射而来）
-            # 外层 error 是命名空间：将来加 request_id 等字段时，一眼能分清哪些属于错误信息
-            #   code 给机器判断（稳定不变），message 给人看（可改文案）
-            content={"error": {"code": exc.code, "message": exc.message}},
+        return _error_response(request, http_status, exc.code, exc.message)
+
+    # 挂在 Starlette 的 HTTPException 上：FastAPI 那个是它的子类，
+    #   而且"路径不存在"是 Starlette 自己抛的 —— 只挂 FastAPI 的会漏
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exception_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        """框架自己抛的 HTTPException（路径不存在 / 405）：detail 当 message，状态码兜底出码"""
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        code = _CODE_BY_STATUS.get(exc.status_code, f"HTTP_{exc.status_code}")
+        return _error_response(request, exc.status_code, code, detail)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """422：保留定位信息，但塞进统一形状的 details 里"""
+        # 【注意】：只挑 loc/msg/type —— errors() 默认还带 input，那是用户提交的原值
+        details: list[dict[str, object]] = [
+            {"loc": list(err["loc"]), "msg": err["msg"], "type": err["type"]}
+            for err in exc.errors()
+        ]
+        return _error_response(
+            request,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "VALIDATION_ERROR",
+            "请求参数校验失败",
+            details,
         )
 
-    # 注册"兜底"翻译器：任何没被更具体处理器接住的异常都落到这里
     @app.exception_handler(Exception)
     async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
         """兜底：未预期异常 -> 500 + 统一的错误形状 + request_id（堆栈只写日志）"""
-        # 优先用中间件分配的 request_id（这样响应头、日志、响应体里的 ID 是同一个）
-        #   只有中间件没跑到时才自己生成（兜底）
-        request_id = getattr(request.state, "request_id", "") or uuid.uuid4().hex[:12]
+        request_id = _request_id(request)
         # logger.exception 会自动附带当前异常的完整 traceback（logger.error 不会）
         logger.exception("未处理异常 request_id=%s path=%s", request_id, request.url.path)
         # 回给客户端一句人话 + ID: 绝不回显 str(exc) 或堆栈
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,  # 500 = 我方服务器出错
-            content={
-                "error": {
-                    "code": "INTERNAL_ERROR",  # 稳定业务码：客户端只需认这一个
-                    "message": "服务内部错误",  # 给人看，不泄露任何内部细节
-                    "request_id": request_id,  # 用户报错时提供它，我方据此搜日志
-                }
-            },
-            # 正常响应由中间件补头，异常响应由处理器补头（因为两者创建 Response 的地方不同）
-            # 这句正是对异常响应手动加头
-            headers={HEADER_REQUEST_ID: request_id},
+        return _error_response(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+            "服务内部错误",
         )
