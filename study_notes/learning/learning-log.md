@@ -459,6 +459,7 @@
 | 10-31 | ⭐ **异常类的参数"缺了就没意义"→ 必填，不给默认值。** 📎 实测 `AppError()` → `TypeError: missing 2 required positional arguments`；mypy strict 在**写代码时**就报 `call-arg`（两道闸）。⚠️ 若给了 `code: str = "UNKNOWN"`：mypy **不报**，运行时**静默**造出 `code='UNKNOWN' message=''` → 查表落空 → **静默 400**。⭐ 但「必填」只挡住了"忘传"：📎 `AppError("MODEL_NOT_FOUNDD", …)`（多一个字母）**零道闸**，照样静默降级 400（待办 #58） |
 | 10-31 | ⭐⭐ **`Exception` / `500` 这两个登记键会被「单独拎出来」交给最外层的 `ServerErrorMiddleware`，其余全给 `ExceptionMiddleware`。** 📎 源码 `fastapi/applications.py:1061-1065`：循环里 `if key in (500, Exception): error_handler = value else: exception_handlers[key] = value`。⭐⭐ 这一条解释了全部现象：① 为什么**路由里**抛 `AppError` 是 4xx、**中间件里**抛同一个变成 500（后者只有最外层接得到）② 为什么 500 的响应**没有 CORS 头**（`ServerErrorMiddleware` 在 `CORSMiddleware` **外面**，响应不流经它）③ 为什么 500 的 `request_id` 必须由处理器自己写进 headers。⚠️ `error_handler` 是单变量、循环里反复覆盖 → 📎 实测 `500` 与 `Exception` 同时登记时**后登记的那个赢** |
 | 10-31 | ⭐ **中间件顺序由源码两处决定**：`build_middleware_stack()` 里 `for ... in reversed(middleware)`（**列表第一个 = 最外层**）+ `add_middleware` 的 `user_middleware.insert(0, ...)`（**后注册的在外层**）。⭐ 判据：**异常往「外」冒，响应往「外」流 —— 谁在外层，谁才能接异常的班 / 改响应的头。** |
+| 10-31 | ⭐⭐ **`HTTPException` 的旅程分两段：**「**异常**只走到 `ExceptionMiddleware`（它紧贴 Router 外面）就结束了；从那以后往回走的是**一个普通的 Response**，才轮到 CORS / 我们自己的中间件去补头。📎 实测证据：404 的访问日志是 `-> 404`（普通中间件看到正常响应），只有真 500 才是 `-> ERR`；且 404 响应带 ACAO + `X-Request-ID`。⭐ 判据：**"谁接住的"看异常方向，"谁补的头"看响应方向 —— 两个方向、两套答案。** ⚠️ 同一段事实里有 4 处易错：校验抛的是 `RequestValidationError`（**不是** `HTTPException` 子类）/ 纯 Starlette 无注册时回的是**纯文本**不是 `{"detail"}` / 405 也是 Starlette 抛的 / **中间件自己抛 `HTTPException` 会变 500**（📎 实测） |
 
 ---
 

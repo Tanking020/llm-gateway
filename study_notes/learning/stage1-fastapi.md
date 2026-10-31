@@ -8763,6 +8763,59 @@ return {"ok": True}     # 业务代码照常跑完
 
 ⭐ 已记成待办 **#58**（选项：模块常量 / `Literal` / `StrEnum` + `dict[ErrorCode, int]` 强制全覆盖）。
 
+### 11d-8 一次 `HTTPException` 的完整旅程（📎 逐步实测）
+
+#### 七步
+
+```text
+① 路由函数（或依赖）里 raise HTTPException(409, "…")
+        ↓  栈开始展开，只退到「包住 Router 的那一层」
+② ExceptionMiddleware 里的 wrap_app_handling_exceptions 接住
+        ↓
+③ 查表：先 status_handlers.get(exc.status_code)  → 命中则用它
+        再 _lookup_exception_handler(…, exc) 沿 MRO 找  → 类型登记项
+        ↓
+④ 调 handler。FastAPI 默认的 http_exception_handler 返回
+        JSONResponse({"detail": "…"}, status_code=…)
+        ↓  ← 到这里已经是【一个正常的 Response 对象】，异常已经结束
+⑤ 这个 Response 原路往【外】流：
+        AsyncExitStack → ExceptionMiddleware → CORSMiddleware（补 Access-Control-*）
+        → BaseHTTPMiddleware（补 X-Request-ID）→ 发出
+        ↓
+⑥ 客户端收到 409 + ACAO + X-Request-ID（📎 404/422 都实测有这两个头）
+        ↓
+⑦ 我们的访问日志打的是 `GET /x -> 409 1.2ms …`（**不是 `ERR`**）
+```
+
+⭐ 第 ② 步是全部关键：**`ExceptionMiddleware` 在 Router 外面、在用户中间件里面**。
+所以异常从 Router 往外冒，**还没走到用户中间件**就被它接住了。
+
+#### 📎 抛的位置决定一切（三组实测）
+
+| 抛在哪 | 被谁接 | 结果 |
+|---|---|---|
+| 路由函数 `raise HTTPException(409)` | ⑤ `ExceptionMiddleware` | **`409 {"detail":"路由里抛的"}`** ✅ |
+| **依赖**里 `raise HTTPException(409)`（`Depends(...)`） | ⑤（依赖在 Router 内运行） | **`409 {"detail":"依赖里抛的"}`** ✅ |
+| **`@app.middleware("http")` 里** `raise HTTPException(409)` | ⑤ 在它**里面**，够不着 → 冒到 ① | **`500`**（body 是 `Internal Server Error`）🔴 |
+| `lifespan` 启动段 | 两层都还没运行 | 原样冒出去，进程起不来 |
+
+#### ⚠️ 四处常见误解（对照订正）
+
+| 说法 | 判定 | 事实 |
+|---|---|---|
+| 「HTTPException 被 ExceptionMiddleware 截住，不是被普通中间件 `try/except` 接住」 | ✅ **对** | 📎 证据：404 的访问日志是 `-> 404`（普通中间件看到的是一份**正常响应**），只有真 500 才是 `-> ERR` |
+| 「处理器返回的 Response 再原路往外穿过普通中间件」 | ✅ **对** | 📎 404/422 响应都带 `Access-Control-Allow-Origin` 与 `X-Request-ID`（由 ④ ③ 补的） |
+| 「没注册处理器 → 用框架默认的，返回 `{"detail": …}`」 | 🟡 **要限定在 FastAPI** | FastAPI 用 `setdefault` **一定**注册了 `StarletteHTTPException` → 所以"没注册"只发生在**纯 Starlette**；那时默认返回的是 **`PlainTextResponse(exc.detail)`（纯文本）**，不是 JSON（📎 `starlette/middleware/exceptions.py` 的 `http_exception`） |
+| 「在路由 / 依赖 / **校验**里 raise `HTTPException`」 | ❌ **错** | 校验失败抛的是 **`RequestValidationError`**，📎 `issubclass(RequestValidationError, HTTPException)` = **False**，走的是**另一条登记项** |
+
+#### 另外三条补充
+
+| 事实 | 说明 |
+|---|---|
+| 查表是**两段式** | 先 `status_handlers.get(exc.status_code)`（按状态码），再沿 MRO 找（按类型）。📎 同时挂 `HTTPException` 与 `404` 时，**状态码那个赢** |
+| **405 也是 Starlette 抛的** | 📎 `starlette/routing.py:277` `raise HTTPException(status_code=405, headers=headers)` |
+| "不会飘进普通中间件"要限定来源 | 异常从 Router 外冒**先被 ⑤ 截住**，所以到不了用户中间件；但**用户中间件自己抛的**异常会穿过其余用户中间件继续外冒（📎 那时 ③ 会打 `ERR`） |
+
 ## 11.3 ⚠️ 500 错误与日志的配合
 
 ```python
