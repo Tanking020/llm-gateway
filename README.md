@@ -6,18 +6,19 @@
 > 每个技术选择都先过这一关：**「如果这个接口明天就要给 1000 个真实用户用，这样做够不够？」**
 > 判据与「可以让步 vs 绝不能让步」的清单见[工程规范 §7.0c](工程规范与协作约定.md)。
 
-**当前状态**：阶段 0 · 工程基础（依赖管理 / 版本控制 / 项目结构 / 数据契约 / 静态检查）已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 9 已完成，Step 10 数据库接近收尾（对话接口完成 CRUD 四操作五接口 + 账单表 + 分页方案已定）**（HTTP/ASGI 地基 → 三段参数 → 依赖注入 →
-错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御）。
-已具备：404 / 400 / 502 / 500+请求 ID 的统一错误处理、请求追踪中间件、
-**一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
+**当前状态**：阶段 0 · 工程基础已完成；
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 10 已完成，Step 11 工程化进行中（11a 启动入口 / 11b `debug` 接线+prod 保护 / 11c 日志 `dictConfig` / 11d 错误形状统一 ✅；剩 11e 生产关 `/docs`、11f 流式文档标注）**
+（HTTP/ASGI 地基 → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御 → 数据库与账单 → 工程化）。
+已具备：请求追踪中间件、**一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
 一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
 实测首帧 60ms / 总 906ms；上游失败时客户端拿 **502** 而不是 `200` + 断连）、
-以及**可对账的账单体系**（`llm_calls` 表，`status` 三态区分 `completed` / `aborted` / `pending`）。
+**可对账的账单体系**（`llm_calls` 表，`status` 三态区分 `completed` / `aborted` / `pending`），
+以及**全项目统一的错误响应**（任何错误都是 `{"error":{code,message,request_id}}`，422 多一个 `details`）
+和**单一出口的日志配置**（`dictConfig`，三条启动路径同一格式）。
 详见[路线图](#路线图)。
 
 > ⚠️ **离「能上线」还差什么**：无鉴权 / 无限流 / 无自动化测试 / 无 `Dockerfile`，
-> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#53）。
+> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#58）。
 
 ---
 
@@ -42,7 +43,7 @@
 | 数据契约与配置 | pydantic / pydantic-settings | 2.13.5 / 2.15.0 |
 | 静态检查 | mypy（strict）/ ruff | 2.4.0 / 0.16.10 |
 | Web 框架 | FastAPI + uvicorn（ASGI） | 0.143.0 / 0.54.0 |
-| 数据库 | SQLAlchemy 2.1 async（2.0 风格 ORM）+ aiosqlite；SQLite → PostgreSQL | 2.1.6 / 0.22.1；Step 10 进行中（依赖 / 模型 / 引擎 / 请求级会话已落地；对话 CRUD 四操作五接口全部完成） |
+| 数据库 | SQLAlchemy 2.1 async（2.0 风格 ORM）+ aiosqlite；SQLite → PostgreSQL | 2.1.6 / 0.22.1；Step 10 已完成（依赖 / 模型 / 引擎 / 请求级会话 / 对话 CRUD 四操作五接口 / 账单表 / 游标分页） |
 | 测试 | pytest + pytest-asyncio | 阶段 1 引入 |
 | 交付 | Docker（多阶段构建 + 非 root 运行） | 阶段 1 引入 |
 
@@ -69,10 +70,16 @@ cp .env.example .env
 # 3. 验证环境（可选）
 uv run python -c "from app.config import settings; d = settings.model_dump(); d['llm_api_key'] = '已配置' if d['llm_api_key'] else '未配置'; print(d)"
 
-# 4. 启动 HTTP 服务（开发模式：改代码自动重启）
-uv run uvicorn app.api.app:app --reload
+# 4. 启动 HTTP 服务（推荐走项目自己的入口）
+uv run python -m app
 # 然后打开 http://127.0.0.1:8000/docs —— 自动生成的交互式 API 文档
 ```
+
+> ⭐ **为什么用 `uv run python -m app` 而不是 `uvicorn app.api.app:app --reload`**：
+> 前者的监听地址 / 端口 / 是否 reload 全部读 `.env` 里的 `HOST` / `PORT` / `DEBUG`；
+> 后者会绕过这些配置（`.env` 写 `PORT=9001` 毫无作用，属于**静默失效**）。
+>
+> 📎 `DEBUG=true` 时日志里会出现 `Started reloader process [...] using WatchFiles`；`DEBUG=false` 则没有。
 
 > 所有命令都用 `uv run` 前缀。原因是 `uv run` 会自动指向项目自己的 `.venv`，
 > 并在依赖发生变化时**先自动同步**，避免"装了依赖却仍然导入失败"这类问题。
@@ -86,7 +93,7 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 
 ---
 
-## 接口一览（截至阶段 1 · Step 10）
+## 接口一览（截至阶段 1 · Step 11）
 
 | 方法 | 路径 | 说明 | 主要状态码 |
 |---|---|---|---|
@@ -121,26 +128,36 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
   "call_count": 2, "total_tokens": 175}]
 ```
 
-⚠️ **已知形状问题**（待办 #30 #39 #52）：`created_at` 在 `POST` 响应里带 `Z`、在 `GET` 里不带；
-`/v1/models` 与 `/v1/upstream/models` 形状不一致；详情接口不返回 `call_count`。
-计划在 10.6d-4 统一。**分页方案已定：游标为主 + `total` 为辅**（[决策 #22](study_notes/project/decisions.md)）——
+⚠️ **已知形状问题**（剩余待办 #39）：`/v1/models` 与 `/v1/upstream/models` 形状不一致。
+~~`created_at` 带不带 `Z`~~（10.6d-4a 已统一为带 `Z`）、~~详情接口不返回 `call_count`~~（10.6d-4b 已统一为 6 字段）。
+**分页方案：游标为主 + `total` 为辅**（[决策 #22](study_notes/project/decisions.md)）——
 ⚠️ 不用 offset 分页，因为📎 实测它在翻页期间删数据会**漏掉一条**。
 
-**错误响应形状**（Step 6 起）：
+**错误响应形状**（Step 11d 起，**任何**错误都是同一种形状）：
 
 ```jsonc
-// 业务错误（400 / 409 …）：错误码给机器判断，message 给人看
-{"error": {"code": "LAST_MESSAGE_NOT_USER", "message": "最后一条消息必须是 user，当前是 system"}}
+// 业务错误（400 / 404 …）：code 给机器判断（稳定不变），message 给人看（可改文案）
+{"error": {"code": "LAST_MESSAGE_NOT_USER", "message": "最后一条消息必须是 user，当前是 assistant",
+           "request_id": "1b085bd5c5b3"}}
+
+// 框架错误：路由不存在 / 方法不允许 —— code 由状态码兜底
+{"error": {"code": "NOT_FOUND", "message": "Not Found", "request_id": "a4175e01d830"}}
+{"error": {"code": "METHOD_NOT_ALLOWED", "message": "Method Not Allowed", "request_id": "c5bb71007336"}}
+
+// 参数校验失败（422）：多一个 details，只含 loc / msg / type（不回显用户提交的原值）
+{"error": {"code": "VALIDATION_ERROR", "message": "请求参数校验失败", "request_id": "7284ed612708",
+           "details": [{"loc": ["body", "messages"], "msg": "Field required", "type": "missing"}]}}
 
 // 服务内部错误（500）：只回一句人话 + 请求 ID，堆栈只写服务端日志
-{"error": {"code": "INTERNAL_ERROR", "message": "服务内部错误", "request_id": "748f0334b804"}}
+{"error": {"code": "INTERNAL_ERROR", "message": "服务内部错误", "request_id": "ef9002e78ef3"}}
 ```
 
-> ⚠️ 框架层的 404（路由不存在）与 422（请求形状不合法）目前仍是 FastAPI 默认的 `{"detail": ...}`，
-> 三种形状并存属于**已知待办**（见[路线图](study_notes/project/roadmap.md) 待办 #6），计划在 Step 11 统一。
->
-> 流式接口的 `/docs` 目前把 `200` 标成 `application/json`（返回注解是 `Response` 子类时 FastAPI 会置空
-> `response_model`），实际响应是 `text/event-stream` —— 见待办 #11。
+⭐ **客户端只需认 `code`**，不要匹配 `message`。业务码 → HTTP 状态码的映射集中在
+`src/app/errors.py` 的 `_STATUS_BY_CODE`，所有错误响应经同一个出口 `_error_response()` 生成，
+`X-Request-ID` 响应头**恒等于** body 里的 `request_id`。
+
+> ⚠️ 流式接口的 `/docs` 目前把 `200` 标成 `application/json`（返回注解是 `Response` 子类时 FastAPI 会置空
+> `response_model`），实际响应是 `text/event-stream` —— 见待办 #11（Step 11f 处理）。
 
 **SSE 流式响应**（Step 9b-3 起：真调上游 `stream=true`，含状态帧与用量记账）：
 
@@ -280,14 +297,16 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 │
 ├── src/app/                  # 应用代码
 │   ├── __init__.py
-│   ├── config.py             # 全部可调参数集中在这里，类型安全且带校验
+│   ├── config.py             # 全部可调参数集中在这里，类型安全且带校验（含 prod 禁 DEBUG 的跨字段校验）
+│   ├── logging_setup.py      # 日志配置唯一一处：dictConfig(force=True)，全进程一套格式
 │   ├── schemas.py            # 对外数据契约：请求 / 响应的形状定义
 │   ├── constants.py          # 必须跨模块一致的常量（HTTP 头名等，只写一处）
-│   ├── errors.py             # 业务异常 AppError + 错误码→HTTP 状态码映射 + 异常处理器注册
+│   ├── errors.py             # 业务异常 AppError + 码↔状态码两张映射 + 4 个异常处理器（单一出口 _error_response）
 │   ├── llm_client.py         # 上游适配器：唯一 import httpx、唯一翻译上游故障的地方（LlmClient / LlmChatStream）
 │   ├── database.py           # 数据库引擎与会话工厂：engine（连接池）+ SessionMaker（造会话的模具）
 │   ├── models.py             # ORM 模型：Base 基类 + Conversation 表（Mapped / mapped_column）
 │   ├── main.py               # 命令行入口：离线演示 + `ping` 上游连通性检查（与 HTTP 共用同一个适配器）
+│   ├── __main__.py           # HTTP 启动入口：`uv run python -m app`（让 settings.host/port/debug 生效）
 │   └── api/
 │       ├── __init__.py
 │       ├── deps.py           # 依赖注入：get_settings / get_llm_client / get_db（一次请求一个会话）
@@ -327,8 +346,8 @@ uv run mypy .                 # 3. 类型检查（strict + warn_unreachable，�
 | 检查 | 结果 |
 |---|---|
 | `ruff check .` | All checks passed! |
-| `ruff format --check .` | 16 files already formatted |
-| `mypy .` | Success: no issues found in 16 source files |
+| `ruff format --check .` | 20 files already formatted |
+| `mypy .` | Success: no issues found in 20 source files |
 
 > 三条命令的**范围一律用 `.`**（全项目，含 `playground/`）。`mypy` 的默认范围由
 > `[tool.mypy] files = ["."]` 保证，所以带不带参数结果一致。
@@ -358,7 +377,10 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **分层：接口层 / 业务层 / 基础设施层** | 判据只有一条：**这段代码离了 HTTP 还活得下去吗**。接口层懂 `Request` / 状态码 / 响应；业务层只认普通 Python 值；基础设施层管 httpx / 配置 / DB。硬规则：**业务层永远不 import `fastapi`**，调用方向单向。上两条（适配器 / 业务规则）就是这条判据的具体落地：`LlmClient` 属基础设施层，`ensure_last_message_is_user` 属"离了 HTTP 也活得下去"的纯函数 | 现阶段还要为"分层而分层"会过度设计 —— 一个 4 行规则、只有一个调用方时抽到 `services/` 只是搬家；出现第二个调用方（CLI / 另一个接口）才是拆分信号 |
 | **业务错误码与 HTTP 状态码解耦** | `AppError` 只带 `code` + `message`，**不带 `status_code`**；映射集中在 `_STATUS_BY_CODE` 一处。同一个 400 可对应多个业务码，客户端按 `code` 分支，不再靠匹配文案 | 多一层映射表；未登记的码会落到默认 400（属于"防崩溃"而非"正确"，需靠 `Literal`/测试兜住） |
 | **HTTP 客户端应用级共享（`lifespan`）** | 每请求新建客户端要重新做 TCP + TLS 握手：实测 200 次请求 **51.3 ms → 23.0 ms（快 2.23 倍）**。用 `lifespan` 在启动时建一次、关闭时释放；创建/销毁归 lifespan，**取用仍走依赖**（保留 `dependency_overrides` 可测接缝） | 单测必须 `with TestClient(app)` 才会触发 lifespan；`app.state` 是全局可变状态，用例间要手工还原 |
-| **错误日志与响应分离** | 500 只回 `request_id` + 一句人话，**堆栈只进服务端日志** —— 既不泄露内部结构，又能靠 ID 精确定位 | 目前日志只有 stderr、无格式化、`logger.info` 会被丢弃；生产需补日志配置与集中收集（已知待办 #7） |
+| **错误日志与响应分离** | 500 只回 `request_id` + 一句人话，**堆栈只进服务端日志** —— 既不泄露内部结构，又能靠 ID 精确定位 | 需要日志配置配合（Step 11c 已落地）；跨机排查仍需集中收集（待办 #51） |
+| **`prod` + `debug` 组合启动即崩**（2026-10-31，决策 #23） | 📎 实测 `FastAPI(debug=True)` 会让 `@app.exception_handler(Exception)` **完全不执行**，响应变成 `text/plain` + 完整 traceback（body 里能读到异常消息）。所以 `Settings` 里加跨字段校验：`APP_ENV=prod` 且 `DEBUG=true` → **启动 `ValidationError`、进程退出**（`python -m app` 与 `uvicorn app.api.app:app` 两条入口都拦） | 配置写错时服务**完全起不来**（连 `/health` 都没有）；将来若要线上临时开 traceback，需另加显式逃生阀 |
+| **日志用单一 `dictConfig(force=True)` 接管**（2026-10-31，决策 #24） | 📎 改前三个症状：一屏两种格式、每请求两行、`basicConfig` 第二次调用**静默失效**；根因是 uvicorn 的 `LOGGING_CONFIG` **没有 root 项**。改为一个 `configure_logging()` 统管，三个调用点覆盖三条启动路径（含 reloader 父进程） | ⚠️ 关掉 `uvicorn.access` 后**丢了客户端 IP**（待办 #56）；JSON 结构化与轮转仍未做（#51） |
+| **错误响应统一形状 + 业务码**（2026-10-31，决策 #25） | 所有错误经 `errors.py` 的 `_error_response()` **唯一出口**：`{"error":{code,message,request_id}}`，422 加 `details`。4 个处理器分别接 `AppError` / `StarletteHTTPException`（**必须挂 Starlette 的父类**，框架自己抛的 404/405 才接得住）/ `RequestValidationError` / `Exception`。我们自己的代码**只抛 `AppError`** | 📎 三种 404 现在可区分（`NOT_FOUND` / `MODEL_NOT_FOUND` / `CONVERSATION_NOT_FOUND`）；代价是「码」要在调用点与 `_STATUS_BY_CODE` **两处维护**，拼错会静默降级 400（待办 #58） |
 | **响应契约：返回注解优先，`response_model` 用于收窄** | 两者相同时只写返回注解（FastAPI 自动采用）；只有"内部模型宽于对外契约"时才显式写 `response_model=`。响应模型是**白名单**：没声明的字段不可能输出 | 返回对象缺必填字段会 `ResponseValidationError` → 500（错在我方）；响应类型写 `list[dict]` 会让 `/docs` 失去结构，且过滤晚一步 |
 | **中间件做"每个请求都要做的事"** | 请求 ID、耗时、CORS 这类逻辑写在中间件里一处生效；用 `request.state` 把 ID 传给路由与异常处理器，500 也能返回同一个 ID | 中间件拿不到路由参数；**绝不能读 `response.body`**（会把流式响应抽干）；异常路径上拿不到响应对象，500 的响应头要由处理器补 |
 | **流式 = 异步生成器 + `StreamingResponse`** | 二者分工是硬的：生成器只**产出**字符串（不碰 socket），`StreamingResponse` 负责 `http.response.start`、逐帧 `send(more_body=True)`、最后补 `more_body=False`、并监听 `http.disconnect`。驱动生成器的那句 `async for` 在 `starlette/responses.py:253`，不在本项目代码里（📎 打印调用栈实测） | 一旦开始流式就**不能再改状态码**（头已发出）；中途出错只能"把错误编码进流里"；`TestClient` 无法验证分批，时序必须用真服务 |
@@ -428,13 +450,22 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **`db.get()` 查不到返回 `None`，不判空会变成 500**：📎 实测 `None` 流到 `response_model` → pydantic 报 `ResponseValidationError: Input should be a valid dictionary or object..., input=None` → 客户端 500。⚠️ **不是 `AttributeError`**。⭐ 判据：**把 404 伪装成 500 最容易误导排查** —— 看到 `X | None` 就该判空
 - **PowerShell 里 `curl.exe` 的输出不要接管道**：📎 两次实测同一个病 —— 乱码 `鐜版湁瀵硅瘽` 是 PowerShell 按 **GBK** 解码 UTF-8 字节（数据本身正确）；`curl | python` 更严重，**10494 字节被压成 8954**，JSON 结构被破坏。解法：`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` / `curl -o` 写文件 / 直接用 Python。⭐ 判据：**看到乱码先查源头对不对，别急着改代码**
 - **连接池省的是握手费**：📎 20 次请求复用同一个 `AsyncClient` → **1 条 TCP**、1.75ms/次；每次新建 → **20 条**、11.01ms/次，**慢 6.28 倍**（本机回环，公网差距更大）。项目里有两个池：httpx（上游，`__aexit__` 关）与 SQLAlchemy（数据库，`dispose` 关），维护方式相同：**启动建一次 → 全程复用 → 退出释放一次**
+- **`debug=True` 会让异常处理器"消失"**：📎 同一份抛异常的路由，`debug=False` 回 `application/json` + `INTERNAL_ERROR`；`debug=True` 回 **`text/plain` + 完整 traceback**，body 里能读到异常消息（实测含「密码」字样）。根因是 Starlette 的 `ServerErrorMiddleware` 在 debug 分支直接返回 traceback。⭐ 所以"把 `settings.debug` 接进 `FastAPI(debug=)`"不能只加一行，**前面必须有 prod 强制关的保护**
+- **跨字段校验要放在 `Settings` 里，不能放启动入口**：📎 `uvicorn app.api.app:app` 与 `from app.config import settings` 两条路径**都不经过 `__main__.py`**；而 `settings = Settings()` 是模块级单例，任何入口都要先 import 它 —— **一处保护覆盖全部入口**
+- **`basicConfig` 调第二次静默失效；`dictConfig` 不带 `force=True` 也不会清掉已有 handler**：📎 连调两次 `basicConfig`，第二次的 format 完全不生效。⚠️ 另一个更危险的默认值：`dictConfig` 的 `disable_existing_loggers=True` 只禁用「**没出现在 `loggers` 段里**」的已有 logger —— 📎 实测 `app.errors` 被禁用、`uvicorn.error` 不受影响（它被命名了）。也就是说**500 的 traceback 会一条都不打**，而启动日志照常
+- **异常类的必填参数不给默认值，是为了让"漏写"在写代码时就崩**：📎 `AppError()` → `TypeError: missing 2 required positional arguments`，mypy strict 还会静态报 `call-arg`。若给 `code: str = "UNKNOWN"`，mypy 不报、运行时静默造出一个 `code='UNKNOWN'` → 查表落空 → **静默 400**。⚠️ 但"必填"只挡漏传：📎 `AppError("MODEL_NOT_FOUNDD", …)` 拼错一个字母 → **零道闸**，照样静默 400（待办 #58）
+- **`HTTPException` 的旅程分两段**：**异常**只走到 `ExceptionMiddleware`（紧贴 Router 外面）就结束了，从那以后往回走的是**一个普通 Response**，才轮到 CORS / 自己的中间件去补头。📎 证据：404 的访问日志是 `-> 404`，只有真 500 才是 `-> ERR`；且 404 响应带 ACAO + `X-Request-ID`。所以同一个 `AppError`：路由里抛 → 400，**中间件里抛 → 500**（`ExceptionMiddleware` 在它里面，够不着）
+- **`@app.middleware("http")` 的 `"http"` 参数是被忽略的**：📎 四组实测（`http` / `websocket` / `banana` / 空）行为完全一致，源码里 `middleware_type` 一次都没被读。🔴 更坑的是写 `"websocket"` **不会**让 ws 请求进 dispatch（`BaseHTTPMiddleware.__call__` 首行按 `scope["type"] != "http"` 直接放行）。⭐ 判据：**给参数填了值就要问「我怎么知道它被读了」**
+- **`raise` 与 `return` 不是风格问题，是语义问题**：`return` = "交给你继续"，每一层都得自己判断；`raise` = "到此为止"。📎 实测：把「造好 404 响应」写成普通函数但**忘了 `return`** → `[200] {'ok': True}`，错误被静默吞掉。另外依赖里没有返回值可用、流式响应头已发出，这两处**只能** raise
 
 | 文档 | 内容 |
 |---|---|
 | [project/roadmap.md](study_notes/project/roadmap.md) | 目标、能力缺口分析、阶段规划 |
 | [learning/stage0-engineering-basics.md](study_notes/learning/stage0-engineering-basics.md) | uv / Git / 项目结构 / pydantic / 类型注解 / 异步 / 测试 / lint / Docker |
-| [learning/stage1-fastapi.md](study_notes/learning/stage1-fastapi.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 测试 → 部署（Step 1~6 后有「前半程回顾」章节；**Step 9 的 §9.9「一条流式请求的全生命周期」是三张全景图的复习入口**，§9.2b~9.2d / §9.3a 是流式的分层讲解） |
+| [learning/stage1-fastapi.md](study_notes/learning/stage1-fastapi.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 工程化（日志 / 错误形状 / prod 保护）→ 测试 → 部署（Step 1~6 后有「前半程回顾」；**§9.9「一条流式请求的全生命周期」**是三张全景图复习入口；**§11d-1 中间件栈七层 + 装饰器↔栈层映射**） |
+| [learning/logging.md](study_notes/learning/logging.md) | **日志专题**：一次 `logger.info()` 的四道闸、Logger 树与 `propagate`、级别语义、Handler 与轮转、Formatter 字段、`dictConfig` 关键参数、14 条注意事项、踩坑表 |
 | [learning/learning-log.md](study_notes/learning/learning-log.md) | 步骤流水、踩坑记录、关键结论 |
+| [learning/self-check-questions.md](study_notes/learning/self-check-questions.md) | 全部自检题 + 简要答案（按阶段/步骤编号） |
 | [learning/tools-reference.md](study_notes/learning/tools-reference.md) | 第三方包与工程工具速查：定位、安装、常用 API 与命令、易错点 |
 | [工程规范与协作约定.md](工程规范与协作约定.md) | 本项目的工程规范：命名、分层、质量门、安全约定 |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | AI 协作指令：任何新会话自动加载的讲解风格、工作纪律与命令规范 |
