@@ -1131,7 +1131,9 @@
 20. 📎 `@app.middleware("http")` 的括号里没有 `BaseHTTPMiddleware`，那我们的 `add_request_id` 是**继承**了它吗？
     > **不是继承，是组合。** 📎 源码：`decorator(func)` 里只做 `self.add_middleware(BaseHTTPMiddleware, dispatch=func)` —— 把 `BaseHTTPMiddleware` **类本身**登记进 `user_middleware`，把我们的函数作为 `dispatch=` 关键字参数。📎 实测 `app.user_middleware` 里就是 `BaseHTTPMiddleware` + `kwargs={'dispatch': 'add_request_id'}`，构建后的实例上 `dispatch_func` 指向我们的函数。所以：**壳是框架的，回调是我们的**；`call_next` 这个参数也是 `BaseHTTPMiddleware` 运行时传进来的。装饰器最后 `return func`，所以原函数名还能用。
 21. 📎 把 `@app.middleware("http")` 的 `"http"` 换成 `"websocket"` / `"banana"` 会怎样？层级会变吗？它能管 websocket 吗？
-    > **什么都不会变**：本版本里 `middleware_type` 参数**根本没被读取**（📎 源码里 `decorator` 只用 `func`；grep 两个 `applications.py` 也没有 assert），📎 四个值都登记成同一个 `BaseHTTPMiddleware` + `dispatch`。**层级也不变**（只由 `insert(0)` 与 `reversed(middleware)` 决定）。**也不能管 websocket**：📎 实测 `websocket_connect("/ws")` 时 dispatch **一次都没被调用** —— 因为 `BaseHTTPMiddleware.__call__` 第一行 `if scope["type"] != "http": await self.app(...); return`。要管 ws 得写纯 ASGI 中间件类 + `app.add_middleware(MyCls)`。⭐ 判据：**"看起来该起作用的参数"要先问「我怎么知道它被读了」。**
+    > **什么都不会变**：本版本里 `middleware_type` 参数**根本没被读取**（📎 源码里 `decorator` 只用 `func`；grep 两个 `applications.py` 也没有 assert），📎 四个值都登记成同一个 `BaseHTTPMiddleware` + `dispatch`。**层级也不变**（只由 `insert(0)` 与 `reversed(middleware)` 决定）。**也不能管 websocket**：📎 实测 `websocket_connect("/ws")` 时 dispatch **一次都没被调用** —— 因为 `BaseHTTPMiddleware.__call__` 第一行 `if scope["type"] != "http": await self.app(...); return`。要管 ws 得写纯 ASGI 中间件类 + `add_middleware(MyCls)`。⭐ 判据：**"看起来该起作用的参数"要先问「我怎么知道它被读了」。**
+22. 📎 为什么 `/docs`、`/redoc`、`/openapi.json` 必须**一起**关？只关 `/docs` 会怎样？
+    > `/docs` 那个页面**本身不包含接口信息**，它启动时去拉 `/openapi.json` 再画出来。📎 实测只设 `docs_url=None`：`/docs` 404，但 **`/redoc` 仍 200、`/openapi.json` 仍 200 且能拿到完整 schema**（路径 / 参数 / 请求体 / 响应结构 / 错误形状全在里面）。所以关页面不关数据源 = 没关。本项目用 `_DOCS_ENABLED = settings.app_env == "dev"` 同时控制三个参数。⭐ 判据：**开关是否生效要看全部相关端点，不能只打主页。**    > **什么都不会变**：本版本里 `middleware_type` 参数**根本没被读取**（📎 源码里 `decorator` 只用 `func`；grep 两个 `applications.py` 也没有 assert），📎 四个值都登记成同一个 `BaseHTTPMiddleware` + `dispatch`。**层级也不变**（只由 `insert(0)` 与 `reversed(middleware)` 决定）。**也不能管 websocket**：📎 实测 `websocket_connect("/ws")` 时 dispatch **一次都没被调用** —— 因为 `BaseHTTPMiddleware.__call__` 第一行 `if scope["type"] != "http": await self.app(...); return`。要管 ws 得写纯 ASGI 中间件类 + `app.add_middleware(MyCls)`。⭐ 判据：**"看起来该起作用的参数"要先问「我怎么知道它被读了」。**
 
 ### Step 12 · 测试 FastAPI
 
@@ -1236,5 +1238,6 @@
 | 2026-10-31 | 阶段 1 · **Step 11** 补 1 题（第 19 题，11d 收口）：同一个 `AppError` 为什么在路由里是 4xx、在中间件里变 500。配套笔记 §11d-1「分家」、决策 25 |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 1 题（第 20 题）+ 扩写第 19 题答案（异常上抛完整路径 + 本项目装饰器↔栈层映射）：`@app.middleware("http")` 为什么不需要写 `BaseHTTPMiddleware`（是组合不是继承）。配套笔记 §11d-1 |
 | 2026-10-31 | 阶段 1 · **Step 11** 补 1 题（第 21 题）：`@app.middleware("http")` 的 `"http"` 换成别的会怎样（📎 参数被完全忽略 / 层级不变 / 也不能管 websocket）。配套笔记 §11d-1「那个 `"http"` 是被忽略的」 |
+| 2026-11-01 | 阶段 1 · **Step 11** 补 1 题（第 22 题，11e）：三个文档端点为什么必须一起关（📎 只关 `docs_url` 时 `/redoc` 与 `/openapi.json` 仍 200）。配套笔记 §11e |
 | 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
 | 2026-10-31 | 新增独立章节 [logging.md](logging.md)：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数与幂等 / 14 条注意事项 / 踩坑表。同时把 `stage1-fastapi.md §11.2` 收缩成指针（避免同一份事实两处维护） |

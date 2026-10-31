@@ -91,6 +91,11 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 
+# 交互式文档只在开发环境开放：prod 下它会把全部接口形状公开给任何人
+# 【注意】：三个要一起关 —— 只关 docs 时 /openapi.json 仍能拿到完整结构
+_DOCS_ENABLED = settings.app_env == "dev"
+
+
 # app 就是 uvicorn 要托管的那个对象
 # 命令行里写 app.api.app:app 的读法：包 app -> 子包 api -> 模块 app -> 里面的变量 app
 app = FastAPI(
@@ -100,6 +105,9 @@ app = FastAPI(
     # 只有开发才开：debug=True 时异常处理器被绕过，traceback 直接进响应体
     #   （APP_ENV=prod 时 config.py 已禁止 DEBUG=true，这里才敢直接接）
     debug=settings.debug,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _DOCS_ENABLED else None,
     lifespan=lifespan,
 )
 

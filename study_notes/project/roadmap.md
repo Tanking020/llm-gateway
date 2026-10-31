@@ -3,7 +3,7 @@
 > **用途**：本文档是长期学习的唯一上下文来源（single source of truth）。
 > 每次开启新对话时，请先让 AI 阅读本文档，再继续讨论。
 >
-> **最后更新**：2026-10-31（阶段 1 · Step 11：11a / 11b / 11c / **11d ✅**，剩 11e / 11f）
+> **最后更新**：2026-11-01（阶段 1 · Step 11：11a~11e ✅，只剩 11f）
 
 ---
 
@@ -75,7 +75,7 @@
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
   - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**
-  - **Step 11 工程化（2026-10-29 起）**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / 11e ⬜ 生产关 `/docs` `/redoc` `/openapi.json` / 11f ⬜ 流式接口在 `/docs` 标 `text/event-stream`
+  - **Step 11 工程化（2026-10-29 起）**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / **11e ✅ 生产关交互式文档** / 11f ⬜ 流式接口在 `/docs` 标 `text/event-stream`
   - **Step 12 / 13 未开始**（测试、部署）
 
 ### 自检统一安排（2026-10-29 决定）
@@ -210,7 +210,7 @@
 | 7a | 请求 ID + 耗时中间件（`@app.middleware("http")`）；500 复用同一 ID 并补响应头 | ✅ 实测：沿用客户端 ID / 500 头体一致 / 日志覆盖 200·404·500 |
 | 7a-补 | 新建 `src/app/constants.py`（`HEADER_REQUEST_ID`），三处硬编码收敛到一处 | ✅ 实测 `X-Request-ID` 与 `X-Request_ID` 是两个不同的头（大小写则不敏感） |
 | 7b | CORS（预检、`allow_credentials` 的禁忌） | ✅ 实测：白名单返 ACAO / 非白名单仍 200 无 ACAO / 预检打不存在路径 200 / 非法方法 400 |
-| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 / 10 已完成；**Step 11 进行中（11a ✅ / 11b ✅ / 11c ✅ / 11d 待做）**；Step 12~13 未开始 |
+| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 / 10 已完成；**Step 11 进行中（11a~11e ✅ / 11f 待做）**；Step 12~13 未开始 |
 | 8 | Step 8 异步正确姿势（`blocking_demo.py`） | ✅ 实测 25 倍 / 排队 / GIL |
 | 9a | SSE 假数据流式：`/v1/chat/stream` + `StreamingResponse` | ✅ 实测 TTFB 0.014s / total 1.85s / chunked |
 | 9a-补 | 机制补讲四轮（学习者反馈"没看懂"）：§9.2b f-string 与 `\n\n`、§9.2c 帧 vs 时间、§9.2d 生成器与 `StreamingResponse` 分工（含调用栈铁证）、§9.3a 六层生成器讲解 | ✅ 提交 `ee8b4e2` / `696d7ae` / `98ec498` / 收尾提交；详见流水 1.24~1.29 |
@@ -245,6 +245,7 @@
 | 11a | 启动入口 `src/app/__main__.py`（`uv run python -m app`）+ `.env.example` 补 `DATABASE_URL` | ✅ 2026-10-29 学习者手写；📎 `PORT=8131` 启动 → `Uvicorn running on http://127.0.0.1:8131`，curl `[200]`；📎 8000 端口 `[000]` 无人听（证明 settings 真的生效）；📎 `DEBUG=true` → `Started reloader process [...] using WatchFiles`；📎 `DEBUG=false` → 无 reloader。关闭待办 **#27** #29 |
 | 11b | `settings.debug` 接进 `FastAPI(debug=...)` + **prod 强制关保护**（`model_validator` 跨字段校验） | ✅ 2026-10-31 学习者手写一次通过；📎 `APP_ENV=prod`+`DEBUG=true` → `ValidationError` / `exit_code=1` / **uvicorn 未启动**（`python -m app` 与 `uvicorn app.api.app:app` 两条路径都拦）；📎 `dev`+`DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`；📎 复验 `debug=True` 响应 `text/plain` 含 traceback 与异常消息、`debug=False` 为 `application/json`。关闭待办 **#28** |
 | 11c | 日志换 `dictConfig(force=True)`：新增 `src/app/logging_setup.py`，`app.py` 模块级调用，`__main__.py` 提前调 + `log_config=None` | ✅ 2026-10-31 学习者手写；📎 改前两种格式并存（`INFO:     ` + 我们的）+ 每请求 2 行；📎 改后三条路径（`python -m app` / `DEBUG=true` reload / `uvicorn app.api.app:app`）统一 `2026-10-31 … INFO uvicorn.error \| …`，每请求 1 行；📎 去掉 `log_config=None` → reloader 父进程 3 行退回 uvicorn 格式；📎 `disable_existing_loggers=True` → `app.errors` / `httpx` 被禁用（`uvicorn.*` 因被命名反而不受影响）。关闭待办 **#7**，拆 #51 |
+| 11e | 生产关交互式文档：`_DOCS_ENABLED = app_env == "dev"` + `docs_url` / `redoc_url` / `openapi_url` 三个一起条件置 `None` | ✅ 2026-11-01 学习者手写；📎 dev：`/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` 全 **200**；📎 prod：四个全 **404**（body 是 11d 的统一形状），`/health` 仍 200；📎 另测「只关 `docs_url`」→ `/redoc` 与 `/openapi.json` **仍 200**（证明三个必须一起关） |
 | 11d | **统一错误形状（B 版：业务码）**：`errors.py` 抽 `_error_response` 单一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；`app.py` 两处 404 改抛 `AppError("MODEL_NOT_FOUND"/"CONVERSATION_NOT_FOUND")` | ✅ 2026-10-31 学习者手写；📎 8 组用例：`/nope`→`NOT_FOUND`、`/v1/models/xxx`→`MODEL_NOT_FOUND`、对话详情/删除→`CONVERSATION_NOT_FOUND`、422→`VALIDATION_ERROR`+`details`、405→`METHOD_NOT_ALLOWED`、500→`INTERNAL_ERROR`，**全部 `hdr==body` 且 body 无 traceback/密码**。关闭待办 **#6**，落地决策 **25** |
 | 11e | 生产关 `/docs` `/redoc` `/openapi.json` | ⬜ 待做（`docs_url=None` / `redoc_url=None` / `openapi_url=None` 按 `app_env` 决定） |
 | 11f | 流式接口在 `/docs` 标 `text/event-stream` | ⬜ 待做（`responses={200: {"content": {"text/event-stream": {}}}}`） |
@@ -340,7 +341,7 @@
 | **11b** | `settings.debug` → `FastAPI(debug=…)` + prod 强制关保护 | ✅ 已完成 · **#28** |
 | **11c** | 日志 `dictConfig(force=True)`（+ 新增 `learning/logging.md` 专题） | ✅ 已完成 · **#7**（#51 拆半 · 新增 **#56**） |
 | **11d** | 统一错误形状（`_error_response` 单一出口 + 4 个处理器 + 业务码） | ✅ 已完成 · **#6** · 关联决策 5 |
-| **11e** | 生产关 `/docs` `/redoc` `/openapi.json` | ⬜ 待做 |
+| **11e** | 生产关 `/docs` `/redoc` `/openapi.json` | ✅ 已完成 · 📎 dev 全 200 / prod 全 404（含 `/docs/oauth2-redirect`），`/health` 不受影响；prod 的 404 已是 11d 统一形状 |
 | **11f** | 流式接口在 `/docs` 标 `text/event-stream` | ⬜ 待做 · **#11** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |

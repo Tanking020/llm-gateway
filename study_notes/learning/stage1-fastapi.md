@@ -8885,6 +8885,44 @@ register_exception_handlers(app)
 
 ⭐ 一句话结构变化：**从「每种异常各自拼响应」变成「N 个入口 → 1 个出口」**。
 
+## 11e 生产环境关掉交互式文档
+
+### 📎 实测：三个开关是独立的
+
+| `FastAPI(...)` 参数组合 | `/docs` | `/redoc` | `/openapi.json` |
+|---|---|---|---|
+| 只关 `docs_url=None` | 404 | **200** 🔴 | **200** 🔴 |
+| 只关 `openapi_url=None` | 404 | 404 | 404（`if self.openapi_url and self.docs_url:` 的隐含联动） |
+| **三个都关**（本项目做法） | 404 | 404 | 404 |
+
+⭐⭐ 所以必须**显式三个都写**。只关 `/docs` 等于"把门锁了但窗户开着"：
+`/openapi.json` 里是**完整的接口清单**（路径 / 参数 / 请求体 / 响应结构 / 错误形状），
+而 `/docs` 那个页面本身**只是拿这个 JSON 画出来的** —— 关掉页面不关数据源，等于没关。
+
+### 本项目的落地
+
+```python
+_DOCS_ENABLED = settings.app_env == "dev"
+
+app = FastAPI(
+    ...,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _DOCS_ENABLED else None,
+)
+```
+
+📎 实测：
+
+| | dev | prod |
+|---|---|---|
+| 属性 | `docs_url=/docs` 等三个都有值 | 三个全 `None` |
+| `/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` | 全 **200** | 全 **404** |
+| `/health` | 200 | **200**（业务接口不受影响） |
+| prod 的 404 body | — | `{"error":{"code":"NOT_FOUND","message":"Not Found","request_id":"…"}}`（**11d 的统一形状**） |
+
+⭐ 判据：**看一个功能开关是否"真的生效"，要打全部相关端点，不能只打主页。**
+
 ### 11d-8 一次 `HTTPException` 的完整旅程（📎 逐步实测）
 
 #### 七步
