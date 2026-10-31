@@ -1120,6 +1120,8 @@
     > ① `return` 的语义是"交给你，你继续" → 每一层都要写 `if`，📎 忘了写就变成 `[200] {'ok': True}` **静默吞错**；`raise` 是"到此为止"，📎 中间层 `print` 一次都不执行。② 依赖里（`get_db`）**没有返回值可用**。③ 流式接口响应头已发出，**没法 return 一个响应**。④ 形状改一次只改 `_error_response`。⭐ 判据：**「这不是成功的结果」→ raise；「这就是要交给客户端的数据」→ return。**
 18. 📎 500 的响应为什么没有 `Access-Control-Allow-Origin`？这在浏览器里表现成什么？
     > 因为 500 由**最外层 `ServerErrorMiddleware`** 产出，**不经过 `CORSMiddleware`**（后者在它里层）。浏览器里表现为「网络错误」：JS **读不到 body、也读不到 `request_id`**。⚠️ 而 500 恰恰是最需要那个 ID 的场景（待办 #57）。另外同原因导致 500 的 `X-Request-ID` 头必须由**处理器自己**写。
+19. 📎 为什么**路由里**抛 `AppError` 变成 400，而**同一个 `AppError` 在 `@app.middleware("http")` 里抛**却变成 500？
+    > 因为 `build_middleware_stack()` 把 `app.exception_handlers` **分成了两拨**：`Exception` / `500` 交给最外层的 `ServerErrorMiddleware`，其余（`AppError`、`StarletteHTTPException`、`RequestValidationError`）交给里层的 `ExceptionMiddleware`。中间件在 `ExceptionMiddleware` **外面**抛 → 里层够不着 → 只剩最外层那个 `Exception` 处理器接 → 500。⭐ 判据：**异常往「外」冒，谁在外层谁才有机会接。**
 
 ### Step 12 · 测试 FastAPI
 

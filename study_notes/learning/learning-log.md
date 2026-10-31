@@ -457,6 +457,8 @@
 | 10-31 | ⭐⭐ **异常类是「登记 + 查表」，不是「手动调用」。** 📎 实测 `app.exception_handlers` 是一张 `{异常类型: 函数}` 的表，`@app.exception_handler(X)` 就是往里写一行；真正"调"它的是 `ExceptionMiddleware`（栈里第 5 层）。⭐⭐ 判据：**异常往「外」冒，谁在它外面谁才有机会接** —— 📎 实测同一个 `AppError`，在路由里抛变成 **400**，在中间件里抛变成 **500**（因为 `ExceptionMiddleware` 在中间件里层） |
 | 10-31 | ⭐⭐ **`return` 是"交给你继续"，`raise` 是"到此为止"。** 📎 实测：把「造好 404 响应」写成普通函数但忘了 `return` → `[200] {'ok': True}`，**错误被静默吞掉**；而 `raise` 的三层调用里，中间层的代码一次都没执行。⭐ 判据：**「这不是成功的结果」→ raise；「这就是要交给客户端的数据」→ return**。另：依赖里没有返回值可用、流式响应头已发出，这两处**只能** raise |
 | 10-31 | ⭐ **异常类的参数"缺了就没意义"→ 必填，不给默认值。** 📎 实测 `AppError()` → `TypeError: missing 2 required positional arguments`；mypy strict 在**写代码时**就报 `call-arg`（两道闸）。⚠️ 若给了 `code: str = "UNKNOWN"`：mypy **不报**，运行时**静默**造出 `code='UNKNOWN' message=''` → 查表落空 → **静默 400**。⭐ 但「必填」只挡住了"忘传"：📎 `AppError("MODEL_NOT_FOUNDD", …)`（多一个字母）**零道闸**，照样静默降级 400（待办 #58） |
+| 10-31 | ⭐⭐ **`Exception` / `500` 这两个登记键会被「单独拎出来」交给最外层的 `ServerErrorMiddleware`，其余全给 `ExceptionMiddleware`。** 📎 源码 `fastapi/applications.py:1061-1065`：循环里 `if key in (500, Exception): error_handler = value else: exception_handlers[key] = value`。⭐⭐ 这一条解释了全部现象：① 为什么**路由里**抛 `AppError` 是 4xx、**中间件里**抛同一个变成 500（后者只有最外层接得到）② 为什么 500 的响应**没有 CORS 头**（`ServerErrorMiddleware` 在 `CORSMiddleware` **外面**，响应不流经它）③ 为什么 500 的 `request_id` 必须由处理器自己写进 headers。⚠️ `error_handler` 是单变量、循环里反复覆盖 → 📎 实测 `500` 与 `Exception` 同时登记时**后登记的那个赢** |
+| 10-31 | ⭐ **中间件顺序由源码两处决定**：`build_middleware_stack()` 里 `for ... in reversed(middleware)`（**列表第一个 = 最外层**）+ `add_middleware` 的 `user_middleware.insert(0, ...)`（**后注册的在外层**）。⭐ 判据：**异常往「外」冒，响应往「外」流 —— 谁在外层，谁才能接异常的班 / 改响应的头。** |
 
 ---
 

@@ -8579,19 +8579,111 @@ INFO:     127.0.0.1:62657 - "GET /health HTTP/1.1" 200 OK                  ← u
 > `raise HTTPException(...)` 也不是"调用处理器"，是「**把球扔给框架**」。
 > 📎 本质：`@app.exception_handler(X)` 等价于 `app.exception_handlers[X] = 那个函数`。
 
-### 11d-1 决定一切的一张图：中间件栈（📎 `app.build_middleware_stack()`，从外到内）
+### 11d-1 决定一切的一张图：中间件栈
+
+#### 📎 真实结构（`build_middleware_stack()` 的返回链条，从外到内）
 
 ```text
-① ServerErrorMiddleware      ← 最外层，兜「没人接的异常」（Exception 处理器挂在这）
-② ExceptionTelemetryMiddleware
-③ BaseHTTPMiddleware         ← 我们的 add_request_id（request_id + 访问日志）
-④ CORSMiddleware             ← 补 Access-Control-*
-⑤ ExceptionMiddleware        ← ★ 查表 dispatch 就发生在这里
-⑥ AsyncExitStackMiddleware
-⑦ APIRouter → 路由函数
+scope/请求 → ① ServerErrorMiddleware        ← 最外层
+             ② ExceptionTelemetryMiddleware
+             ③ BaseHTTPMiddleware           ← 我们的 add_request_id（request_id + 访问日志）
+             ④ CORSMiddleware               ← 补 Access-Control-*
+             ⑤ ExceptionMiddleware          ← ★ 查表 dispatch 就发生在这里
+             ⑥ AsyncExitStackMiddleware
+             ⑦ APIRouter → 路由函数 + 依赖
 ```
 
-⭐⭐ **判据：异常往**外**冒，谁在它外面，谁才有机会接。**
+#### 每一层干什么 / 谁塞进去的 / 能接住什么
+
+| 层 | 类 | 职责 | 谁注册 | 接哪些异常 |
+|---|---|---|---|---|
+| ① | `ServerErrorMiddleware` | 最外层兜底；**`debug=True` 时在这里返回 traceback**（11b 的发现） | Starlette 固定 | **只接 `Exception` / `500` 那个处理器**（见下方「分家」） |
+| ② | `ExceptionTelemetryMiddleware` | 给上游上报异常 | FastAPI 固定 | 只记录，不产出响应 |
+| ③ | `BaseHTTPMiddleware` | 我们的 `add_request_id`：发 `request_id`、记访问日志、给**正常响应**补头 | 我们的 `@app.middleware("http")` | ❌ 不接异常（只 `finally` 记日志后继续往外抛） |
+| ④ | `CORSMiddleware` | 补 `Access-Control-*`、答预检 | `app.add_middleware(...)` | ❌ 不接异常，只给**流经它**的响应补头 |
+| ⑤ | `ExceptionMiddleware` | **查表 dispatch**：按状态码 → 按 MRO 找 handler | Starlette 固定，表由 `app.exception_handlers` 传入 | ✅ 除 `Exception`/`500` 以外的**全部**登记项 |
+| ⑥ | `AsyncExitStackMiddleware` | 关闭 `yield` 依赖 / 文件句柄 | FastAPI 固定 | ❌ |
+| ⑦ | `APIRouter` | 路由匹配、**参数校验（422）**、调路由函数与依赖 | FastAPI | ❌ 只负责抛 |
+
+#### 构建顺序（源码三行，解释了为什么是这个顺序）
+
+```python
+# fastapi/applications.py:1054（覆盖了 Starlette 的同名方法，只为插入 ② 和 ⑥）
+middleware = (
+    [ServerErrorMiddleware(handler=error_handler, debug=debug), ExceptionTelemetryMiddleware()]
+    + self.user_middleware            # ③ ④ 都在这里
+    + [ExceptionMiddleware(handlers=exception_handlers, debug=debug), AsyncExitStackMiddleware()]
+)
+for cls, args, kwargs in reversed(middleware):   # ← reversed：列表第一个 = 最外层
+    app = cls(app, *args, **kwargs)
+```
+
+而 `add_middleware` 是 **`user_middleware.insert(0, ...)`** →
+⭐ **用户中间件「后注册的在外层」**（与"列表第一个最外层"叠加的结果）。
+
+#### ⭐⭐ 「分家」：`Exception` 和 `500` 不归 ⑤ 管
+
+同一份源码往上 5 行：
+
+```python
+for key, value in self.exception_handlers.items():
+    if key in (500, Exception):
+        error_handler = value          # ← 交给 ① ServerErrorMiddleware
+    else:
+        exception_handlers[key] = value # ← 交给 ⑤ ExceptionMiddleware
+```
+
+| 登记时写的键 | 进哪张表 | 结果 |
+|---|---|---|
+| `@app.exception_handler(Exception)` | ① `ServerErrorMiddleware` | **连中间件里抛的异常都能接到**（因为它在最外层） |
+| `@app.exception_handler(AppError)` | ⑤ `ExceptionMiddleware` | 只接**路由 / 依赖**里抛的 |
+| `@app.exception_handler(StarletteHTTPException)` | ⑤ | 只接路由/框架在**⑤ 里面**抛的 |
+| `@app.exception_handler(RequestValidationError)` | ⑤ | 同上（422 在 Router 里抛） |
+
+⚠️ `error_handler` 是**单个变量**，循环里会被反复覆盖 → **`500` 和 `Exception` 同时登记时，后登记的那个赢**（📎 实测：先登记 `Exception`、后登记 `500` → 命中 `500`；反过来 → 命中 `Exception`）。
+本项目只登记 `Exception`，所以没歧义；**不要两个都写**。
+
+#### 📎 后果一：同一个异常，抛的位置决定它变成什么
+
+| 抛在哪 | 被谁接 | 最终 |
+|---|---|---|
+| 路由函数里 `raise AppError` | ⑤ | `400 {"code":"LAST_MESSAGE_NOT_USER"}` ✅ |
+| **`@app.middleware("http")` 里** `raise AppError` | ⑤ 在它**里面**，够不着 → 冒到 ① | **`500 {"code":"INTERNAL_ERROR"}`** |
+| **`lifespan` 启动段** `raise AppError` | 两层都还没运行 | **原样冒出去**，进程起不来 |
+
+#### 📎 后果二：500 的响应没有 CORS 头（待办 #57）
+
+| 响应由谁产出 | 是否经过 ④ `CORSMiddleware` | `Access-Control-Allow-Origin` |
+|---|---|---|
+| ⑤（400 / 404 / 405 / 422） | ✅ 经过 | 有 |
+| **①（500）** | ❌ ① 在 ④ **外面** | **无** → 浏览器里读不到 body 和 `request_id` |
+
+#### 📎 后果三：访问日志里 500 显示成 `-> ERR`
+
+我们 ③ 里 `call_next(request)` 抛异常时 `response` 永远是 `None` →
+`getattr(response, "status_code", "ERR")` 打出 `ERR`，且「回写 `X-Request-ID`」那行**根本到不了**。
+这就是 500 的 `request_id` 必须由 ① 里那个处理器**自己写进 headers** 的原因。
+
+#### 怎么自己验证（随时可跑）
+
+```python
+from app.api.app import app
+
+node = app.build_middleware_stack()
+while node is not None:
+    print(type(node).__module__, type(node).__name__)
+    node = getattr(node, "app", None)
+```
+
+#### ⭐ 新增一个中间件前的三条自检
+
+| 问 | 答错会怎样 |
+|---|---|
+| 它需要**接异常**吗？ | 需要 → 只能靠 ① 那个 `Exception` 处理器，或者自己在中间件里 `try/except` |
+| 它需要给**错误响应**也补头吗？ | 需要 → 它必须在 ⑤ **外面**（像 CORS 那样），否则 500 绕过它 |
+| 它抛异常时希望变成什么？ | 想让 4xx 生效 → **别在中间件里抛**，改用 `return JSONResponse(...)` 或把校验下沉到依赖/路由 |
+
+⭐⭐ 一句判据：**异常往「外」冒，谁在它外面，谁才有机会接；响应往「外」流，谁在它外面，谁才有机会改。**
 
 ### 11d-2 改前：5 种错误来源 → 5 种归宿
 
