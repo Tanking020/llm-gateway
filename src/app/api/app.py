@@ -28,8 +28,7 @@ from typing import Annotated, Any
 
 # Query: 用于在上面勾选"这个查询参数要被怎么对待"，FastAPI 读它去约束和写文档
 # status：是一个装了一堆 HTTP 状态码的模块
-# HTTPException：是一个普通异常类，负责把异常抛给框架，再由框架翻译成 HTTP 响应
-from fastapi import FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import FastAPI, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Select, func, select, text
@@ -129,10 +128,13 @@ app.add_middleware(
 )
 
 
+# 【登记翻译器】：异常由 ExceptionMiddleware 查表后调用
+# 【注意】：管不到 @app.middleware 里抛的异常 —— 那层在它外面，会变成 500
+#   原理：内层中间件无法捕获"外层中间件在调用内层之前抛出的异常"
 register_exception_handlers(app)
 
 
-# 中间件：包在【所有路由】外面的一层管道，每个请求都会经过
+# 【中间件】：包在【所有路由】外面的一层管道，每个请求都会经过
 #   请求方向：中间件前半段 -> 路由
 #   响应方向：路由 -> 中间件后半段
 # 注册顺序 = 后注册的在最外层（多个中间件时才有区别，目前是第一个中间件）
@@ -246,10 +248,7 @@ async def get_model(model_name: str) -> dict[str, str]:
     # 更新：未知模型返回 404
     # raise 会立即中止函数，后面的 return 不执行；异常由框架统一转成响应
     if model_name not in KNOWN_MODELS:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"模型不存在: {model_name}",
-        )
+        raise AppError(code="MODEL_NOT_FOUND", message=f"模型不存在：{model_name}")
     return {"model_name": model_name}
 
 
@@ -276,15 +275,15 @@ def ensure_last_message_is_user(request: ChatRequest) -> None:
         )
 
 
-def _conversation_not_found(conv_id: int) -> HTTPException:
+def _conversation_not_found(conv_id: int) -> AppError:
     """
     404 的唯一来源：改文案或者状态码只改这里
 
     【注意】：返回异常对象而不是抛出 —— 由调用方决定在哪里 raise
     """
-    return HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"对话不存在：{conv_id}",
+    return AppError(
+        code="CONVERSATION_NOT_FOUND",
+        message=f"对话不存在：{conv_id}",
     )
 
 

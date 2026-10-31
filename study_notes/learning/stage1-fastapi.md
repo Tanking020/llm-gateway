@@ -8763,6 +8763,38 @@ return {"ok": True}     # 业务代码照常跑完
 
 ⭐ 已记成待办 **#58**（选项：模块常量 / `Literal` / `StrEnum` + `dict[ErrorCode, int]` 强制全覆盖）。
 
+### 11d-9 📎 收口实测（学习者手写版，8 组）
+
+| 请求 | 状态 | `code` | 备注 |
+|---|---|---|---|
+| `GET /nope` | 404 | `NOT_FOUND` | 框架抛的，只能状态码兜底 |
+| `GET /v1/models/xxx` | 404 | **`MODEL_NOT_FOUND`** | `AppError` |
+| `GET /v1/conversations/999999` | 404 | **`CONVERSATION_NOT_FOUND`** | `AppError` |
+| `DELETE /v1/conversations/999999` | 404 | **`CONVERSATION_NOT_FOUND`** | `AppError` |
+| `POST /v1/chat {}` | 422 | `VALIDATION_ERROR` | 多 `details`（只含 `loc`/`msg`/`type`） |
+| `POST /v1/chat`（assistant 收尾） | 400 | `LAST_MESSAGE_NOT_USER` | `AppError` |
+| `PUT /health` | 405 | `METHOD_NOT_ALLOWED` | 框架抛的 |
+| `GET /__boom` | 500 | `INTERNAL_ERROR` | body **无** traceback / 无异常消息 |
+
+**全部 `X-Request-ID` 响应头 == body 里的 `request_id`**（改前只有 500 有这个字段）。
+
+#### 最终结构（`errors.py`，162 行）
+
+```text
+AppError(Exception)                     业务异常：code + message（两个都必填）
+_STATUS_BY_CODE: dict[str, int]         业务码 → HTTP 状态码（查不到默认 400）
+_CODE_BY_STATUS: dict[int, str]         状态码 → 兜底码（只给框架抛的错误用）
+_request_id(request) -> str             中间件的 request_id，取不到才自己生成
+_error_response(...) -> JSONResponse    ★ 唯一出口：形状只在这里定义一次
+register_exception_handlers(app)
+    ├─ AppError                 → _app_error_handler       （码查表定状态）
+    ├─ StarletteHTTPException   → _http_exception_handler  （状态码兜底出码）
+    ├─ RequestValidationError   → _validation_error_handler（422 + details）
+    └─ Exception                → _unhandled_error_handler （500，堆栈只进日志）
+```
+
+⭐ 一句话结构变化：**从「每种异常各自拼响应」变成「N 个入口 → 1 个出口」**。
+
 ### 11d-8 一次 `HTTPException` 的完整旅程（📎 逐步实测）
 
 #### 七步

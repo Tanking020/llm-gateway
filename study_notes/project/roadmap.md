@@ -3,7 +3,7 @@
 > **用途**：本文档是长期学习的唯一上下文来源（single source of truth）。
 > 每次开启新对话时，请先让 AI 阅读本文档，再继续讨论。
 >
-> **最后更新**：2026-10-31（阶段 1 · Step 11 进行中：11a / 11b / 11c ✅，11d 待做）
+> **最后更新**：2026-10-31（阶段 1 · Step 11：11a / 11b / 11c / **11d ✅**，剩 11e / 11f）
 
 ---
 
@@ -75,7 +75,7 @@
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
   - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**
-  - **Step 11 工程化（2026-10-29 起）**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ⬜ 统一错误形状（下一步，步骤卡已发）** / 11e ⬜ 生产关 `/docs` `/redoc` `/openapi.json` / 11f ⬜ 流式接口在 `/docs` 标 `text/event-stream`
+  - **Step 11 工程化（2026-10-29 起）**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / 11e ⬜ 生产关 `/docs` `/redoc` `/openapi.json` / 11f ⬜ 流式接口在 `/docs` 标 `text/event-stream`
   - **Step 12 / 13 未开始**（测试、部署）
 
 ### 自检统一安排（2026-10-29 决定）
@@ -245,7 +245,7 @@
 | 11a | 启动入口 `src/app/__main__.py`（`uv run python -m app`）+ `.env.example` 补 `DATABASE_URL` | ✅ 2026-10-29 学习者手写；📎 `PORT=8131` 启动 → `Uvicorn running on http://127.0.0.1:8131`，curl `[200]`；📎 8000 端口 `[000]` 无人听（证明 settings 真的生效）；📎 `DEBUG=true` → `Started reloader process [...] using WatchFiles`；📎 `DEBUG=false` → 无 reloader。关闭待办 **#27** #29 |
 | 11b | `settings.debug` 接进 `FastAPI(debug=...)` + **prod 强制关保护**（`model_validator` 跨字段校验） | ✅ 2026-10-31 学习者手写一次通过；📎 `APP_ENV=prod`+`DEBUG=true` → `ValidationError` / `exit_code=1` / **uvicorn 未启动**（`python -m app` 与 `uvicorn app.api.app:app` 两条路径都拦）；📎 `dev`+`DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`；📎 复验 `debug=True` 响应 `text/plain` 含 traceback 与异常消息、`debug=False` 为 `application/json`。关闭待办 **#28** |
 | 11c | 日志换 `dictConfig(force=True)`：新增 `src/app/logging_setup.py`，`app.py` 模块级调用，`__main__.py` 提前调 + `log_config=None` | ✅ 2026-10-31 学习者手写；📎 改前两种格式并存（`INFO:     ` + 我们的）+ 每请求 2 行；📎 改后三条路径（`python -m app` / `DEBUG=true` reload / `uvicorn app.api.app:app`）统一 `2026-10-31 … INFO uvicorn.error \| …`，每请求 1 行；📎 去掉 `log_config=None` → reloader 父进程 3 行退回 uvicorn 格式；📎 `disable_existing_loggers=True` → `app.errors` / `httpx` 被禁用（`uvicorn.*` 因被命名反而不受影响）。关闭待办 **#7**，拆 #51 |
-| 11d | **统一错误形状（B 版：业务码）**：`errors.py` 抽 `_error_response` 单一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；`app.py` 两处 404 改抛 `AppError("MODEL_NOT_FOUND"/"CONVERSATION_NOT_FOUND")` | ⬜ **步骤卡已发**（2026-10-31），待学习者手写。📎 设计版已实测通过（8 组用例 + 三道门），目标：三种 404 各有独立 `code`、所有错误都带 `request_id` |
+| 11d | **统一错误形状（B 版：业务码）**：`errors.py` 抽 `_error_response` 单一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；`app.py` 两处 404 改抛 `AppError("MODEL_NOT_FOUND"/"CONVERSATION_NOT_FOUND")` | ✅ 2026-10-31 学习者手写；📎 8 组用例：`/nope`→`NOT_FOUND`、`/v1/models/xxx`→`MODEL_NOT_FOUND`、对话详情/删除→`CONVERSATION_NOT_FOUND`、422→`VALIDATION_ERROR`+`details`、405→`METHOD_NOT_ALLOWED`、500→`INTERNAL_ERROR`，**全部 `hdr==body` 且 body 无 traceback/密码**。关闭待办 **#6**，落地决策 **25** |
 | 11e | 生产关 `/docs` `/redoc` `/openapi.json` | ⬜ 待做（`docs_url=None` / `redoc_url=None` / `openapi_url=None` 按 `app_env` 决定） |
 | 11f | 流式接口在 `/docs` 标 `text/event-stream` | ⬜ 待做（`responses={200: {"content": {"text/event-stream": {}}}}`） |
 
@@ -261,7 +261,7 @@
 | 3 | `KNOWN_MODELS` 与 `/v1/models/latest` 仍是硬编码 | `/v1/models/latest` 返回 `KNOWN_MODELS[0]`，与 `settings.llm_model` 无关联；改配置时两处会不一致。现在已有 `/v1/upstream/models` 作为对照，可改用真实数据 | **Step 7 之后**（或做缓存/降级策略时） |
 | 4 | ~~`deps.py` 的 `get_llm_client()` 与 `main.py` 的 `create_client()` 构造参数刻意重复~~ | ✅ **已解决**（提交 `f53c6dc`）：抽出 `src/app/llm_client.py` 的 `create_llm_client()`，两边共用；实测构造参数已收敛到 1 处 | **已完成** |
 | 5 | ~~client 生命周期按"请求级"还是"应用级"管~~ | ✅ **已定案**（6.4，2026-10-18）：改为 **应用级**（`lifespan` 创建 + `app.state.llm_client` 共享）；实测 startup 后 `is_closed=False`、两次请求同一对象、shutdown 后 `is_closed=True`。性能依据：每请求新建比共享慢 **2.23 倍** | **已完成** |
-| 6 | **三种错误响应形状并存**：400 `{"error":{code,message}}` / 404 `{"detail":"…"}` / 422 `{"detail":[…]}` | 客户端要写三份解析代码。判据：错误形状应让客户端只写一份 | **Step 11（工程化）**：给 `HTTPException` 与 `RequestValidationError` 各注册处理器统一形状 |
+| 6 | ~~**三种错误响应形状并存**：400 `{"error":{code,message}}` / 404 `{"detail":"…"}` / 422 `{"detail":[…]}`~~ | ✅ **已解决**（11d，2026-10-31）：`errors.py` 抽出 `_error_response()` 唯一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；📎 实测 8 组全部 `{"error":{code,message,request_id}}`（422 多 `details`），且 `X-Request-ID` 响应头 == body 里的 `request_id`。原记录：客户端要写三份解析代码 | **已完成** |
 | 7 | **日志只有基础**：无格式化（无时间/级别/模块名）、`logger.info` 被静默丢弃、无文件/集中收集 | 现在只有 ERROR 级能出现在终端；排查时缺上下文 | **Step 11**：`logging.dictConfig` + 统一格式 +（生产）日志收集 |
 | 8 | `/v1/chat` 仍是 `echo` 占位（Step 9 只让**流式**路由接了真上游）；`app.state.llm_client` 是 `Any`（mypy 校验不到属性拼错） | 📎 Step 9 收口后实测：`POST /v1/chat` → `{"content":"[echo] 你好",...}`，未触碰上游。⚠️ 接真上游时**不要照抄流式写法**：建议「**接收流式 + 返回非流式**」（能中途取消省钱 / 逐帧记账 / 防坏帧），判据见笔记 §9.10 ⑦ | **Step 10 之后或阶段 2**；类型问题**随时可做** |
 | 9 | **`HEAD` 请求返回 405**（`allow: GET`） | 实测 `curl -I http://127.0.0.1:8000/health` → `405 Method Not Allowed`。因为 `@app.get(...)` 只注册 GET。有些监控/探活工具用 HEAD 探测会失败 | **随时可做**：`@app.api_route("/health", methods=["GET", "HEAD"])` 或加一个 `@app.head("/health")` |
@@ -339,7 +339,7 @@
 | **11a** | 启动入口 `python -m app`（`settings.host/port` 生效）+ `.env.example` 补 `DATABASE_URL` | ✅ 已完成 · **#27 #29** |
 | **11b** | `settings.debug` → `FastAPI(debug=…)` + prod 强制关保护 | ✅ 已完成 · **#28** |
 | **11c** | 日志 `dictConfig(force=True)`（+ 新增 `learning/logging.md` 专题） | ✅ 已完成 · **#7**（#51 拆半 · 新增 **#56**） |
-| **11d** | 统一错误形状（`_error_response` 单一出口 + 4 个处理器 + 业务码） | ⬜ 进行中 · **#6** · 关联决策 5 |
+| **11d** | 统一错误形状（`_error_response` 单一出口 + 4 个处理器 + 业务码） | ✅ 已完成 · **#6** · 关联决策 5 |
 | **11e** | 生产关 `/docs` `/redoc` `/openapi.json` | ⬜ 待做 |
 | **11f** | 流式接口在 `/docs` 标 `text/event-stream` | ⬜ 待做 · **#11** |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
