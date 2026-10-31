@@ -8737,6 +8737,43 @@ starlette.middleware.base.BaseHTTPMiddleware  dispatch_func=app.api.app.add_requ
 | `add_middleware` 的顺序 | `user_middleware.insert(0, ...)` → **后注册的在外层**；且 app 启动后再调用会 `RuntimeError` |
 | ⚠️ `BaseHTTPMiddleware` 的隐藏代价 | 它用 **AnyIO task group** 跑下游 → 会创建 **contextvars 副本**、多一层 task 开销。FastAPI 源码注释里明说：正因为这个，`AsyncExitStackMiddleware` 必须放在**所有用户中间件里面**才能保住 context |
 
+#### ⚠️ `@app.middleware("http")` 里那个 `"http"` 是**被忽略**的
+
+📎 源码：`middleware(self, middleware_type)` 的函数体里 **`middleware_type` 一次都没被读取** —— `decorator` 只做 `add_middleware(BaseHTTPMiddleware, dispatch=func)`。
+📎 grep `fastapi/applications.py` + `starlette/applications.py`：**没有** `assert middleware_type == "http"` 之类的校验。
+（⚠️ 老教程里那句 `assert` 属**未验证的历史版本行为**。）
+
+📎 实测四个值，行为完全一致（`fastapi 0.143.0 / starlette 1.8.0`）：
+
+```text
+middleware("http")       cls=BaseHTTPMiddleware kwargs=['dispatch']  X-MW=ran:http
+middleware("websocket")  cls=BaseHTTPMiddleware kwargs=['dispatch']  X-MW=ran:websocket
+middleware("banana")     cls=BaseHTTPMiddleware kwargs=['dispatch']  X-MW=ran:banana
+middleware("")           cls=BaseHTTPMiddleware kwargs=['dispatch']  X-MW=ran:EMPTY
+```
+
+| 问题 | 答案 |
+|---|---|
+| 换别的值会怎样 | **什么都不变**（只是写进 `X-MW` 的那种"你自己写的标记"会变） |
+| 层级会变吗 | **不会** —— 层级只由 `insert(0)` 顺序 + `reversed(middleware)` 的固定拼装决定 |
+| 那它有什么用 | 占位／文档意图："这是 HTTP 层中间件"，为将来扩展留的位置 |
+
+🔴 **名字骗人**：写 `@app.middleware("websocket")` **不会**让 ws 请求进 dispatch。
+📎 实测：`dispatch` 只被 `/x`（http）调用，`websocket_connect("/ws")` **完全没经过** dispatch。
+根因：`BaseHTTPMiddleware.__call__` 第一行就是
+
+```python
+if scope["type"] != "http":
+    await self.app(scope, receive, send)   # 非 http 直接放行，dispatch 不跑
+    return
+```
+
+想管 websocket 只能写**纯 ASGI 中间件类** + `app.add_middleware(MyCls)`（这个参数必须传类，不能用装饰器）。
+
+⭐⭐ 判据：**给一个参数填了值之后，问"我怎么知道它被读了？"** 答不上来 → 读源码，或做一个对照实验。
+（这与 `.gitattributes` 放错目录、`[building-system]` 拼错、`.env` 键名拼错属**同一类静默失效**。）
+
+
 
 ### 11d-2 改前：5 种错误来源 → 5 种归宿
 
