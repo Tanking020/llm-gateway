@@ -65,20 +65,58 @@ logger.info("GET %s -> %s", path, status)
 
 ### 3.1 树
 
-名字里的 `.` 就是层级。项目里实际用到的：
+名字里的 `.` 就是层级。**📎 本项目进程里真实的树**（`import app.api.app` 之后 dump `logging.root.manager.loggerDict`）：
 
 ```text
-root                      ← 名字是 ""，所有 logger 的祖先
-├── app
-│   ├── app.config
-│   ├── app.errors
-│   └── app.api
-│       └── app.api.app
-├── uvicorn
-│   ├── uvicorn.error
-│   └── uvicorn.access
-└── httpx
+root  ("")  level=INFO   handlers=[console]        ← 全进程唯一挂 handler 的地方
+├── app                          [PlaceHolder]     ← 只是名字占位，没有 Logger 对象
+│   ├── app.api                  [PlaceHolder]
+│   │   └── app.api.app          [Logger] NOTSET  handlers=[]  propagate=True
+│   ├── app.errors               [Logger] NOTSET  handlers=[]  propagate=True
+│   └── app.llm_client           [Logger] NOTSET  handlers=[]  propagate=True
+├── uvicorn                      [Logger] INFO    handlers=[]  propagate=True
+│   ├── uvicorn.error            [Logger] INFO    handlers=[]  propagate=True
+│   └── uvicorn.access           [Logger] WARNING handlers=[]  propagate=False  ← 到此为止
+├── sqlalchemy                   [Logger] WARNING  ← 这个 level 是 SQLAlchemy 自己设的
+│   ├── sqlalchemy.engine                   [PlaceHolder]
+│   │   └── sqlalchemy.engine.Engine        [Logger] NOTSET → 有效级别 WARNING
+│   └── sqlalchemy.pool                     [PlaceHolder]
+│       └── sqlalchemy.pool.impl.AsyncAdaptedQueuePool  [Logger] NOTSET → 有效级别 WARNING
+└── httpx                        [Logger] NOTSET → 有效级别 INFO（跟着 root）
 ```
+
+⚠️ **这张图不是"框架自带的固定结构"，而是"此刻谁调用过 `getLogger`"的快照** —— 见 §3.4。
+
+### 3.4 谁才会出现在这棵树上（`getLogger` 是「获取或创建」）
+
+| 事实 | 说明 |
+|---|---|
+| logger **不会**自动存在 | 只有别人 `logging.getLogger("app.errors")` 调过，那个 logger 才被建出来 |
+| 名字里的点只决定**父子关系** | 建 `app.api.app` 时，缺失的祖先 `app` 和 `app.api` 会以 **`PlaceHolder`** 占位：只有名字，**没有 level、没有 handler** |
+| `PlaceHolder` 会不会变成真 logger | 只有当有人 `getLogger("app.api")` 或者有人在它上面设 level/handler 时 |
+| 三方库也遵守这套 | 📎 `sqlalchemy.engine` / `sqlalchemy.pool` 是 **PlaceHolder**；真正的 logger 是 `sqlalchemy.engine.Engine`、`sqlalchemy.pool.impl.AsyncAdaptedQueuePool` |
+| 库会自己设级别 | 📎 SQLAlchemy 源码 `log.py`：`rootlogger = getLogger("sqlalchemy"); if rootlogger.level == NOTSET: rootlogger.setLevel(WARNING)` —— 注释原话是"这样在没显式开启日志时不会打日志" |
+
+⭐⭐ **踩坑：用 `getLogger(name)` 去"探测"logger 存不存在，等于**创建**它。**
+
+📎 实测：
+
+```text
+探测前 'app.core' 在 loggerDict 里吗: False
+logging.getLogger("app.core.probe")     ← 只为检查一下
+探测后 'app.core' 在 loggerDict 里吗: True   （类型是 PlaceHolder）
+```
+
+正确查法：`logging.root.manager.loggerDict`（只读字典，不会创建任何东西），
+`isinstance(obj, logging.PlaceHolder)` 判占位。
+
+### 3.5 为什么 `sqlalchemy` 的 SQL 日志我们看不到（却没配过任何东西）
+
+📎 `sqlalchemy` 自己 `level=WARNING`；`sqlalchemy.engine.Engine` 是 `NOTSET` → **有效级别继承最近的祖先 = WARNING**。
+我们 root 是 INFO，但 INFO < WARNING，所以那些 DEBUG 级 SQL 永远出不来。
+⭐ 由此得到一条实用技巧：**想临时看 SQL，只要 `logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)`**，
+不需要改 `echo=True`，也不需要动我们的 `configure_logging()`。
+
 
 ### 3.2 两条**完全相反**的规则（最容易搞混的地方）
 
@@ -341,7 +379,8 @@ logger.info("上游返回", extra={"model": model, "tokens": 128})
 | 📎 | 同一条日志打两行 | 自己加了 handler，`propagate` 又是默认 `True` | 二选一：删掉自己的 handler，或 `propagate=False` |
 | 📎 | reload 时头几行格式不一样 | `uvicorn.run()` 没传 `log_config=None`，uvicorn 又装了一遍自己的配置 | 传 `None` |
 | 📎 | 服务日志里找不到 `GET /x` 的客户端 IP | 关掉了 `uvicorn.access`（本项目待办 #56） | 在中间件那行加 `request.client.host` |
-| ⚠️ | `logger.info` 写了但没输出 | 三道闸都可能是元凶（见 §1）；最常见是**级别**或**没有 handler** | 按 §1 的顺序查，别乱改代码 |
+| 📎 | `logger.info` 写了但没输出 | 三道闸都可能是元凶（见 §1）；最常见是**级别**或**没有 handler** | 按 §1 的顺序查，别乱改代码 |
+| 📎 | 用 `getLogger(name)` 探测 logger 存不存在，结果"探一个多一个" | `getLogger` 是**获取或创建**，不是查询 | 查 `logging.root.manager.loggerDict`；判 `PlaceHolder` |
 | ⚠️ | 生产日志时间差 8 小时 | `asctime` 用本地时间，容器是 UTC | 统一 UTC，或配 `datefmt` 带 `%z` |
 
 ---

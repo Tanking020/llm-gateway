@@ -1110,6 +1110,8 @@
     > `%s` 是**惰性**的：先过级别闸，被拦下就**不展开**参数（📎 实测：`Boom.__str__` 会 raise，用 `logger.debug("值=%s", Boom())` 没有抛异常）。f-string 是**立即求值**，日志没输出也已经付过拼接/序列化的代价。⭐ 判据：**日志参数一律用 `%s` 占位，不要 f-string。**
 13. 什么情况下**同一条日志会打印两行**？怎么修？
     > 某个 logger 自己挂了 handler，同时 `propagate` 又是默认的 `True` → 记录既交给自己的 handler，又冒泡给祖先的 handler。📎 实测（`CHILD |…` + `PARENT|…` 两行）。修法二选一：删掉自己加的 handler，或 `propagate=False`。⚠️ 注意 handler **不会继承**，只有 `propagate` 才会把记录送给祖先的 handler。
+14. 📎 `logging.getLogger("app.api")` 之前，`app.api` 在这棵树上是什么？判断一个 logger「有没有被创建」，能不能用 `getLogger` 去试？
+    > `app.api` 只是 **`PlaceHolder`**（只有名字占位，没有 level / handler）；真正的 logger 是 `app.api.app`。**不能用 `getLogger` 探测** —— 它是「获取或创建」，📎 实测 `logging.getLogger("app.core.probe")` 之后 `app.core` 就从"不存在"变成"PlaceHolder"。正确做法：查 `logging.root.manager.loggerDict`，并用 `isinstance(obj, logging.PlaceHolder)` 区分。
 
 ### Step 12 · 测试 FastAPI
 
