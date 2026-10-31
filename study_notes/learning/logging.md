@@ -178,6 +178,48 @@ PARENT|probe.child|双输出测试      ← 冒泡到父 logger 的 handler
 | `logger.info("x=%s", x)` ✅ | 不拼字符串，零开销 |
 | `logger.info(f"x={x}")` ❌ | **先拼好**再判断要不要输出 —— 白白付代价（拼 JSON、`repr` 大对象时很贵） |
 
+### 4.1 📎 同一份 `Boom` 的对照实验（级别设为 WARNING，INFO 被关）
+
+| 写法 | 结果 |
+|---|---|
+| `logger.info("x=%s", Boom())` | ✅ **没有异常** —— `__str__` 从未被调用 |
+| `logger.info(f"x={Boom()}")` | 🔴 **抛 `RuntimeError`** —— f-string 在调用**之前**就求值，异常直接进业务代码 |
+
+### 4.2 📎 代价量级（1 MB 字符串，INFO 关掉，各 200 次）
+
+| 写法 | 耗时 |
+|---|---|
+| `logger.info("len=%s", len(big))` | **0.03 ms** |
+| `logger.info(f"payload={big}")` | **66.31 ms**（**2352 倍**） |
+
+⭐ 一行日志都没输出，却付了 66 ms 和 200 MB 临时内存。LLM 应用里最常见的踩法：
+把整个上游响应体 / `messages` 列表拼进日志。
+
+### 4.3 `%s` 只保证「不 `str()`」，不保证「不算参数」
+
+```python
+logger.debug("body=%s", await request.body())          # ❌ await 在传参时就执行了
+logger.debug("rows=%s", [r.dict() for r in rows])      # ❌ 列表推导也先跑完
+```
+
+这类要加**第二道闸**：
+
+```python
+if logger.isEnabledFor(logging.DEBUG):
+    logger.debug("body=%s", await request.body())
+```
+
+### 4.4 级别**开着**时，两者还有这些差别
+
+| | `%s` | f-string |
+|---|---|---|
+| 格式化时机 | 交给 `Formatter`，emit 那一步才 `msg % args` | 调用前做完 |
+| 格式写错（`"%d"` 传 `str`） | `handleError` 兜住，打一行 `--- Logging error ---`，**不崩程序** | — |
+| 参数的"原样" | 留在 `record.args`，JSON formatter / Sentry 能拿到结构化参数 | 只剩成品字符串 |
+| 事后脱敏 | 可在 filter 里改 `record.args` | 改不了 |
+
+⭐ 想机械拦截：ruff 的 `select` 里加 `"G"`（flake8-logging-format），`logger.info(f"…")` 会报 `G004`。
+
 ⚠️ 一个真实的坑：`logger.info(f"{request.json()}")` 这类写法在**打日志之前**就已经把 body 序列化了一遍。
 
 ---
