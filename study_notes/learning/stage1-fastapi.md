@@ -8839,6 +8839,8 @@ register_exception_handlers(app)
 | 「处理器返回的 Response 再原路往外穿过普通中间件」 | ✅ **对** | 📎 404/422 响应都带 `Access-Control-Allow-Origin` 与 `X-Request-ID`（由 ④ ③ 补的） |
 | 「没注册处理器 → 用框架默认的，返回 `{"detail": …}`」 | 🟡 **要限定在 FastAPI** | FastAPI 用 `setdefault` **一定**注册了 `StarletteHTTPException` → 所以"没注册"只发生在**纯 Starlette**；那时默认返回的是 **`PlainTextResponse(exc.detail)`（纯文本）**，不是 JSON（📎 `starlette/middleware/exceptions.py` 的 `http_exception`） |
 | 「在路由 / 依赖 / **校验**里 raise `HTTPException`」 | ❌ **错** | 校验失败抛的是 **`RequestValidationError`**，📎 `issubclass(RequestValidationError, HTTPException)` = **False**，走的是**另一条登记项** |
+| 「中间件里抛的异常最后**被 ServerErrorMiddleware 兜底成 500**」 | 🟡 **要说清是谁产出的 500** | ① 层只是**调用**登记在它那儿的 `Exception` 处理器（也就是 `errors.py` 的 `_unhandled_error_handler`）—— **500 的 JSON 是我们自己拼的**，不是框架的默认文案。📎 对照：没登记 `Exception` 处理器时，① 层返回的是 **纯文本 `Internal Server Error`**；本项目返回的是 `{"error":{"code":"INTERNAL_ERROR",…}}` |
+| 「异常是**响应**从内层往外的过程中……」 | ❌ **方向说混了** | 两个方向都要看：**异常**从抛出点往**外**冒；**响应**从处理器往**外**流。中间件抛的异常之所以接不到，不是"响应拐弯"，而是**它本身就在 ⑤ 外面，异常根本没机会"往里走"** |
 
 #### 另外三条补充
 
