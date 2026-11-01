@@ -8950,6 +8950,58 @@ app = FastAPI(
 
 ⚠️ 待办 #11 原来写的修法就是 A（`responses={200: {...}}`），**是错的**，已在 roadmap 订正。
 
+### ⭐ 为什么是"追加"：三步源码链
+
+| 步 | 位置 | 做了什么 |
+|---|---|---|
+| ① 取 media_type | `utils.py:330` | `route_response_media_type = current_response_class.media_type` |
+| ② **先写入** 200 的 content | `utils.py:456-472` | 用 ①的那个 media_type 建 `content[media_type]["schema"]`；`response_field` 为空时 schema 是 `{}` |
+| ③ **再合并** `responses=` | `utils.py:473-516` | `deep_dict_update(openapi_response, process_response)` |
+
+📎 **①的关键**：`response_class` 的默认值是 `JSONResponse`，**与返回注解 `-> StreamingResponse` 无关**。
+📎 实测（拆开 `DefaultPlaceholder.value`）：
+
+```text
+A 无 response_class          → response_class = JSONResponse  media_type = 'application/json'
+B response_class=SseResponse → media_type = 'text/event-stream'
+```
+
+📎 **③的关键**：`deep_dict_update`（`fastapi/utils.py:103`）是**递归合并、不删旧 key**：
+
+```python
+for key, value in update_dict.items():
+    if key in main_dict and both are dict:
+        deep_dict_update(main_dict[key], value)     # 递归进 content，只加不减
+```
+
+⭐⭐ 所以 `responses=` **结构上不可能删掉第 ② 步写的东西** —— 它只能加。
+
+### 为什么"两种 content-type"是语义谎言（不只是难看）
+
+OpenAPI 里一个 `200` 挂两种 content type，规范含义是「服务端按 `Accept` 协商，两种都可能返回」。
+而我们**根本没有协商** —— 客户端发 `Accept: application/json`，服务端照样回 SSE。
+
+| 后果 | 具体 |
+|---|---|
+| SDK 生成器可能选第一个（`application/json`） | 生成 `response.json()` → 解析 `data: {...}` 失败 |
+| Swagger UI 出现下拉框 | 用户以为"可以选 JSON"，选了也是 SSE |
+| 有人写 `requests.get(...).json()` | `JSONDecodeError` |
+
+⭐ 判据：**`/docs` 是契约不是装饰。声明"两种都支持"就必须真能按 `Accept` 分支，否则只能声明真正的那一种。**
+
+### 顺带：本版本对生成器端点会自动识别（但识别成 jsonl 不是 SSE）
+
+📎 实测 `async def gen() -> AsyncIterator[str]`：
+
+```text
+is_sse_stream  = False
+is_json_stream = True
+openapi content = ['application/jsonl']
+```
+
+`utils.py:421-455` 有两套分支（jsonl / sse）。我们的实现返回的是 `StreamingResponse` **对象**，
+不是生成器注解，所以走不到自动识别 —— 这也是必须手动声明的原因。
+
 ### 本项目的落地
 
 ```python
