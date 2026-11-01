@@ -527,9 +527,17 @@ async def list_conversations(
     )
 
 
+class SseResponse(StreamingResponse):
+    """SSE 响应：让 /docs 把 200 的 content-type 标成 text/event-stream"""
+
+    # 【注意】：只写 responses={200: {...}} 不够 —— FastAPI 会保留自动生成的
+    #   application/json 一起合并，Swagger 里变成两个可选类型。必须靠 media_type 替换
+    media_type = "text/event-stream"
+
+
 # 【时序验证】流式必须起真服务；但 curl -w 的 ttfb 量的是"响应头"不是"首帧"
 #   （2026-10-20 实测订正）要证明"内容在流"，必须用带时间戳的客户端量首个数据帧
-@app.post("/v1/chat/stream")
+@app.post("/v1/chat/stream", response_class=SseResponse)
 async def chat_stream(
     # 客户端请求体：与 /v1/chat 复用同一份契约
     # （messages / model / temperature / max_tokens 四个字段都已在那里校验过）
@@ -799,10 +807,8 @@ async def chat_stream(
             await upstream.aclose()
 
     # 返回流式响应：这里只负责上网，不负责产出
-    return StreamingResponse(
+    return SseResponse(
         event_source(),
-        # 必须是 text/event-stream，浏览器 EventSource 和前端库才认
-        media_type="text/event-stream",
         headers={
             # 禁止中间层缓存这次响应（否则可能拿到别人的答案）
             "Cache-Control": "no-cache",

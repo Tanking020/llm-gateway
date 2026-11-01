@@ -3,7 +3,7 @@
 > **用途**：本文档是长期学习的唯一上下文来源（single source of truth）。
 > 每次开启新对话时，请先让 AI 阅读本文档，再继续讨论。
 >
-> **最后更新**：2026-11-01（阶段 1 · Step 11：11a~11e ✅，只剩 11f）
+> **最后更新**：2026-11-01（**阶段 1 · Step 11 全部完成**：11a~11f ✅）
 
 ---
 
@@ -75,7 +75,8 @@
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
   - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**
-  - **Step 11 工程化（2026-10-29 起）**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / **11e ✅ 生产关交互式文档** / 11f ⬜ 流式接口在 `/docs` 标 `text/event-stream`
+  - **Step 11 工程化（2026-10-29 ~ 11-01）✅ 全部完成**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / **11e ✅ 生产关交互式文档** / **11f ✅ 流式接口在 `/docs` 标 `text/event-stream`**
+  - ⏭️ **下一步 = Step 12 测试**（建 `tests/` + `TestClient`，待办 #40）；收口前记得补自检题（Step 10 的 69~77 + Step 11 未问过的）
   - **Step 12 / 13 未开始**（测试、部署）
 
 ### 自检统一安排（2026-10-29 决定）
@@ -87,7 +88,7 @@
 > | 阶段 0 | 1 ~ 61 | 已完成 |
 > | 阶段 1 · Step 1~9 | 1 ~ 68 | 已完成 |
 > | **阶段 1 · Step 10** | **69 ~ 77（9 题）** | ⏭️ 推后（阶段一收口前一次做完） |
-> | 阶段 1 · Step 11 | **6 ~ 18（13 题）**—— 已在 11a/11b/11c 期间**当场问过 8 道**（11b 2 道、11c 1 道、日志专题 3 道…） | 🟡 已入库；**未全问**，剩余随 11d~11f 走 |
+> | 阶段 1 · Step 11 | **6 ~ 22（17 题）**—— 已在 11a~11f 期间**当场问过 10 道** | 🟡 已入库；**7 道未问**（14~18、21~22 等），Step 11 收口时补问 |
 > | 阶段 1 · Step 12~13 | 待补 | 随步骤走，或一并推后 |
 >
 > ⚠️ **推后的代价（记录在案，不粉饰）**：自检题的价值是「趁热发现理解缺口」，推后意味着缺口会累积到阶段末一起爆发，届时补漏成本更高。
@@ -210,7 +211,7 @@
 | 7a | 请求 ID + 耗时中间件（`@app.middleware("http")`）；500 复用同一 ID 并补响应头 | ✅ 实测：沿用客户端 ID / 500 头体一致 / 日志覆盖 200·404·500 |
 | 7a-补 | 新建 `src/app/constants.py`（`HEADER_REQUEST_ID`），三处硬编码收敛到一处 | ✅ 实测 `X-Request-ID` 与 `X-Request_ID` 是两个不同的头（大小写则不敏感） |
 | 7b | CORS（预检、`allow_credentials` 的禁忌） | ✅ 实测：白名单返 ACAO / 非白名单仍 200 无 ACAO / 预检打不存在路径 200 / 非法方法 400 |
-| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 / 10 已完成；**Step 11 进行中（11a~11e ✅ / 11f 待做）**；Step 12~13 未开始 |
+| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 / 10 / 11 已完成；Step 12（测试）/ 13（部署）未开始 |
 | 8 | Step 8 异步正确姿势（`blocking_demo.py`） | ✅ 实测 25 倍 / 排队 / GIL |
 | 9a | SSE 假数据流式：`/v1/chat/stream` + `StreamingResponse` | ✅ 实测 TTFB 0.014s / total 1.85s / chunked |
 | 9a-补 | 机制补讲四轮（学习者反馈"没看懂"）：§9.2b f-string 与 `\n\n`、§9.2c 帧 vs 时间、§9.2d 生成器与 `StreamingResponse` 分工（含调用栈铁证）、§9.3a 六层生成器讲解 | ✅ 提交 `ee8b4e2` / `696d7ae` / `98ec498` / 收尾提交；详见流水 1.24~1.29 |
@@ -248,7 +249,7 @@
 | 11e | 生产关交互式文档：`_DOCS_ENABLED = app_env == "dev"` + `docs_url` / `redoc_url` / `openapi_url` 三个一起条件置 `None` | ✅ 2026-11-01 学习者手写；📎 dev：`/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` 全 **200**；📎 prod：四个全 **404**（body 是 11d 的统一形状），`/health` 仍 200；📎 另测「只关 `docs_url`」→ `/redoc` 与 `/openapi.json` **仍 200**（证明三个必须一起关） |
 | 11d | **统一错误形状（B 版：业务码）**：`errors.py` 抽 `_error_response` 单一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；`app.py` 两处 404 改抛 `AppError("MODEL_NOT_FOUND"/"CONVERSATION_NOT_FOUND")` | ✅ 2026-10-31 学习者手写；📎 8 组用例：`/nope`→`NOT_FOUND`、`/v1/models/xxx`→`MODEL_NOT_FOUND`、对话详情/删除→`CONVERSATION_NOT_FOUND`、422→`VALIDATION_ERROR`+`details`、405→`METHOD_NOT_ALLOWED`、500→`INTERNAL_ERROR`，**全部 `hdr==body` 且 body 无 traceback/密码**。关闭待办 **#6**，落地决策 **25** |
 | 11e | 生产关 `/docs` `/redoc` `/openapi.json` | ⬜ 待做（`docs_url=None` / `redoc_url=None` / `openapi_url=None` 按 `app_env` 决定） |
-| 11f | 流式接口在 `/docs` 标 `text/event-stream` | ⬜ 待做（`responses={200: {"content": {"text/event-stream": {}}}}`） |
+| 11f | 流式接口在 `/docs` 标 `text/event-stream`：新增 `SseResponse(StreamingResponse)`（类属性 `media_type`）+ 装饰器 `response_class=SseResponse`，`return` 改用它 | ✅ 2026-11-01 学习者手写；📎 OpenAPI：`200.content = ['text/event-stream']`（**只有一种**）、422 仍在、`/v1/chat` 仍 `['application/json']`；📎 端到端（假上游）：`CONTENT_TYPE: text/event-stream; charset=utf-8`、`CACHE_CONTROL: no-cache`、`X_ACCEL: no`、6 帧完整（thinking / 2×delta / finish_reason / usage / [DONE]）。**关闭待办 #11** |
 
 > ✅ **Step 9 于 2026-10-23 正式收口**：代码（9a → 9b-4b-3）、文档（§9.1~§9.11）、自检题 1~61、待办 #1~#23 全部关闭。
 > **下一个动作 = Step 10 数据库**。开工前注意两条与本步相关的遗留：待办 **#8**（`/v1/chat` 仍是 echo）与 **#11**（`/docs` 把流式接口标成 `application/json`）。
@@ -267,7 +268,7 @@
 | 8 | `/v1/chat` 仍是 `echo` 占位（Step 9 只让**流式**路由接了真上游）；`app.state.llm_client` 是 `Any`（mypy 校验不到属性拼错） | 📎 Step 9 收口后实测：`POST /v1/chat` → `{"content":"[echo] 你好",...}`，未触碰上游。⚠️ 接真上游时**不要照抄流式写法**：建议「**接收流式 + 返回非流式**」（能中途取消省钱 / 逐帧记账 / 防坏帧），判据见笔记 §9.10 ⑦ | **Step 10 之后或阶段 2**；类型问题**随时可做** |
 | 9 | **`HEAD` 请求返回 405**（`allow: GET`） | 实测 `curl -I http://127.0.0.1:8000/health` → `405 Method Not Allowed`。因为 `@app.get(...)` 只注册 GET。有些监控/探活工具用 HEAD 探测会失败 | **随时可做**：`@app.api_route("/health", methods=["GET", "HEAD"])` 或加一个 `@app.head("/health")` |
 | 10 | **流内错误尚未编码**（9b 才做） | 现在 `/v1/chat/stream` 是假数据，不会中途出错；接真实上游后必须用帧报错 + `finally` 发 `[DONE]`，否则前端只看到"连接被掐断" | **9b** |
-| 11 | `/docs` 把流式接口标成 `application/json` + 空 schema | 实测 `app.openapi()` 里 `/v1/chat/stream` 的 `200.content` 是 `application/json: {schema: {}}`，实际返回的是 `text/event-stream`。因为返回注解是 `Response` 子类时 FastAPI 把 `response_model` 置空（`fastapi/routing.py:1116`） | **随时可做**：给装饰器加 `responses={200: {"content": {"text/event-stream": {}}}}` |
+| 11 | ~~`/docs` 把流式接口标成 `application/json` + 空 schema~~ | ✅ **已解决**（11f，2026-11-01）：新增 `SseResponse(StreamingResponse)`（类属性 `media_type = "text/event-stream"`）+ 装饰器 `response_class=SseResponse`。📎 OpenAPI `200.content = ['text/event-stream']`（只有一种）、422 仍在、`/v1/chat` 仍是 `['application/json']`。⚠️ **订正原修法**：原计划写的 `responses={200: {"content": {"text/event-stream": {}}}}` **不够** —— 📎 实测那样会得到 `['application/json', 'text/event-stream']` **两种**（`responses=` 是追加，自动生成的 `application/json` 还在）。原记录：返回注解是 `Response` 子类时 FastAPI 把 `response_model` 置空 | **已完成** |
 | 12 | ~~`choices[0]` 缺 `index != 0` 防御~~ | ✅ **已解决**（9b-3 收口，2026-10-21）：`app.py:368~369` 加 `if choice.get("index", 0) != 0: continue`。原记录： 📎 实测 DeepSeek 只支持 `n=1`（`n=2/3` → 400），所以现在安全；但若换上游支持多候选，逐帧取 `choices[0]` 会把两路文字**搅成乱码**（模拟实测：`'答另案一A段'`）。修法 1 行：`if choice.get("index", 0) != 0: continue` | **已完成** |
 | 13 | ~~`prompt_cache_hit_tokens` / `miss_tokens` 未进日志~~ | ✅ **已解决**（9b-3 收口，2026-10-21）：`流式用量` 日志已加 `cache_hit=%s cache_miss=%s`，实测输出 `cache_hit=0 cache_miss=44`。原记录： 已有 `usage` 转发但日志只打了 `prompt/completion/total/reasoning`，**缺前缀缓存命中率**这个可观测指标。📎 实测固定前缀可到 hit 1408 / miss 245（85%）。修法：在 `流式用量` 那条 `logger.info` 里加两个字段 | **已完成** |
 | 14 | ~~**L3 上游结构异常全落到 500**（应 502）：HTML 错误页 / 空 body / 字段改名 / `{"error":...}` / `data: null` / 元素缺 `id` / 元素非对象~~ | ✅ **已解决**（9b-4a 收口，2026-10-21）：`LlmClient.list_models` 里 `except (ValueError, KeyError, TypeError)` → `AppError(UPSTREAM_MALFORMED)` → 502。📎 原实测：MockTransport 6 种全 500。原修法记录：`resp.json()` + 取字段包进 `try/except (ValueError, KeyError, TypeError)` | **9b-4a 已完成** |
@@ -342,7 +343,7 @@
 | **11c** | 日志 `dictConfig(force=True)`（+ 新增 `learning/logging.md` 专题） | ✅ 已完成 · **#7**（#51 拆半 · 新增 **#56**） |
 | **11d** | 统一错误形状（`_error_response` 单一出口 + 4 个处理器 + 业务码） | ✅ 已完成 · **#6** · 关联决策 5 |
 | **11e** | 生产关 `/docs` `/redoc` `/openapi.json` | ✅ 已完成 · 📎 dev 全 200 / prod 全 404（含 `/docs/oauth2-redirect`），`/health` 不受影响；prod 的 404 已是 11d 统一形状 |
-| **11f** | 流式接口在 `/docs` 标 `text/event-stream` | ⬜ 待做 · **#11** |
+| **11f** | 流式接口在 `/docs` 标 `text/event-stream` | ✅ 已完成 · **#11**（关闭） |
 | **12** | 测试 FastAPI：建 `tests/` + `TestClient` | **#40** |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |
 | **阶段 2** | 消息落库 / 软删除 / 并发控制 / KNOWN_MODELS 改真实数据 | **#3 #32 #34 #35** |

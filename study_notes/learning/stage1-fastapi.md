@@ -8923,6 +8923,69 @@ app = FastAPI(
 
 ⭐ 判据：**看一个功能开关是否"真的生效"，要打全部相关端点，不能只打主页。**
 
+## 11f 让 `/docs` 说真话：流式接口标 `text/event-stream`
+
+### 问题：文档说错比没有文档更坑
+
+📎 改前 `app.openapi()` 里 `/v1/chat/stream` 的 `200.content` 是：
+
+```json
+{"application/json": {"schema": {}}}
+```
+
+而实际返回的是 `text/event-stream`。原因：**返回注解是 `Response` 子类时 FastAPI 把 `response_model` 置空**，于是自动生成一条空的 `application/json`。
+
+前端 / SDK 生成器照着这份 schema 写代码 → `response.json()` → 拿到的是 `data: {...}` 文本 → **解析失败**。
+
+### 📎 三种写法实测（这是本步最有价值的部分）
+
+| 写法 | `/docs` 里 200 的 content types |
+|---|---|
+| **A** 只加 `responses={200: {"content": {"text/event-stream": …}}}` | `['application/json', 'text/event-stream']` 🔴 **两个都在** |
+| **B** 只设 `response_class=<media_type 是 SSE 的类>` | `['text/event-stream']` ✅ |
+| **C** 两者都设 | `['text/event-stream']` ✅ |
+
+⭐⭐ **`responses=` 是「追加」不是「替换」** —— 自动生成的 `application/json` 不会被顶掉。
+只有 `response_class` 的 **`media_type`** 才能替换它。
+
+⚠️ 待办 #11 原来写的修法就是 A（`responses={200: {...}}`），**是错的**，已在 roadmap 订正。
+
+### 本项目的落地
+
+```python
+class SseResponse(StreamingResponse):
+    """SSE 响应：让 /docs 把 200 的 content-type 标成 text/event-stream"""
+
+    # 【注意】：只写 responses={200: {...}} 不够 —— FastAPI 会保留自动生成的
+    #   application/json 一起合并，Swagger 里变成两个可选类型。必须靠 media_type 替换
+    media_type = "text/event-stream"
+
+
+@app.post("/v1/chat/stream", response_class=SseResponse)
+async def chat_stream(...) -> StreamingResponse: ...
+
+
+    # 返回流式响应：这里只负责上网，不负责产出
+    return SseResponse(
+        event_source(),
+        headers={...},      # media_type 不再写在 return 里
+    )
+```
+
+⭐ `media_type` **只在一处声明**（类属性）—— 原来写在 `return` 里、装饰器里再写一遍，就是"同一份事实两处"。
+
+### 📎 实测
+
+| 检查 | 结果 |
+|---|---|
+| `200.content` 的键 | `['text/event-stream']`（**只有一种**） |
+| 422 是否还在 | `True`（用 `response_class` 不会顶掉其他响应） |
+| `/v1/chat`（非流式） | 仍是 `['application/json']`（**没被误伤**） |
+| 端到端响应头 | `CONTENT_TYPE: text/event-stream; charset=utf-8`、`CACHE_CONTROL: no-cache`、`X_ACCEL: no` |
+| 端到端帧序（假上游） | `thinking` → `delta` ×2 → `finish_reason` → `usage` → `[DONE]`，6 帧完整 |
+
+⭐ 判据：**改「文档声明」的改动必须两头都验** —— 一头看 `/openapi.json` 说了什么，一头看真实响应是不是那样。只验一头等于没验。
+
 ### 11d-8 一次 `HTTPException` 的完整旅程（📎 逐步实测）
 
 #### 七步
