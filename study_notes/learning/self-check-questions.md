@@ -335,17 +335,17 @@
    > 📎 "静默" = **不报错、不输出、调用照常返回**。三道闸：① logger 的**有效级别**（未设则向上找 root，默认 WARNING）② 每个 handler 的级别 ③ 有没有 handler（没有则用 `lastResort`，只处理 WARNING+ 且无格式）。实测：即使装了 DEBUG 级 handler，只要 root 还是 WARNING，`isEnabledFor(INFO)` 仍为 `False` —— **闸 1 就拦下了**。
 12. 500 请求的**访问日志**为什么也用 INFO，而不是 WARNING？失败信息在哪？
    > 一条日志 = 一个事件。访问日志记的是"**有一个请求被服务了**（结果 500）"，属 INFO；"**代码崩了**"由处理器的 `logger.exception` 以 **ERROR** 记录（含堆栈）。若把 4xx/5xx 升成 WARNING：① 扫描器打的 404 会刷屏淹没真 warning ② 想关访问日志就得连真 WARNING 一起关 ③ 同一次 500 两处报警要去重。⭐ **报警靠指标（5xx 比例、P99），不靠日志级别**；唯一值得额外 WARNING 的是 **502（上游故障）**。
-3. CORS 是浏览器的限制还是服务器的？为什么 `curl` 测不出来？
+13. CORS 是浏览器的限制还是服务器的？为什么 `curl` 测不出来？
    > ⭐ 是**浏览器**的安全策略（同源策略）。`curl` 不受同源策略约束 → 永远不报 CORS 错。
-4. 什么样的请求会触发预检？为什么 LLM 应用几乎必然触发？
+14. 什么样的请求会触发预检？为什么 LLM 应用几乎必然触发？
    > 非简单请求（自定义头如 `Authorization`、`Content-Type: application/json`、非 GET/POST）。聊天接口必带 Authorization 或 JSON → **必然预检**。
-5. `allow_origins=["*"]` + `allow_credentials=True` 会怎样？
+15. `allow_origins=["*"]` + `allow_credentials=True` 会怎样？
    > ⚠️ **旧答案已订正**（2026-10-19 实测）：**不会被浏览器拒绝**。Starlette 会**回显具体 Origin**（`cors.py:163`）来满足规范。所以风险是**静默全放开** —— 任何网站都能带用户 Cookie 调你的接口。⭐ 判据：**报错你能发现，安全漏洞发现不了**。
-6. 非白名单来源时，服务器状态码是多少？谁在拦？
+16. 非白名单来源时，服务器状态码是多少？谁在拦？
    > 📎 **200**，数据照发（`{"status":"ok"}`），只是**没有 `Access-Control-Allow-Origin` 头**。拦人的是**浏览器**：它检查这个头的值是否等于当前页面来源。
-7. `Access-Control-Allow-Origin` 为什么是"回显请求里的 Origin"，而不是写死？
+17. `Access-Control-Allow-Origin` 为什么是"回显请求里的 Origin"，而不是写死？
    > 浏览器要求这个值**必须等于**当前页面来源（或 `*`）；服务器不知道页面来源，只能照抄。配套的 `Vary: Origin` 告诉 CDN "这个响应随 Origin 变，别串缓存"。
-8. 预检失败时状态码是什么？预检能打到不存在的路径上吗？
+18. 预检失败时状态码是什么？预检能打到不存在的路径上吗？
    > 📎 失败是 **400**（`Disallowed CORS method` / `Disallowed CORS headers`），不是 403/405。能 —— 实测 `OPTIONS /nope` 返回 **200 OK**，因为 `CORSMiddleware` 在**路由之前**就答掉了（`cors.py:86~91`）。
 
 ### Step 8 · 异步的正确姿势

@@ -284,6 +284,11 @@ if logger.isEnabledFor(logging.DEBUG):
 ⚠️ **本项目现在不写文件**：只写 stdout，轮转交给平台（Docker 的 `log-opts`、K8s 的 log rotation）。
 理由：写本地文件在多副本部署里既收集不到、又抢文件。
 
+### 5.2 ⭐ 12-Factor 第 11 条：应用只写 stdout/stderr
+
+应用只把事件流写到 **stdout/stderr**，由外部系统（journald / Docker / 云日志）负责
+收集、轮转、存储。**应用自己写日志文件是反模式** —— 多副本时既收集不到，多进程还会抢同一个文件。
+
 ---
 
 ## 6. Formatter：消息长什么样
@@ -421,6 +426,16 @@ if logger.isEnabledFor(logging.DEBUG):
 | 13 | 多进程 / 多 worker：**每个进程各自配** | 配置不会跨进程共享；写同一个文件会互踩 |
 | 14 | 时间要能对齐（UTC / 带时区） | `asctime` 是**本地时间**；容器里常是 UTC，和本机差 8 小时 |
 
+### 9.0 `request_id` vs `trace_id`（什么时候够用）
+
+| | 覆盖范围 | 什么时候够用 |
+|---|---|---|
+| `request_id` | **一次请求、一台机器** | 单机开发 / 单服务 ✅ 本项目现在 |
+| `trace_id`（W3C `traceparent`） | **一次调用链、跨多个服务** | 微服务 / 网关 + 服务 + 上游 ⬜ 上生产再补 |
+
+多机部署要补三样：① **集中收集**（Loki / ELK / 云日志）② `trace_id` 打通服务边界
+③ **结构化日志**（JSON + 固定字段 `request_id` / `path` / `status`）。
+
 ### 9.1 `extra={...}` 怎么用
 
 ```python
@@ -461,6 +476,9 @@ logger.info("上游返回", extra={"model": model, "tokens": 128})
 | 📎 | 服务日志里找不到 `GET /x` 的客户端 IP | 关掉了 `uvicorn.access`（本项目待办 #56） | 在中间件那行加 `request.client.host` |
 | 📎 | `logger.info` 写了但没输出 | 三道闸都可能是元凶（见 §1）；最常见是**级别**或**没有 handler** | 按 §1 的顺序查，别乱改代码 |
 | 📎 | 用 `getLogger(name)` 探测 logger 存不存在，结果"探一个多一个" | `getLogger` 是**获取或创建**，不是查询 | 查 `logging.root.manager.loggerDict`；判 `PlaceHolder` |
+| 📎 | 一次 500 打出**两段** traceback（以为重复了） | 不是 bug：`starlette/middleware/errors.py` 在用你的异常处理器生成响应后**又 `raise exc`** 抛回服务器 → uvicorn 打 `ERROR: Exception in ASGI application` | **你那段带 `request_id`，uvicorn 那段不带** —— 排查认准带 ID 的那段 |
+| 📎 | 每行前面多出 `INFO: 127.0.0.1 - "GET ..."` | 那是 uvicorn 的 **access log**，与应用日志是两条独立通道 | 用 `dictConfig` 关掉 `uvicorn.access`（本项目做法，代价见待办 #56） |
+| 📎 | PowerShell 把日志显示成红字 `NativeCommandError` | 只是"子进程往 stderr 写了东西"，不是额外错误 | 忽略，或用 `2>&1` 合并 |
 | ⚠️ | 生产日志时间差 8 小时 | `asctime` 用本地时间，容器是 UTC | 统一 UTC，或配 `datefmt` 带 `%z` |
 
 ---

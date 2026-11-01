@@ -79,20 +79,24 @@
   - ⏭️ **下一步 = Step 12 测试**（建 `tests/` + `TestClient`，待办 #40）；收口前记得补自检题（Step 10 的 69~77 + Step 11 未问过的）
   - **Step 12 / 13 未开始**（测试、部署）
 
-### 自检统一安排（2026-10-29 决定）
+### 自检统一安排（2026-10-29 决定，2026-11-01 订正编号口径）
 
 > 学习者原话：「我们的进度稍微有点慢，自检题后续做完阶段一统一看吧」
 >
-> | 阶段 | 自检题范围 | 何时做 |
+> ⚠️ **编号口径（2026-11-01 订正）**：`self-check-questions.md` 里是**每个 Step 内各自从 1 编号**（Step 5 有 15 题、Step 9 有 61 题、Step 11 有 23 题）。
+> 下表**不再写全局流水号**（原来写的「1~77」与文件实际编号对不上，已作废）：
+>
+> | 阶段 / 步骤 | 题量 | 状态 |
 > |---|---|---|
-> | 阶段 0 | 1 ~ 61 | 已完成 |
-> | 阶段 1 · Step 1~9 | 1 ~ 68 | 已完成 |
-> | **阶段 1 · Step 10** | **69 ~ 77（9 题）** | ⏭️ 推后（阶段一收口前一次做完） |
-> | 阶段 1 · Step 11 | **6 ~ 22（17 题）**—— 已在 11a~11f 期间**当场问过 10 道** | 🟡 已入库；**7 道未问**（14~18、21~22 等），Step 11 收口时补问 |
+> | 阶段 0（Step 1~10） | 45 | ✅ 已做完 |
+> | 阶段 1 · Step 1~9 | 148 | ✅ 已做完 |
+> | **阶段 1 · Step 10**（数据库） | **77** | ⏭️ **推后**到阶段一收口前一次做完 |
+> | 阶段 1 · Step 11（工程化） | **23** | 🟡 已入库；11a~11f 期间**当场问过 10 道**，剩 13 道收口时补问 |
 > | 阶段 1 · Step 12~13 | 待补 | 随步骤走，或一并推后 |
 >
 > ⚠️ **推后的代价（记录在案，不粉饰）**：自检题的价值是「趁热发现理解缺口」，推后意味着缺口会累积到阶段末一起爆发，届时补漏成本更高。
 > ⭐ **缓解措施**：Step 11~13 期间若出现「同一个概念被问第二次」，说明那里有真缺口 → 当场补讲，不等自检。
+> 📌 **口径**：题量与答案的唯一出处是 [self-check-questions.md](../learning/self-check-questions.md)，本表不复述题目内容。
   - ✅ **笔记章节顺序已于 2026-10-28 整理**：`§10.6c`（N+1）原来排在 `§10.6b-2` 之前，现已移到 `§10.6b-5` 之后，编号与物理顺序一致
 
 ### 阶段 2：LLM 原生 API（2 周）
@@ -248,7 +252,6 @@
 | 11c | 日志换 `dictConfig(force=True)`：新增 `src/app/logging_setup.py`，`app.py` 模块级调用，`__main__.py` 提前调 + `log_config=None` | ✅ 2026-10-31 学习者手写；📎 改前两种格式并存（`INFO:     ` + 我们的）+ 每请求 2 行；📎 改后三条路径（`python -m app` / `DEBUG=true` reload / `uvicorn app.api.app:app`）统一 `2026-10-31 … INFO uvicorn.error \| …`，每请求 1 行；📎 去掉 `log_config=None` → reloader 父进程 3 行退回 uvicorn 格式；📎 `disable_existing_loggers=True` → `app.errors` / `httpx` 被禁用（`uvicorn.*` 因被命名反而不受影响）。关闭待办 **#7**，拆 #51 |
 | 11e | 生产关交互式文档：`_DOCS_ENABLED = app_env == "dev"` + `docs_url` / `redoc_url` / `openapi_url` 三个一起条件置 `None` | ✅ 2026-11-01 学习者手写；📎 dev：`/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` 全 **200**；📎 prod：四个全 **404**（body 是 11d 的统一形状），`/health` 仍 200；📎 另测「只关 `docs_url`」→ `/redoc` 与 `/openapi.json` **仍 200**（证明三个必须一起关） |
 | 11d | **统一错误形状（B 版：业务码）**：`errors.py` 抽 `_error_response` 单一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；`app.py` 两处 404 改抛 `AppError("MODEL_NOT_FOUND"/"CONVERSATION_NOT_FOUND")` | ✅ 2026-10-31 学习者手写；📎 8 组用例：`/nope`→`NOT_FOUND`、`/v1/models/xxx`→`MODEL_NOT_FOUND`、对话详情/删除→`CONVERSATION_NOT_FOUND`、422→`VALIDATION_ERROR`+`details`、405→`METHOD_NOT_ALLOWED`、500→`INTERNAL_ERROR`，**全部 `hdr==body` 且 body 无 traceback/密码**。关闭待办 **#6**，落地决策 **25** |
-| 11e | 生产关 `/docs` `/redoc` `/openapi.json` | ⬜ 待做（`docs_url=None` / `redoc_url=None` / `openapi_url=None` 按 `app_env` 决定） |
 | 11f | 流式接口在 `/docs` 标 `text/event-stream`：新增 `SseResponse(StreamingResponse)`（类属性 `media_type`）+ 装饰器 `response_class=SseResponse`，`return` 改用它 | ✅ 2026-11-01 学习者手写；📎 OpenAPI：`200.content = ['text/event-stream']`（**只有一种**）、422 仍在、`/v1/chat` 仍 `['application/json']`；📎 端到端（假上游）：`CONTENT_TYPE: text/event-stream; charset=utf-8`、`CACHE_CONTROL: no-cache`、`X_ACCEL: no`、6 帧完整（thinking / 2×delta / finish_reason / usage / [DONE]）。**关闭待办 #11** |
 
 > ✅ **Step 9 于 2026-10-23 正式收口**：代码（9a → 9b-4b-3）、文档（§9.1~§9.11）、自检题 1~61、待办 #1~#23 全部关闭。
@@ -300,15 +303,15 @@
 | 33 | ~~**无索引**：除主键外没有任何索引~~ | 📎 核对 `models.py`：`Index` / `unique` 出现次数均为 **0**。将来按 `created_at` 排序或按 `conversation_id` 查 `llm_calls` 会全表扫 | ✅ **已完成**（10.6a，2026-10-26）：`llm_calls.conversation_id` 已加 `index=True`，📎 实测 25 倍 |
 | 34 | 🟡 **无软删除**：`DELETE` 是真删，误删无法恢复 | `await db.delete(conv)` 直接从表里删行。⚠️ 注意：这**不影响账单**（10.6b 已改 `ondelete="SET NULL"`，计费记录保留）。📎 若要做软删除，实测代价：所有列表查询必须加 `deleted_at IS NULL`（漏一处返回已删数据）/ 外键失效（能给已软删的对话挂新计费）/ 表无限增长 / 与「被遗忘权」冲突 | **产品出现「回收站 / 撤销删除」需求时**（属产品决策，见 decisions #16 的「两个正交决策」） |
 | 35 | 🟠 **对话只有标题，没有消息内容** —— 没有 `messages` 表 | 现在 `conversations` 只有 `id` / `title` / `created_at`。`/v1/chat/stream` 完全不落库 → **这个后端还不能真正「管理对话」** | **10.6 之后 / 阶段 2**：建 `messages` 表（`conversation_id` / `role` / `content`），流式接口写用户消息 + 助手回答 |
-| 36 | 🟡 **无认证 / 鉴权**：任何人知道 URL 就能删任何对话 | 所有 `/v1/conversations` 接口零鉴权；也没有「对话归属哪个用户」的字段 | **阶段 3 部署前必须做**：至少加 API key 头校验；正式版需用户表 + `owner_id` |
-| 37 | 🟡 **无速率限制**：会被刷爆（真金白银） | `/v1/chat` 与 `/v1/chat/stream` 每次调用都花钱，但没有限流。一个循环就能烧完余额 | **阶段 3 部署前**：加 IP / key 维度限流（`slowapi` 或网关层） |
+| 36 | 🟡 **无认证 / 鉴权**：任何人知道 URL 就能删任何对话 | 所有 `/v1/conversations` 接口零鉴权；也没有「对话归属哪个用户」的字段 | **`P1` · Step 13 部署前**（2026-11-01 评审从「阶段 3」提前）：至少加 API key 头校验；正式版需用户表 + `owner_id`（`owner_id` 越晚加越贵 —— 现在只有 1 张业务表、5 个端点） |
+| 37 | 🟡 **无速率限制**：会被刷爆（真金白银） | `/v1/chat` 与 `/v1/chat/stream` 每次调用都花钱，但没有限流。一个循环就能烧完余额 | **`P1` · Step 13 部署前**（2026-11-01 评审从「阶段 3」提前）：加 IP / key 维度限流（`slowapi` 或网关层） |
 | 38 | 🟢 **无请求体大小限制**：超大 body 会占满内存 | FastAPI 默认不限制 body 大小。`title` 有 `max_length=100`，但 `messages` 列表与单条 `content` 只有长度下限 | **阶段 3 部署前**：网关（nginx `client_max_body_size`）或中间件层限制 |
 | 39 | 🟡 **`/v1/models` 与 `/v1/upstream/models` 形状不一致** | 前者返回 `{"total": int, "items": list[str]}`，后者返回 `ModelListResponse`（`items` 是 `ModelItem` 对象）。同一概念两种形状 | **10.6d**（与分页一起）：统一成 `ModelListResponse` |
 | 40 | 🟡 **没有 `tests/` 目录**：全部验证靠手工 curl + 临时脚本 | 📎 核对：项目根下 `tests/` **不存在**。每次改动靠手跑 curl 或临时探针脚本（用完即删），无法回归 | **Step 12**（测试 FastAPI）：建 `tests/` + `TestClient` + 关键路径用例 |
 | 41 | 🟠 **写 `LlmCall` 出参 schema 时 `conversation_id` 必须 `int \| None`**，且要带 `status` | 📎 实测同一条 `conversation_id=None` 的记录：schema 写 `int` → **500 Internal Server Error**（客户端完全不知道是 NULL 导致）；写 `int \| None` → **200 `null`**。⚠️ 另：`call.conversation` 在 NULL 时是 `None`，取 `.title` 会 `AttributeError` → 也必须判空。⭐ 10.6b-4 之后还要暴露 `status`（`pending`/`completed`/`aborted`）。详见笔记 §10.6b-2 / §10.6b-4 | **10.6b-3 之后做查询接口时**（或现在就先定好 schema 形状） |
 | 42 | 🟠 **账单还扛不住进程崩溃（`flush` 不是持久化）** | 📎 强杀 uvicorn 实测：流进行中 `pending` 行已 `flush` 过，进程一死 `llm_calls = []` —— **一行都没有**。要真扛崩溃，得在流开始前**用独立会话 `commit` 一次**（`async with SessionMaker() as acct: acct.add(...); await acct.commit()`），代价是每请求多一次独立事务提交。⚠️ 另：断开时 token 只能记 `0`（usage 帧永远到不了），**金额算不出来** —— 要不要按已转发内容估算 `completion_tokens`？详见笔记 §10.6b-4 | **要做「账单统计 / 成本看板」时**（10.6d 或阶段 2 末） |
 | 43 | 🟠 **`aborted` 行 token 全 `0`，攻击成本在账面上隐形** | 📎 实测 `prompt_tokens` **只由输入决定**（同样 `'hi'` 三次都是 `31`，长文本 `52`）→ 断开时它其实**可预知**，记 `0` 是不必要的。建议：`aborted` 行至少记 `prompt_tokens`（发请求前算），`completion_tokens` 按已转发字符数估算。⚠️ 估算值只能用于**对账**，不能用于计费（真实金额以上游账单为准）。详见 [decisions #21](decisions.md#21-防刷靠限流不靠记账准确度) | **10.6d 做账单相关接口时** |
-| 44 | 🔴 **完全没有限流 / 配额 / 并发上限** | 📎 实测：客户端断开后 `aclose()` 能让上游 **4ms 内停止生成**（40 帧只发出 3 帧，6 秒只花 455ms），所以单次攻击损失有上界；⚠️ 但**高频请求 + 高并发**完全敞开。⭐⭐ **记账再准也拦不住，防护必须独立**。优先级：① 并发上限（`asyncio.Semaphore`，不需要 token 数）② 每用户速率 ③ 日配额。⚠️ 单进程 `Semaphore` 在 `--workers 4` 下就是 4 倍，真正上线要放 Redis / 网关层。⚠️ **限流窗口必须用墙钟**（`time.time()` / Redis TTL），不能用 `monotonic()` —— 后者起点在每次进程启动时重置，跨进程、跨重启都对不上（见 [tools-reference §12](../learning/tools-reference.md)）。详见 [decisions #21](decisions.md#21-防刷靠限流不靠记账准确度) | **阶段 3 部署前必须做**（与 #36 #37 一起） |
+| 44 | 🔴 **完全没有限流 / 配额 / 并发上限** | 📎 实测：客户端断开后 `aclose()` 能让上游 **4ms 内停止生成**（40 帧只发出 3 帧，6 秒只花 455ms），所以单次攻击损失有上界；⚠️ 但**高频请求 + 高并发**完全敞开。⭐⭐ **记账再准也拦不住，防护必须独立**。优先级：① 并发上限（`asyncio.Semaphore`，不需要 token 数）② 每用户速率 ③ 日配额。⚠️ 单进程 `Semaphore` 在 `--workers 4` 下就是 4 倍，真正上线要放 Redis / 网关层。⚠️ **限流窗口必须用墙钟**（`time.time()` / Redis TTL），不能用 `monotonic()` —— 后者起点在每次进程启动时重置，跨进程、跨重启都对不上（见 [tools-reference §12](../learning/tools-reference.md)）。详见 [decisions #21](decisions.md#21-防刷靠限流不靠记账准确度) | **`P0`（并发上限）/ `P1`（限额）**（2026-11-01 评审从「阶段 3」提前，原因是 #59 让真实并发上限 ≈ 15）：先并发上限，再速率与配额 |
 | 46 | 🔴 **`/v1/chat`（非流式）是 echo 假实现** | 现在返回 `f"[echo] {last.content}"` —— **根本不调上游、不记账、不看 `temperature` / `max_tokens`**。⚠️ 更危险的是它和 `/v1/chat/stream` **行为不一致**（一个真调一个假），上线后前端用哪个都会出问题 | **阶段 2 接真实 LLM 时**（同时补 `LlmCall` 记账） |
 | 47 | 🔴 **`X-Request-ID` 客户端可任意注入 → 日志注入 / 伪造** | 📎 实测：传 `"abc123\n2026-10-28 ... INFO app.api.app \| FAKE LOG LINE"` → **原样回写响应头**；300 字符也接受。⚠️ 换行会被写进 `logger.info` 的日志行，攻击者可**伪造日志、撑爆日志文件** | **随时**（修法：`re.fullmatch(r"[A-Za-z0-9-]{1,64}", v)` 不匹配就丢弃改为自己生成） |
 | 48 | 🟠 **`ChatRequest.model` 完全不校验** | 📎 实测 `""` / `"不存在的模型"` / 500 个 `x` **全部通过 pydantic**（`model: str \| None = None` 无任何约束）→ 直接打到上游 → 上游 4xx → 我们回 **502**（本该是客户端错误 400/422）。⚠️ 与 `/v1/models/{model_name}` 已有的 404 校验**自相矛盾** | **阶段 2**（`KNOWN_MODELS` 改真实数据时一起做） |
@@ -318,9 +321,9 @@
 | 52 | ~~🟡 **`GET /v1/conversations/{id}` 不返回账单统计，与列表不一致**~~ | ✅ **已解决**（10.6d-4b，2026-10-28）：抽出 4 个 helper（`_conversation_not_found` / `_conversation_stats_stmt` / `_row_to_stats` / `_fetch_conversation_stats`），**POST / GET 详情 / PATCH / 列表 items 四处统一为 6 字段**。📎 实测：种子对话 1（3 条账单 73/41/5）→ 四处都返回 `call_count=3 total_tokens=119`；没账单的 `0/0`（非 null）；404 文案 GET/PATCH/DELETE 三处一字不差。📎 性能：详情走 `join+group` 单次 **0.467ms**，比原来 `db.get()` 的 0.567ms **更快**（不构造 ORM 对象）。⚠️ 过程中踩了两个坑，见 [stage1-fastapi.md §10.6d-4b](../learning/stage1-fastapi.md)：① `outerjoin` 条件写成 `LlmCall.conversation.id` → 运行时 `AttributeError` → 两个接口 500 而服务照常启动；② 只改返回注解不改 `response_model` → 响应被**静默裁剪** | **已完成** |
 | 53 | 🟢 **`_as_int` 把 `bool` 当 `int`** | 📎 实测 `_as_int(True)` 返回 `True`（Python 里 `isinstance(True, int)` 为真），SQLite 会存成 `1`。上游给 `true` 时账单会记 1 token | 低优先，修法：`isinstance(value, int) and not isinstance(value, bool)` |
 | 54 | 🔴 **「返回 201/200」不等于「已提交」**：`get_db` 的 `commit()` 在路由函数**返回之后**才执行 | 📎 实测（patch `AsyncSession.commit` 抛 `RuntimeError("模拟磁盘满")`）：`POST /v1/conversations` → 客户端收到 **`201` + 完整响应体 `{"id":2,...}`**，而库里**只有 1 行（id=1）**—— `id=2` 从未存在。服务端只在日志里留一条「未处理异常」，客户端毫无感知。⭐ 触发条件都是产品环境常见的：磁盘满 / 连接池耗尽 / 唯一约束冲突 / 连接被中间设备掐断。🔴 又因为**响应已经发出**，`register_exception_handlers` 也救不了（改不了状态码）。📎 10.6d-4a 的同类前兆：`PATCH` 少写 `flush()` → 返回体带旧 `updated_at`（已修） | **产品化前必做**（修法方向：`commit()` 提到路由函数内、`return` 之前；`get_db` 只留 `rollback` + `close`） |
-| 55 | 🟠 **`request_timeout=30` 不是「请求总时长上限」**，是「每次读取的间隔」 | 📎 实测（假上游每 0.4s 发一帧，`httpx.Timeout(1.0)`）：请求跑满 **4.95 秒**不超时；对照组单帧后停 2.5s → `[1.03s] ReadTimeout`。⚠️ httpx 只有 `connect / read / write / pool` 四个**间隔型**超时，**没有总时长上限** → 上游每 0.9 秒滴一帧就能让请求**无限期挂着**（占连接、占并发名额、账单还在涨）。⭐ 对一个 LLM 应用尤其危险：慢速滴答比直接失败更费钱 | **阶段 3 部署前**（修法：`asyncio.timeout(总秒数)` 包住整个上游调用；或用 `anyio.fail_after`。**用单调钟，不要用 `time.time()`**） |
+| 55 | 🟠 **`request_timeout=30` 不是「请求总时长上限」**，是「每次读取的间隔」 | 📎 实测（假上游每 0.4s 发一帧，`httpx.Timeout(1.0)`）：请求跑满 **4.95 秒**不超时；对照组单帧后停 2.5s → `[1.03s] ReadTimeout`。⚠️ httpx 只有 `connect / read / write / pool` 四个**间隔型**超时，**没有总时长上限** → 上游每 0.9 秒滴一帧就能让请求**无限期挂着**（占连接、占并发名额、账单还在涨）。⭐ 对一个 LLM 应用尤其危险：慢速滴答比直接失败更费钱 | **`P1` · Step 13 部署前**（2026-11-01 评审从「阶段 3」提前）（修法：`asyncio.timeout(总秒数)` 包住整个上游调用；或用 `anyio.fail_after`。**用单调钟，不要用 `time.time()`**） |
 | 56 | 🟡 **访问日志丢掉了客户端 IP** | 11c 关掉 `uvicorn.access` 后，每请求只剩中间件那一行 `GET /health -> 200 3.1ms request_id=…` —— **没有客户端 IP**。`uvicorn.access` 原本会打 `127.0.0.1:62657 - "GET …"`。出问题时无法区分「一个客户端刷 1 万次」和「一万个客户端各一次」 | **Step 13 部署前**（修法：在中间件那行加 `request.client.host`。⚠️ 上线到反向代理后要读 `X-Forwarded-For`，且该头可伪造 —— 必须只信任自己那层代理写的值） |
-| 57 | 🔴 **500 响应没有任何 CORS 头** | 📎 实测（带 `Origin: http://localhost:5173`）：200 / 404 / 422 都有 `Access-Control-Allow-Origin`，**500 是 `<无>`**。根因：500 的响应由**最外层 `ServerErrorMiddleware`** 产出，**不经过** `CORSMiddleware`（后者在它里层）。⭐ 后果：浏览器里前端拿到的是「网络错误」，**读不到 body、也读不到 `request_id`** —— 用户报障时连 ID 都给不出；而 500 恰恰是最需要这个 ID 的场景 | **产品化前必做**（选项：① 把 CORS 放到最外层 —— 需要改用中间的 `add_middleware` 顺序，或自己包一层 ASGI；② 在 500 处理器里手写 CORS 头 —— 要读 `request.headers["origin"]` 与自己维护白名单，等于复制 CORS 逻辑；③ 用 nginx 统一加 —— 但那样本地/测试环境仍然缺）。⚠️ 决策前要先实测「挪顺序后我们的 `request_id` 中间件还能不能拿到状态码」 |
+| 57 | 🔴 **500 响应没有任何 CORS 头** | 📎 实测（带 `Origin: http://localhost:5173`）：200 / 404 / 422 都有 `Access-Control-Allow-Origin`，**500 是 `<无>`**。根因：500 的响应由**最外层 `ServerErrorMiddleware`** 产出，**不经过** `CORSMiddleware`（后者在它里层）。⭐ 后果：浏览器里前端拿到的是「网络错误」，**读不到 body、也读不到 `request_id`** —— 用户报障时连 ID 都给不出；而 500 恰恰是最需要这个 ID 的场景 | **`P1` · 产品化前必做**（2026-11-01 评审）：三个选项 —— ① 把 CORS 放到最外层（要改 `add_middleware` 顺序或自己包一层 ASGI）；② 在 500 处理器里手写 CORS 头（等于复制 CORS 逻辑）；③ 用 nginx 统一加（本地/测试仍缺）。⚠️ 决策前先实测「挪顺序后 `request_id` 中间件还能不能拿到状态码」 |
 | 58 | 🟡 **错误码是裸字符串：拼错 / 漏登记都会静默降级成 400** | 📎 实测：`AppError("MODEL_NOT_FOUNDD", …)`（多一个 D）→ **不报错**，`_STATUS_BY_CODE.get` 落空 → **HTTP 400**，客户端看到 `code='MODEL_NOT_FOUNDD'`。⭐ 对比：**忘传参数**有两道闸（mypy `call-arg` + 运行时 `TypeError`），**拼错码**零道闸。📎 另外 `AppError(404, …)`（少写引号传成 int）运行时也不报错 → 同样静默 400（这个 mypy 能抓） | **11d 收口后决定**（选项：① 模块常量 ② `Literal` 3 ③ `StrEnum` + `dict[ErrorCode, int]` 强制全覆盖 —— ③ 最彻底，改动最大） |
 | 59 | 🔴 **数据库连接被整条 SSE 流独占**（2026-11-01 生产级评审发现） | 📎 实测（fastapi 0.143.0 / starlette 1.8.0）：`get_db` 这类 yield 依赖的收尾在**整条流结束之后**才执行（顺序 `route:return` → `gen:yield`×n → `gen:end` → `dep:exit`）→ `event_source()` 里第一次 `flush()` 借走的连接，要等用户看完最后一个字才归还。📎 实测 3 条并发流 → `pool.checkedout()=3`；池是默认 `AsyncAdaptedQueuePool`（`size=5` / `max_overflow=10`）→ **第 16 个并发流卡在「借连接」上（默认 `pool_timeout=30s`）然后 500**，与上游配额无关。⚠️ 一条 LLM 流 10~60s，所以**真实并发上限 ≈ 15**。⚠️ 单机自测永远看不见 | **P0**（Step 12 前后）：记账改独立短事务 —— 开流前提交 `pending` 行、结束时另起短事务更新，流期间不持有连接。档期见 [production-readiness.md](production-readiness.md) |
 | 60 | 🔴 **上游 4xx / 429 一律映射成 502** | `errors.py` 的 `UPSTREAM_BAD_STATUS → 502`，而 `llm_client._request` 对**所有非 2xx** 都抛同一个码。后果：上游 400（模型名错 / 上下文超长）与 429（限流）都表现成「网关背后的服务坏了，可以重试」→ 客户端**重试风暴**，且每次重试都**真实计费**。⚠️ 监控上还会把我们自己的限流失败记成上游故障 | **P0**：按上游状态码分流（400/413 → 4xx 语义；429 → 独立错误码 + 退避/排队），让客户端知道「重试没用」和「重试有用」的区别 |

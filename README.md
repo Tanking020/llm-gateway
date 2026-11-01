@@ -361,38 +361,25 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 
 ## 关键技术决策
 
-| 决策 | 理由 | 代价 / 取舍 |
+> 完整 25 条（含「放弃了什么」「何时该重审」）在 [decisions.md](study_notes/project/decisions.md)。这里只留**面试时值得主动讲**的 8 条。
+
+| 决策 | 一句话理由 | 代价 / 取舍 |
 |---|---|---|
-| **uv + `uv.lock`** 而非 `requirements.txt` | `requirements.txt` 无法表达"意图"（只能写死版本），且不锁定间接依赖；`uv.lock` 记录求解结果 + 哈希，换机器能装出**逐位一致**的环境 | 多一个需要提交的文件；团队需统一使用 uv |
-| **`src` 布局 + 可安装包** | 见上文「为什么用 src 布局」 | 多一层目录；需显式声明 `packages = ["src/app"]` |
-| **pydantic 管理配置**（而非 `os.environ` 散落各处） | ① 类型自动转换与校验 ② 报错**点名到字段**（`port` + `input_value='abc'`），而非 `invalid literal for int()` ③ 读一个类就知道有哪些可调参数 | 引入一层抽象；需要理解环境变量与 `.env` 的**优先级**（真实环境变量 > `.env` > 默认值） |
-| **配置严格模式 `extra="forbid"`** | 键名拼错（如把 `PORT` 写成 `PORTT`）会**立即报错**，而不是被静默忽略 —— 后者是"以为配好了、其实没配上"的隐蔽 bug | 若将来多个工具共用同一个 `.env`，别人的键会导致启动失败（届时应按工具拆分配置文件） |
-| **`.venv` 与 `.env` 永不提交** | 二者都可由仓库内文件重建（`.venv` ← `uv.lock`）或属于本机私有（`.env` 含密钥）。尤其密钥：Git 历史**只增不减**，一旦提交只能吊销重发 | 新人需多跑一条 `cp .env.example .env` |
-| **异步优先（`async`/`await`）** | LLM 应用的时间几乎全花在"等"（等模型返回 1~30 秒、等数据库、等外部 API）。同步写法在等待时占住执行权，并发请求会退化成串行 | 需避免在异步路径里调用阻塞库；CPU 密集任务更适合进程池 |
-| **mypy strict + ruff 双工具** | 二者分工不同：**ruff 管"形状"**（格式、导入顺序、可疑写法），**mypy 管"含义"**（类型是否自相矛盾）。后者需要理解代码语义，是 ruff 做不到的 | 严格模式初期会报较多错，需要写全类型注解 |
-| **上层供应商中立**（`llm_api_key` / `llm_base_url` / `llm_model`） | 走"OpenAI 兼容协议"，但配置项**不以供应商命名** —— 换厂商只改 `.env` 三行，代码零改动（实测：把 `base_url` 指向另一家兼容服务，`/models` 检查命令原样可用） | 需要在代码与供应商 JSON 之间做一层转换；专有能力（如某家私有参数）不能直接用 |
-| **上游一律视为不可信输入**（2026-10-21 新增，规范 §十四） | 和用户输入同级：`json.loads` 的结果是 `Any`，键名/类型/结构都可能与假设不同。失败分三层——**L1 没回应 / L2 状态码不对 / L3 200 但结构不对**，只有 L2 被 `raise_for_status()` 自动覆盖，L1/L3 必须自己翻译成 502。流式下 L3 发生在头已发出之后，只能把错误编码进流 | 需要写 `try/except (ValueError, KeyError, TypeError)` 与流内错误帧；📎 实测现有代码有 **6 种 L3 场景落到 500**、**4 种导致流「200 + 断连」**、**1 种静默丢整条流**（见[路线图](study_notes/project/roadmap.md)待办 #14~#18） |
-| **流式失败三层防线**（2026-10-22 新增，笔记专题 12） | 判据一是**「这个问题在读到数据之前就能判断吗」**：① **pre-flight**（看状态码）→ L1/L2 → **502**；② **适配器**（看「行 / 帧」：`startswith("data:")`、空行跳过、非 dict 丢弃）→ 丢弃 + WARNING；③ **路由**（看「字段 / 最终结果」：`isinstance(text, str)`、`content_frames == 0`）→ 零内容发 **`STREAM_NO_CONTENT`** 帧。📎 实测 7 种上游异常因此全部有 `[DONE]` 收尾（此前 3 种静默、2 种断连） | 前端必须知道 **200 也可能是失败**（`response.ok === true`），要在 SSE 循环里识别 `frame.error`；让适配器自己发错误帧是错的 —— 它就得知道「整个流」的状态，那它就不再是协议层。判据二是**「这一帧的内容未知吗」**：未知 → **中止**（`STREAM_FAILED`）；只是没有可用文字 → **跳过**（`warning` + `continue`）—— 一个坏帧不该毁掉整个回答 |
-| **单一真相：同一份事实只写一处**（2026-10-21 新增，规范 §4.6 总纲） | 判据不是"看起来重复"，而是**「改一处会不会漏另一处」**。五类事实各有各的家：字面量 → `constants.py`；错误码/状态码映射 → `errors.py`；上游错误翻译 → `LlmClient` 适配器（§14.7）；业务规则/语义校验 → 独立纯函数（§14.8）；可复用功能（SSE 切行、重试、分页） → 独立模块。📎 本项目五起同源事故（`Bearear` / `X-Request_ID` / `UPSTREAM_MALFORMEAD` / 12 行死代码 / role 校验漏一条路由）**没有一起是"不小心"** —— 只要同一份事实存在 N 份（N≥2），第 N+1 次改动就会漏 | 三个提问顺序：① 会被 ≥2 处用到吗（否 → 就地写）② 两处不一致会出错吗（否 → 可不抽）③ 抽完要传 ≥4 个参数吗（是 → **抽错了**）。⚠️ **反向代价同样真实**：抽太碎会让读代码要跳三个文件 —— 读的成本与改的成本必须一起算（§14.3） |
-| **上游调用一律封进适配器**（`LlmClient`，2026-10-21 新增，规范 §14.7） | 把「发请求 + 判状态码 + 读错误正文 + 解析 JSON + 翻译成 `AppError`」收进一个类，契约一句话：**成功返回值、失败抛 `AppError`、绝不泄漏 `httpx` 异常**。路由因此**不 import `httpx`、不写 `try/except`**，新加路由不可能漏翻译。用 `ruff` 的 `TID251` 把这条约定变成**机械检查**（只有 `llm_client.py` 与 `playground/` 可 import `httpx`）。⚠️ 曾试过"每条路由各写一遍"（抄漏一次：`UPSTREAM_MALFORMEAD` 拼错 → L3 全变 400）和"全局 `@app.exception_handler(httpx.xxx)`"（路由确实零行，但它靠 ASGI 中间件栈，**CLI / 定时任务里完全失效**，且不用起 FastAPI 就没法单测） | 适配器要自己管 `aclose()`（`send(stream=True)` 没有 `async with` 帮你关）；`stream` 默认值必须取安全的 `False`，否则 `response.json()` 抛 `ResponseNotRead` → 500，而 **MockTransport 复现不出来**；流式接口还得额外做 **pre-flight**（先校验状态码再返回 `StreamingResponse`），代价是 TTFB 从 60ms 升到约 181~266ms |
-| **同一业务规则只有一份实现**（2026-10-21 新增，规范 §14.8） | 与上一条同型：`/v1/chat` 与 `/v1/chat/stream` 共用同一个 `ChatRequest`，"最后一条必须是 `user`"就必须抽成 `ensure_last_message_is_user()` 两条路由都调。📎 曾经只写在一条路由里 → 另一条**放行非法请求并真的打上游、白花一次调用** | 抽之前先问"会被调用几次"：只有 1 个调用点时抽出去属于提前抽象（比重复更糟）。分层归属：**形状归 pydantic，语义归纯函数/服务层，HTTP 归路由** |
-| **分层：接口层 / 业务层 / 基础设施层** | 判据只有一条：**这段代码离了 HTTP 还活得下去吗**。接口层懂 `Request` / 状态码 / 响应；业务层只认普通 Python 值；基础设施层管 httpx / 配置 / DB。硬规则：**业务层永远不 import `fastapi`**，调用方向单向。上两条（适配器 / 业务规则）就是这条判据的具体落地：`LlmClient` 属基础设施层，`ensure_last_message_is_user` 属"离了 HTTP 也活得下去"的纯函数 | 现阶段还要为"分层而分层"会过度设计 —— 一个 4 行规则、只有一个调用方时抽到 `services/` 只是搬家；出现第二个调用方（CLI / 另一个接口）才是拆分信号 |
-| **业务错误码与 HTTP 状态码解耦** | `AppError` 只带 `code` + `message`，**不带 `status_code`**；映射集中在 `_STATUS_BY_CODE` 一处。同一个 400 可对应多个业务码，客户端按 `code` 分支，不再靠匹配文案 | 多一层映射表；未登记的码会落到默认 400（属于"防崩溃"而非"正确"，需靠 `Literal`/测试兜住） |
-| **HTTP 客户端应用级共享（`lifespan`）** | 每请求新建客户端要重新做 TCP + TLS 握手：实测 200 次请求 **51.3 ms → 23.0 ms（快 2.23 倍）**。用 `lifespan` 在启动时建一次、关闭时释放；创建/销毁归 lifespan，**取用仍走依赖**（保留 `dependency_overrides` 可测接缝） | 单测必须 `with TestClient(app)` 才会触发 lifespan；`app.state` 是全局可变状态，用例间要手工还原 |
-| **错误日志与响应分离** | 500 只回 `request_id` + 一句人话，**堆栈只进服务端日志** —— 既不泄露内部结构，又能靠 ID 精确定位 | 需要日志配置配合（Step 11c 已落地）；跨机排查仍需集中收集（待办 #51） |
-| **`prod` + `debug` 组合启动即崩**（2026-10-31，决策 #23） | 📎 实测 `FastAPI(debug=True)` 会让 `@app.exception_handler(Exception)` **完全不执行**，响应变成 `text/plain` + 完整 traceback（body 里能读到异常消息）。所以 `Settings` 里加跨字段校验：`APP_ENV=prod` 且 `DEBUG=true` → **启动 `ValidationError`、进程退出**（`python -m app` 与 `uvicorn app.api.app:app` 两条入口都拦） | 配置写错时服务**完全起不来**（连 `/health` 都没有）；将来若要线上临时开 traceback，需另加显式逃生阀 |
-| **日志用单一 `dictConfig(force=True)` 接管**（2026-10-31，决策 #24） | 📎 改前三个症状：一屏两种格式、每请求两行、`basicConfig` 第二次调用**静默失效**；根因是 uvicorn 的 `LOGGING_CONFIG` **没有 root 项**。改为一个 `configure_logging()` 统管，三个调用点覆盖三条启动路径（含 reloader 父进程） | ⚠️ 关掉 `uvicorn.access` 后**丢了客户端 IP**（待办 #56）；JSON 结构化与轮转仍未做（#51） |
-| **错误响应统一形状 + 业务码**（2026-10-31，决策 #25） | 所有错误经 `errors.py` 的 `_error_response()` **唯一出口**：`{"error":{code,message,request_id}}`，422 加 `details`。4 个处理器分别接 `AppError` / `StarletteHTTPException`（**必须挂 Starlette 的父类**，框架自己抛的 404/405 才接得住）/ `RequestValidationError` / `Exception`。我们自己的代码**只抛 `AppError`** | 📎 三种 404 现在可区分（`NOT_FOUND` / `MODEL_NOT_FOUND` / `CONVERSATION_NOT_FOUND`）；代价是「码」要在调用点与 `_STATUS_BY_CODE` **两处维护**，拼错会静默降级 400（待办 #58） |
-| **响应契约：返回注解优先，`response_model` 用于收窄** | 两者相同时只写返回注解（FastAPI 自动采用）；只有"内部模型宽于对外契约"时才显式写 `response_model=`。响应模型是**白名单**：没声明的字段不可能输出 | 返回对象缺必填字段会 `ResponseValidationError` → 500（错在我方）；响应类型写 `list[dict]` 会让 `/docs` 失去结构，且过滤晚一步 |
-| **中间件做"每个请求都要做的事"** | 请求 ID、耗时、CORS 这类逻辑写在中间件里一处生效；用 `request.state` 把 ID 传给路由与异常处理器，500 也能返回同一个 ID | 中间件拿不到路由参数；**绝不能读 `response.body`**（会把流式响应抽干）；异常路径上拿不到响应对象，500 的响应头要由处理器补 |
-| **流式 = 异步生成器 + `StreamingResponse`** | 二者分工是硬的：生成器只**产出**字符串（不碰 socket），`StreamingResponse` 负责 `http.response.start`、逐帧 `send(more_body=True)`、最后补 `more_body=False`、并监听 `http.disconnect`。驱动生成器的那句 `async for` 在 `starlette/responses.py:253`，不在本项目代码里（📎 打印调用栈实测） | 一旦开始流式就**不能再改状态码**（头已发出）；中途出错只能"把错误编码进流里"；`TestClient` 无法验证分批，时序必须用真服务 |
-| **计费记录不跟着对话一起删**（2026-10-27，决策 #16） | 用 `ondelete="SET NULL"` 而非 `CASCADE`。📎 实测 `CASCADE` 会丢 900 token 的账；`SET NULL` 保住「这一笔花过多少」，「属于谁」可以丢 | 被删对话的账单变成 `conversation_id=NULL`，**无法区分「从没属于过」和「父行被删」** |
-| **流式记账用两阶段**（2026-10-27，决策 #20） | 流开始前落一行 `status="pending"`，拿到 `usage` 改 `completed`，断开/异常只做**同步赋值** `aborted`。📎 实测：断开时处于**已取消的 cancel scope**，任何 `await`（含 `asyncio.shield`）都会被二次取消 | `flush` 不是持久化 —— 进程崩溃时这一行会被回滚（待办 #42）；断开时 token 只能记 0（待办 #43） |
-| **分页用游标而不是 offset**（2026-10-28，决策 #22） | 📎 实测 offset 分页在「翻页期间删数据」时会**漏掉一条**（用户永远看不到），游标用「值」`id > N` 不受影响 | 不支持「跳到第 N 页」；`total` 在翻页期间会轻微过时（比起漏数据，这个可以让步） |
+| **`uv` + `uv.lock`** | 声明「意图」（`>=x,<y`）+ 锁定「结果」（哈希），换机器能装出逐位一致的环境 | 多一个提交文件；团队需统一用 uv |
+| **上游一律视为不可信输入** | 失败分 **L1 没回应 / L2 状态码不对 / L3 200 但结构不对**；只有 L2 被 `raise_for_status()` 覆盖，L1/L3 必须自己翻译 | 要写 `try/except (ValueError, KeyError, TypeError)` + 流内错误帧 |
+| **上游调用封进适配器**（`LlmClient`） | 契约一句话：成功返回值、失败抛 `AppError`、**绝不泄漏 `httpx` 异常**。用 ruff `TID251` 把它变成**机械检查** | 适配器自己管 `aclose()`；`stream` 默认必须 `False`（📎 否则 `ResponseNotRead` → 500，且 MockTransport 复现不出） |
+| **流式失败三层防线** | 判据「这个问题在读到数据之前能判断吗」：pre-flight → 适配器（逐帧）→ 路由（零内容）。📎 7 种上游异常因此全部有 `[DONE]` 收尾 | 前端必须知道 **200 也可能是失败**（要在 SSE 循环里认 `frame.error`） |
+| **分层判据只有一条** | **「这段代码离了 HTTP 还活得下去吗」**：接口层懂 `Request`/状态码，业务层只认普通值，基础设施层管 httpx/DB。硬规则：业务层永不 import `fastapi` | 现阶段为分层而分层是过度设计；出现第二个调用方才拆 |
+| **错误码与 HTTP 状态码解耦 + 单一出口** | `AppError` 只带 `code`+`message`；所有错误响应经 `errors.py` 的 `_error_response()` 生成 | 📎 三种 404 靠业务码区分；代价是「码要在调用点与 `_STATUS_BY_CODE` 两处维护」（待办 #58） |
+| **计费不跟对话一起删 + 两阶段记账** | `ondelete="SET NULL"`（📎 `CASCADE` 会丢 900 token 的账）；流开始前落 `pending`，断开只做同步赋值 `aborted` | 被删对话的账单 `conversation_id=NULL`，**无法区分「从没属于过」与「父行被删」** |
+| **分页用游标不用 offset** | 📎 offset 在「翻页期间删数据」时会**漏掉一条**（用户永远看不到）；游标用「值」`id > N` 不受影响 | 不支持「跳到第 N 页」；`total` 会轻微过时 |
+
+⚠️ **可读性/工程惯例类**的小决策（`src` 布局、`extra="forbid"`、`.venv`/`.env` 不提交、mypy+ruff 分工、异步优先、供应商中立）已并入上文对应章节，不再重复列表。
 
 ---
 
 ## 路线图
+
 
 | 阶段 | 内容 | 产出 | 状态 |
 |---|---|---|---|
@@ -402,76 +389,54 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **3 · RAG** | 文本切分策略、Embedding 选型、**混合检索（BM25 + 向量 + RRF）**、Rerank、引用溯源、**RAGAS 量化评估与参数消融** | 带评估报告的中文知识库问答系统 | ⬜ |
 | **4 · Agent + 部署** | 多步规划、工具调用、LangGraph、可观测性、容器化部署 | 真实场景的多步 Agent 服务 | ⬜ |
 
+**离「敢对外上线」还差什么**：见 [production-readiness.md](study_notes/project/production-readiness.md)
+（七道门自检 + `P0/P1/P2` 档期 + 过门判据）。当前定级 **L2.5 / L5**（内部工具级偏上），
+主要缺口是**测试 / 鉴权 / 容量上限 / 观测 / 部署产物**五块。
+
 ---
 
 ## 开发笔记
 
-`study_notes/` 记录了设计理由与实证过程，其中**踩坑记录都带最小复现和定位方法**，例如：
+`study_notes/` 里 **190+ 条踩坑与结论**，每条都带最小复现与定位方法（📎 = 有实测数字）。
+这里只留 8 条**最能体现工程素养**的；完整清单见
+[learning-log.md](study_notes/learning/learning-log.md)（踩坑表 + 结论表）。
 
-- PowerShell 读取 UTF-8 中文文件的乱码：用 GBK 解码所致 —— 结合字节级检查定位，而非贸然重写文件
-- `.gitattributes` 放在子目录导致规则**静默失效**：用 `git check-attr` 验证，而非假设
-- TOML 表头写错导致的"键归属错误"：报错信息只说类型不对，根因却是少了表头
-- `extra="ignore"` 静默吞掉拼错的配置键：改为 `forbid` 后错误暴露在启动时
-- **密钥被自己的报错打印出来**：配置校验失败时 pydantic 默认回显原始值 —— 处理方式（全历史取证、吊销重发、`hide_input_in_errors`）与整改规则见规范 §10.1
-- **一个曾被记错的结论被自己推翻**：行宽规则原先记成"按字符数"，后用**判定性实验**证伪并纠正为"按显示宽度（汉字占 2 列）"—— 错误来源是实验时把中文经管道喂进工具导致编码损坏，见[tools-reference](study_notes/learning/tools-reference.md) §5
-- **状态码"对了"不等于验证通过**：PowerShell 内联拼 JSON 导致服务器收到伪 JSON，422 是拿到了，但 `type=json_invalid`（解析关被拦）而非 `too_short`（契约关被拦）—— 判据改成"先看 `type`+`loc`，再看状态码"
-- **`app.state, client = x`（逗号）与 `app.state.client = x`（点号）是两种语义**：前者是解包赋值，对 `AsyncClient` 直接 `TypeError`；若右边可迭代更阴 —— 整个 `state` 对象会被静默替换
-- **同名重绑定会让"注册"失效**：模块里出现两个 `app = FastAPI(...)` 时，异常处理器注册在旧对象上，uvicorn 却用新对象 → 所有业务异常静默回落成 500
-- **`response_model` 不是"随便削一刀"**：返回对象*多了*字段会被削掉，*缺了*必填字段则是 500 `ResponseValidationError` —— 因为错在"我方响应不符合自己声明的契约"
-- **"一帧"是数据边界，不是时间单位**：实测同一句话可切 10 帧（1.861s）/ 2 帧（0.383s）/ 201 帧（0.002s）—— 帧数与总耗时无关。`\n\n` 管"帧在哪结束"，`await` 管"下一帧何时到"；假数据的 `sleep(0.2)` 只是"上游延迟"的替身演员
-- **token / 帧 / 行 / 字节块是四个不同单位**：📎 一次真实请求实测 **15 个 gzip 字节块 → 13 个解压块 → 150 行 → 75 帧 → 6 个可见片段**，单个字节块里最多含 6 个完整帧。⭐ 关键：**「行」是 SSE 协议的分帧符，不是内容里的换行** —— 模型输出的换行被 `json.dumps` 转义成 `\` + `n` 两个字符，所以一帧永远只是一行（📎 实测「这一行里有真实换行符吗: False」）。反面：上游若不转义，一帧被切成多行、第二行会被 `startswith("data:")` 跳过 → 内容静默丢失。另：生成可能一 token 一帧，但**到达一定成批**（📎 `1.982s` 一瞬间 12 行），「逐字出现」靠的是上游持续产生而非逐帧送达
-- **SSE 少写一个换行不报错，但整条流失效**：三帧各带 `\n\n` 解析出 3 个事件；全部只写一个 `\n` 只解析出 **1 个**事件（内容是最后的 `[DONE]`），前端表现为"一个字都没收到"—— 症状与原因完全不像的 bug
-- **"我的代码里找不到 `async for`"是正常的**：驱动 `event_source` 的那句在 `starlette/responses.py:253`（`async for chunk in self.body_iterator`）。打印调用栈可直接看到 `responses.py:279 in wrap → responses.py:253 in stream_response → event_source`。生成器只产出、不碰网络；`StreamingResponse` 只上网、不碰内容
-- **同一段错误翻译写了 N 遍，一定会抄错一次**：本项目真实发生过两种——`upstream_models` 里那 12 行 `except httpx.xxx` 是**永不触发的死代码**（翻译早在上游函数里做完了）；手抄时把 `UPSTREAM_MALFORMED` 写成 `UPSTREAM_MALFORMEAD`，而码表兜底是 `.get(code, 400)` → **所有 L3 场景静默返回 400**，三道质量门全绿。解决办法不是"更仔细"，而是**把翻译封进适配器**（规范 §14.7）＋ 用 `TID251` 禁止其它文件 `import httpx`
-- **`stream` 默认值写成 `True`，三道门全绿但接口 500**：`send(stream=True)` 只拿响应头，接着 `response.json()` 抛 `httpx.ResponseNotRead`；它的 MRO 是 `ResponseNotRead → StreamError → RuntimeError`，**既不是 `RequestError` 也不在 `(ValueError, KeyError, TypeError)` 里**，于是穿过所有 `except` 落到 500。⚠️ **`MockTransport` 复现不出来** —— 它的 `httpx.Response(200, json=...)` body 已在内存，`stream=True` 与 `request()` 毫无区别。判据：**涉及"body 读没读"的改动必须打真网络**
-- **`@app.exception_handler(httpx.xxx)` 不是"封层"的替代品**：它靠 ASGI 中间件栈兜异常，**只在有请求时存在** —— CLI / 定时任务里调同一个上游完全不生效，而且"不起 FastAPI 就没法单测"。它是"路由零 try/except"的充分条件，却不是"任何调用点都翻译"的充分条件
-- **同一条业务规则写在两条路由里，一定会漏一条**：`/v1/chat` 拒 assistant 收尾（400），`/v1/chat/stream` 却放行、还真打上游、白花一次调用。抽 `ensure_last_message_is_user()` 后两条一致，且**必须放在 pre-flight 之前**，否则"先花钱再拒绝"（规范 §14.8）
-- **类型标注不是运行时保证**：`chunk: dict[str, Any] = json.loads(raw)` 零校验 —— `json.loads` 返回 `Any`，赋给 `dict` 完全合法。📎 这个谎一直没被发现，直到我在下游又写了 `isinstance(chunk, dict)`，mypy 立刻报 `Statement is unreachable`：**它抓的是「你对自己的类型都不信」**。修法是让适配器兑现 `AsyncIterator[dict]` 的承诺（内部丢弃非 dict），而不是让每个调用方去怀疑
-- **「字段值宽松」不等于「出问题」**：`null` / `''` / 缺键往往正是协议规定的**正常中间状态**（`finish_reason` 在每一帧都有，中间帧就是 `null`）。📎 我把判空写成 `is not None`，结果**空字符串也报警**、还打出 `type=str`（自相矛盾），一个正常请求会刷几十条 warning —— 等于把告警调成没人看。三档判据见规范 §14.4 ⑥
-- **SSE 的 `data:` 后面空格是可选的**：规范里 `data:{...}` 合法。📎 旧写法 `startswith("data: ")` 遇到它会把**整条流静默丢弃** —— 客户端只收到 `thinking` + `[DONE]`，服务端零日志。而 `data:` 空行是合法的空数据事件，不跳过会让 `json.loads("")` 抛 `JSONDecodeError` **打断整条流**
-- **同一份事实出现第二份，就是定时炸弹**：五起事故（`Bearear` / `X-Request_ID` / `UPSTREAM_MALFORMEAD` / 12 行永不触发的 `except` / role 校验漏一条路由）**没有一起是"不小心"**。判据不是"看起来重复"，而是**"改一处会不会漏另一处"** —— 但只要 N ≥ 2，第 N+1 次改动就会漏，所以对策是消灭第二份，而不是"更仔细"（规范 §4.6）
-- **流式接口的访问日志耗时 ≠ 请求耗时**：📎 假上游每 0.4s 吐一帧、共 3 帧，中间件在 **42.7ms** 就打出 `-> 200 16.4ms`，而整条流到 **1266.9ms** 才结束。根因在 ASGI：中间件等的 `call_next` 返回于**响应头就绪**那一刻（第一条 `http.response.start`），之后逐帧发送发生在框架内部、中间件全程不参与。⭐ 推论：真实耗时要另记；且**绝不能读 `response.body`**（读一次就把流抽干，SSE 失效）
-- **SQLAlchemy 2.1 的 greenlet 安装行为不能泛化到 2.0**：📎 两个独立环境实测 —— `sqlalchemy==2.0.55` **裸装会自动装上** `greenlet`，异步模块导入成功；`sqlalchemy==2.1.6` **裸装**则 `ModuleNotFoundError: No module named 'greenlet'`，必须声明 `[asyncio]` extra。⭐ 判据：**同一个库的大版本之间，「装了就能用」可能悄悄变** —— 报错信息里让装什么就装什么（`use the 'sqlalchemy[asyncio]' install target`），不要凭旧教程推断
-- **`create_async_engine` 不等于「连上了」**：📎 导入 `app.database` 之后 `Test-Path app.db` 仍是 `False` —— 引擎只是建了个空连接池，真正 open 连接发生在第一次执行 SQL。⭐ 推论：**「对象建好了」和「东西发生了」是两件事**，判断后者的唯一办法是看副作用（文件出现 / 真发了 SQL）
-- **`async with` 的关闭指令不在 `with` 那一行**：它在对象的 `__aexit__` 里（本项目是 `LlmClient.__aexit__` → `await self._http.aclose()`）。`async with X as y` 等价于 `y = await X.__aenter__()` + `try/finally: await X.__aexit__(...)`，所以**正常结束和抛异常都必然关闭**（📎 实测异常路径 `exc_type=RuntimeError` 时仍执行）。⚠️ 推论：`yield` 必须在 `async with` **里面** —— 放外面不报错，但清理会发生在**启动阶段**（📎 实测服务运行期 `client.closed = True`，每个请求拿到的都是已关闭客户端）
-- **yield 依赖里的 `raise` 少了，代价不是「客户端收到 200」**：📎 实测 FastAPI 0.143.0 有专门守卫 —— 客户端仍拿到 **500 + 统一错误形状 + `request_id`**（与正常路径一模一样），但日志被 `FastAPIError: Response not awaited. ...` 顶替，且 **`__cause__ = None`** → 原始异常的类型/消息/行号**全丢**。⭐ 判据：**「客户端看到什么」和「日志里能查到什么」是两个独立验收项**，前者一致不代表后者没问题
-- **ORM 构造函数是 `**kwargs`，mypy 不保护写入时的取值**：📎 写成 `Conversation(title=payload)`（塞整个 pydantic 对象）时**三道门全绿**，运行时报 `ProgrammingError: type 'ConversationIn' is not supported` → 客户端 500。`inspect.signature` 显示 `(self, **kwargs)`。⭐ 判据：**mypy 管「读出来的类型」，不管「传进去是什么」** —— 入参校验只能靠 pydantic 契约
-- **`.scalars()` 是「每行只取第 1 列」，不是「把 tuple 转成对象」**：📎 实测 `select(Conversation)` + `.scalars().all()` → `[Conversation, ...]`（第一列本来就是完整对象）；但 `select(id, title)` + `.scalars().all()` → **只剩 `[1, 2]`，`title` 被静默丢掉**。⭐ 判据：**拿完整对象用 `select(Model)` + `scalars()`；选多列就用 `.all()` 按名取**
-- **「运行时对不对」和「类型对不对」是两个独立问题**：📎 两次实测结论相反 —— `Conversation(title=payload)` 是**运行时错、mypy 查不到**（`**kwargs` 是 `Any`）→ 500；而 `return result.scalars().all()` 不套 `list()` 是**运行时没问题**（`type()` 就是 `<class 'list'>`，能 `append`）但 **mypy 拦**（`.all()` 声明的是 `Sequence`，不承诺可变）。⭐ 所以 `list(...)` 是**升级类型承诺**，不是让代码能跑
-- **空集合返回 `200 []`，不是 404**：📎 实测。「集合为空」是正常答案；404 是「你要的那个东西没有」。列表返 404 会让前端把「还没建过数据」和「接口不存在」混在一起 —— **语义撞车**。对照：`GET /{id}` 查单个不存在才是 404
-- **`abc` → 422 和 `999` → 404 是两个不同的拒法**：📎 实测 `conv_id: int` 转不动时 **FastAPI 在调用路由函数之前**就回 422（**你的函数体一行都没跑**）；`999` 能转成 int 所以进了函数，被 `if conv is None` 拒成 404。`-1` 也是 404（负数是合法整数）。⭐ 判据：**「格式不对」422 vs「格式对但没这条」404**
-- **204 的价值是「语义上不允许有 body」，不是「省 4 字节」**：📎 实测改成 `status_code=200` + `-> None` 后客户端收到 `b'null'`，`mypy`/`ruff` 都不说话；更关键的是「什么都不做」的接口也能返回一模一样的 `200 + null` —— **客户端无法区分「真删了」和「什么也没发生」**。而 204 带 body 时 FastAPI 在**注册路由时**就 `AssertionError`。⭐ 判据：**「能跑」和「语义正确」是两件事，语义错误不会让任何测试失败**
-- **裸 `raise` 的判据**：「我改变了异常的类型或消息吗？」没改 → 裸 `raise`（或不写 `except`）；改了 → `raise New(...) from exc`。`raise e` 永远不用（📎 实测多一帧，指向自己那行）。「放行」最干净的方式是**压根不写 `except`**。⚠️ **`finally` 里 `rollback` 是错的** —— 📎 正常路径也变成 `COMMIT, ROLLBACK, CLOSE`，提交完又被回滚掉
-- ⭐⭐ **「必填字段」是免费的 bug 探测器**（📎 PATCH 实测）：`title: str` 必填时 `{}` → 422 `missing`、`{"title": null}` → 422 `string_type`；改成 `title: str \| None = None` 两者都放行，且前端拼错 `titel` 会变成 **200 但一个字没改**。多字段 PATCH 必须 `model_dump(exclude_unset=True)`（📎 `model_dump()` 在 `{}` 下输出 `{'title': None}`，直接 setattr 会静默清空）
-- ⭐ **`min_length=1` 只数字符个数，不看内容**：`"   "` 长度是 3 能通过 → 库里存空白标题。修法是 `StringConstraints(strip_whitespace=True)`（📎 必须用它，`Field(min_length)` 在 `field_validator` **之前**跑，会先把「空格+100字符+空格」误判超长）。另：⭐⭐ **「body 为空」有两种**（0 字节 vs `{}`），`loc` 层数能区分；「信息缺失」与「内容非法」是两个层次
-- 🔴 **CORS 的 `allow_methods` 必须与实际注册的路由一致**（2026-10-25 实测事故）：加了 `PATCH` / `DELETE` 路由但忘了加进 `allow_methods` → 浏览器预检 `OPTIONS` 直接 **400**，前端完全无法调用；⚠️ `curl` 测不出来（CORS 只在浏览器生效）。⭐ 判据：**新增任何非 GET/POST 路由，必须回头检查 `allow_methods`**
-- ⭐⭐ **索引 = 按某列排好序的额外一份表（B-Tree）**，不是「让数据库更聪明」。📎 实测 5 万行：无索引 2985.9 µs vs 有索引 119.6 µs（**25 倍**）；规模曲线 4 万→8 万：无索引 7.085→17.352 ms（**线性**），有索引 0.165→0.216 ms（**对数**）。代价：插入慢 38%、占空间多 18%、命中大半表时**可能不被使用**。⭐ `SELECT *` 一定要**回表**（只有 `COVERING INDEX` 才不用）
-- ⭐⭐ **代码注释只留「防错」，教学解释进笔记**：判据是「**删掉这句注释，读者会不会写错代码**」——会就留，不会就挪走。对比表 / N 组实测 / 取舍过程 / 名词定义全部放笔记或步骤卡代码块之外。⚠️ 单块连续注释 ≤ 4 行，docstring「为什么」段 ≤ 3 行
-- ⭐⭐ **重要业务/架构决策单独记在 [study_notes/project/decisions.md](study_notes/project/decisions.md)**（18 条 ADR）：每条写「背景 → 方案对比 → 决定 → **代价（放弃了什么）** → 触发重审的条件」。⭐ 判据：**换个方案也能跑 → 记决策；不会（客观事实）→ 记笔记**。⭐ 核心判据：**「子记录该不该跟着父记录消失」取决于「谁有权删父记录」** —— 用户能删的东西，下面不能挂不可再生的记录
-- ⭐⭐ **删父行时子行怎么办是「两层各管一段」**：`ForeignKey(ondelete=)` 只管**原生 SQL 删**，`relationship(cascade=)` 只管 **ORM 删**。⚠️ 📎 即使写了 `ondelete="CASCADE"`，`session.delete()` 仍只把 FK 置 `NULL`
-- **`db.get()` 查不到返回 `None`，不判空会变成 500**：📎 实测 `None` 流到 `response_model` → pydantic 报 `ResponseValidationError: Input should be a valid dictionary or object..., input=None` → 客户端 500。⚠️ **不是 `AttributeError`**。⭐ 判据：**把 404 伪装成 500 最容易误导排查** —— 看到 `X | None` 就该判空
-- **PowerShell 里 `curl.exe` 的输出不要接管道**：📎 两次实测同一个病 —— 乱码 `鐜版湁瀵硅瘽` 是 PowerShell 按 **GBK** 解码 UTF-8 字节（数据本身正确）；`curl | python` 更严重，**10494 字节被压成 8954**，JSON 结构被破坏。解法：`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` / `curl -o` 写文件 / 直接用 Python。⭐ 判据：**看到乱码先查源头对不对，别急着改代码**
-- **连接池省的是握手费**：📎 20 次请求复用同一个 `AsyncClient` → **1 条 TCP**、1.75ms/次；每次新建 → **20 条**、11.01ms/次，**慢 6.28 倍**（本机回环，公网差距更大）。项目里有两个池：httpx（上游，`__aexit__` 关）与 SQLAlchemy（数据库，`dispose` 关），维护方式相同：**启动建一次 → 全程复用 → 退出释放一次**
-- **`debug=True` 会让异常处理器"消失"**：📎 同一份抛异常的路由，`debug=False` 回 `application/json` + `INTERNAL_ERROR`；`debug=True` 回 **`text/plain` + 完整 traceback**，body 里能读到异常消息（实测含「密码」字样）。根因是 Starlette 的 `ServerErrorMiddleware` 在 debug 分支直接返回 traceback。⭐ 所以"把 `settings.debug` 接进 `FastAPI(debug=)`"不能只加一行，**前面必须有 prod 强制关的保护**
-- **跨字段校验要放在 `Settings` 里，不能放启动入口**：📎 `uvicorn app.api.app:app` 与 `from app.config import settings` 两条路径**都不经过 `__main__.py`**；而 `settings = Settings()` 是模块级单例，任何入口都要先 import 它 —— **一处保护覆盖全部入口**
-- **`basicConfig` 调第二次静默失效；`dictConfig` 不带 `force=True` 也不会清掉已有 handler**：📎 连调两次 `basicConfig`，第二次的 format 完全不生效。⚠️ 另一个更危险的默认值：`dictConfig` 的 `disable_existing_loggers=True` 只禁用「**没出现在 `loggers` 段里**」的已有 logger —— 📎 实测 `app.errors` 被禁用、`uvicorn.error` 不受影响（它被命名了）。也就是说**500 的 traceback 会一条都不打**，而启动日志照常
-- **异常类的必填参数不给默认值，是为了让"漏写"在写代码时就崩**：📎 `AppError()` → `TypeError: missing 2 required positional arguments`，mypy strict 还会静态报 `call-arg`。若给 `code: str = "UNKNOWN"`，mypy 不报、运行时静默造出一个 `code='UNKNOWN'` → 查表落空 → **静默 400**。⚠️ 但"必填"只挡漏传：📎 `AppError("MODEL_NOT_FOUNDD", …)` 拼错一个字母 → **零道闸**，照样静默 400（待办 #58）
-- **`HTTPException` 的旅程分两段**：**异常**只走到 `ExceptionMiddleware`（紧贴 Router 外面）就结束了，从那以后往回走的是**一个普通 Response**，才轮到 CORS / 自己的中间件去补头。📎 证据：404 的访问日志是 `-> 404`，只有真 500 才是 `-> ERR`；且 404 响应带 ACAO + `X-Request-ID`。所以同一个 `AppError`：路由里抛 → 400，**中间件里抛 → 500**（`ExceptionMiddleware` 在它里面，够不着）
-- **`@app.middleware("http")` 的 `"http"` 参数是被忽略的**：📎 四组实测（`http` / `websocket` / `banana` / 空）行为完全一致，源码里 `middleware_type` 一次都没被读。🔴 更坑的是写 `"websocket"` **不会**让 ws 请求进 dispatch（`BaseHTTPMiddleware.__call__` 首行按 `scope["type"] != "http"` 直接放行）。⭐ 判据：**给参数填了值就要问「我怎么知道它被读了」**
-- **`responses=` 是「追加」不是「替换」**：📎 给 `/v1/chat/stream` 加 `responses={200: {"content": {"text/event-stream": …}}}` 后，OpenAPI 里 200 变成 `['application/json', 'text/event-stream']` **两种** —— 自动生成的那条 `application/json` 还在。✅ 正确做法是 `SseResponse(StreamingResponse)` 设类属性 `media_type` + 装饰器 `response_class=SseResponse` → `['text/event-stream']` 只有一种。⭐ 判据：**要替换自动生成的 content-type，只能靠 `response_class` 的 `media_type`**
-- **`raise` 与 `return` 不是风格问题，是语义问题**：`return` = "交给你继续"，每一层都得自己判断；`raise` = "到此为止"。📎 实测：把「造好 404 响应」写成普通函数但**忘了 `return`** → `[200] {'ok': True}`，错误被静默吞掉。另外依赖里没有返回值可用、流式响应头已发出，这两处**只能** raise
-
-| 文档 | 内容 |
+| 教训 | 一句话 |
 |---|---|
-| [project/roadmap.md](study_notes/project/roadmap.md) | 目标、能力缺口分析、阶段规划 |
-| [learning/stage0-engineering-basics.md](study_notes/learning/stage0-engineering-basics.md) | uv / Git / 项目结构 / pydantic / 类型注解 / 异步 / 测试 / lint / Docker |
-| [learning/stage1-fastapi.md](study_notes/learning/stage1-fastapi.md) | HTTP/ASGI → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件 → SSE 流式 → 数据库 → 工程化（日志 / 错误形状 / prod 保护）→ 测试 → 部署（Step 1~6 后有「前半程回顾」；**§9.9「一条流式请求的全生命周期」**是三张全景图复习入口；**§11d-1 中间件栈七层 + 装饰器↔栈层映射**） |
-| [learning/logging.md](study_notes/learning/logging.md) | **日志专题**：一次 `logger.info()` 的四道闸、Logger 树与 `propagate`、级别语义、Handler 与轮转、Formatter 字段、`dictConfig` 关键参数、14 条注意事项、踩坑表 |
-| [learning/learning-log.md](study_notes/learning/learning-log.md) | 步骤流水、踩坑记录、关键结论 |
-| [learning/self-check-questions.md](study_notes/learning/self-check-questions.md) | 全部自检题 + 简要答案（按阶段/步骤编号） |
-| [learning/tools-reference.md](study_notes/learning/tools-reference.md) | 第三方包与工程工具速查：定位、安装、常用 API 与命令、易错点 |
-| [工程规范与协作约定.md](工程规范与协作约定.md) | 本项目的工程规范：命名、分层、质量门、安全约定 |
-| [.github/copilot-instructions.md](.github/copilot-instructions.md) | AI 协作指令：任何新会话自动加载的讲解风格、工作纪律与命令规范 |
+| **同一份事实出现第二份就是定时炸弹** | 五起事故（`Bearear` / `X-Request_ID` / `UPSTREAM_MALFORMEAD` / 12 行永不触发的 `except` / role 校验漏一条路由）**没有一起是"不小心"**。判据不是"看起来重复"，而是**「改一处会不会漏另一处」** —— 只要 N ≥ 2，第 N+1 次改动就会漏 |
+| **类型标注不是运行时保证** | 📎 `chunk: dict[str, Any] = json.loads(raw)` 零校验（`json.loads` 返回 `Any`）。这个谎一直没被发现，直到下游又写 `isinstance(chunk, dict)`，mypy 立刻报 `Statement is unreachable` —— **它抓的是「你对自己的类型都不信」** |
+| **`stream` 默认值写成 `True`：三道门全绿但接口 500** | 📎 `send(stream=True)` 只拿响应头，`response.json()` 抛 `ResponseNotRead`，其 MRO 既不是 `RequestError` 也不在 `(ValueError, KeyError, TypeError)` 里 → 穿过所有 `except` 落 500。⚠️ **`MockTransport` 复现不出来** —— 判据：**涉及「body 读没读」的改动必须打真网络** |
+| **「一帧」是数据边界，不是时间单位** | 📎 同一句话可切 10 帧（1.861s）/ 2 帧（0.383s）/ 201 帧（0.002s）—— 帧数与总耗时无关。`\n\n` 管"帧在哪结束"，`await` 管"下一帧何时到"。📎 一次真实请求：15 字节块 → 13 解压块 → 150 行 → 75 帧 → 6 个可见片段 |
+| **「行」是 SSE 的分帧符，不是内容里的换行** | 📎 模型输出的换行被 `json.dumps` 转义成 `\` + `n` 两个字符，所以一帧永远只是一行（实测「这一行里有真实换行符吗: False」）。⚠️ 上游若不转义，一帧被切多行、第二行会被 `startswith("data:")` 跳过 → **内容静默丢失** |
+| **流式接口的访问日志耗时 ≠ 请求耗时** | 📎 假上游每 0.4s 一帧共 3 帧，中间件在 **42.7ms** 就打出 `-> 200 16.4ms`，整条流到 **1266.9ms** 才结束 —— `call_next` 返回于**响应头就绪**那一刻。⭐ 推论：真实耗时要另记，且**绝不能读 `response.body`**（读一次就把流抽干） |
+| **「字段值宽松」不等于「出问题」** | 📎 判空写成 `is not None` → 空字符串也报警、还打出 `type=str`（自相矛盾），一个正常请求刷几十条 warning，等于把告警调成没人看。判据：`null`/`''`/缺键往往是协议规定的**正常中间状态** |
+| **一个曾被记错的结论被自己推翻** | 行宽规则原先记成"按字符数"，后用**判定性实验**证伪并纠正为"按显示宽度（汉字占 2 列）"—— 错误来源是把中文经管道喂进工具导致编码损坏 |
+
+> ⭐ 另有几条**流程类**教训（不是技术点，但更值钱）：密钥被自己的报错打印出来（规范 §10.1）；
+> 报错要**读完每个词**（`or` 前后常是两个独立条件）；**「工具全绿」证明不了「代码会执行」**。
+
+---
+
+## 文档地图
+
+> 一份事实只放一处。想知道「某类信息去哪找」看这张表。
+
+| 文件 | 只回答一个问题 | 变化频率 |
+|---|---|---|
+| [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（进度 + 待办 #1~#66 唯一台账） | 每步收口 |
+| [study_notes/project/decisions.md](study_notes/project/decisions.md) | **为什么这么设计 / 放弃了什么 / 何时该重审**（ADR 25 条） | 做决定时 |
+| [study_notes/project/production-readiness.md](study_notes/project/production-readiness.md) | **距离敢上线还差什么 / 怎么才算过门**（七道门 + `P0/P1/P2`） | 每次收口重推门的颜色 |
+| [study_notes/learning/stage1-fastapi.md](study_notes/learning/stage1-fastapi.md) | **FastAPI 与 SQLAlchemy 的机制**（原理 + 实测） | 学到新东西时 |
+| [study_notes/learning/logging.md](study_notes/learning/logging.md) | **日志原理与写法**（专题，换项目照样成立） | 同上 |
+| [study_notes/learning/learning-log.md](study_notes/learning/learning-log.md) | **那天为什么改成这样**（流水 / 踩坑 / 结论 / 12 个专题） | 每步收口 |
+| [study_notes/learning/self-check-questions.md](study_notes/learning/self-check-questions.md) | **我到底懂没懂**（全部自检题 + 答案，唯一出处） | 每步补题 |
+| [study_notes/learning/tools-reference.md](study_notes/learning/tools-reference.md) | **这个工具/包怎么用**（速查卡片） | 用错一次就补一条 |
+| [工程规范与协作约定.md](工程规范与协作约定.md) | **我们怎么协作**（步骤卡格式 / 质量门 / 安全约定 / 硬约束） | 约定变化时 |
+| [.github/copilot-instructions.md](.github/copilot-instructions.md) | **AI 进来先读什么**（新会话自动加载的协作指令） | 少改 |
+
+⚠️ **禁止跨类搬运**：笔记里不写「我们决定」；`decisions.md` 不写实测数据表格；
+`production-readiness.md` 不写缺陷细节（引用 roadmap 的编号与 📎 证据）。
+判据见 [工程规范 §4.4d](工程规范与协作约定.md)。
 
 ---
 

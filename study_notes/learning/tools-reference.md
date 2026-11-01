@@ -1108,61 +1108,44 @@ curl.exe -s -o NUL -w "ttfb=%{time_starttransfer} total=%{time_total}`n" http://
 
 ## 9. logging（Python 标准库，不是项目依赖）
 
-**解决什么问题**：把"运行时发生了什么"写成**带级别的事件流**。代替 `print` 的理由：能分级（DEBUG/INFO/WARNING/ERROR）、能带模块名与时间、能被外部系统收集、级别不够时可整条丢弃（零成本）。
+> ⭐ **本节只做速查卡**。原理（四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 /
+> `dictConfig` 参数 / 14 条注意事项 / 踩坑表）全部在独立专题 **[logging.md](logging.md)**。
+
+**解决什么问题**：把"运行时发生了什么"写成**带级别的事件流**。代替 `print` 的理由：能分级、
+能带模块名与时间、能被外部系统收集、级别不够时整条丢弃（零成本）。
 
 **怎么进来的**：标准库，**不用 `uv add`**。
 
-### 实测：不配任何东西时，日志会怎样（2026-10-18）
+### 三行速查
 
-```text
-root 的 handlers: []          ← 根 logger 一个 handler 都没配
-app.errors 的 handlers: [] | level: 0 | propagate: True
-root level: WARNING
-```
+| 想干什么 | 写法 |
+|---|---|
+| 取 logger | `logger = logging.getLogger(__name__)`（名字 = 模块路径） |
+| 打日志 | `logger.info("%s -> %s", path, status)` ⚠️ **不用 f-string**（级别不够时白拼） |
+| 打异常 | `logger.exception("...")` ⚠️ **只能在 `except` 块里**（它读 `sys.exc_info()`） |
+
+### 不配任何东西时（默认行为）
 
 | 调用 | 会不会出现 | 说明 |
 |---|---|---|
-| `logger.debug(...)` | ❌ 静默丢弃 | 低于 root 级别 |
-| `logger.info(...)` | ❌ 静默丢弃 | ⚠️ 最容易踩：以为"没生效" |
-| `logger.warning(...)` / `.error(...)` / `.exception(...)` | ✅ 出现在 **stderr** | 走 `logging.lastResort` 兜底 handler |
+| `logger.debug(...)` / `.info(...)` | ❌ 静默丢弃 | root 级别是 WARNING，且**没有 handler** |
+| `.warning(...)` / `.error(...)` / `.exception(...)` | ✅ 出现在 **stderr** | 走 `logging.lastResort` 兜底，**无任何格式**（没有时间戳/级别/模块名） |
 
-⭐ **`lastResort` 的输出没有格式**：只有消息本体，**没有时间戳、级别、模块名**。
-所以本项目终端里看到的是 `未处理异常 request_id=... path=/__boom`，而不是 `ERROR:app.errors:...`。
+⭐ 这就是本项目早期"终端里只有 `未处理异常 request_id=…` 这一句、没有时间和级别"的原因。
+→ 正式配置见 [logging.md](logging.md) §7~§8，本项目落地在 `src/app/logging_setup.py`。
 
-### 日志去哪了（默认）
+### 独有备忘
 
-| 项 | 实测结论 |
+| 项 | 结论 |
 |---|---|
-| 目的地 | 启动 uvicorn 的那个进程的 **stderr** = **那个终端窗口** |
-| 持久化 | **没有**。关掉终端/服务即消失 |
-| 文件 | **默认不写任何文件** |
-| 想看历史 | `uvicorn ... 2>&1 \| Tee-Object -FilePath "$env:TEMP\app.log"`（PowerShell） |
+| `logger.exception(...)` | ⚠️ **只能用在 `except` 块里**（它读 `sys.exc_info()`），块外调用不会附带 traceback |
+| 兜底处理器里别写可能抛异常的代码 | 📎 实测：500 处理器自身抛异常 → 客户端拿到**空 body、无 content-type** 的 500（uvicorn 原始错误页） |
+| 日志里别打完整对象 | `logger.info(payload)` 可能把密钥写进日志（规范 §10.5） |
 
-⭐ **12-Factor 第 11 条**：应用只把事件流写到 **stdout/stderr**，由外部系统（journald / Docker / 云日志）负责收集、轮转、存储。应用自己写日志文件是反模式。
-
-### 三个容易误判的现象
-
-| 现象 | 真相 |
-|---|---|
-| 一次 500 打出**两段** traceback | 不是 bug：`starlette/middleware/errors.py:186` 在用你的异常处理器生成响应后，**又 `raise exc`** 抛回给服务器 → uvicorn 打 `ERROR: Exception in ASGI application`。**你那段带 `request_id`，uvicorn 那段不带**，排查认准带 ID 的 |
-| 每行前面有 `INFO: 127.0.0.1 - "GET ..."` | 那是 uvicorn 的 **access log**，与你的应用日志是两条独立通道 |
-| PowerShell 显示成红字 `NativeCommandError` | 只是"子进程往 stderr 写了东西"，不是额外错误 |
-
-### `request_id` vs `trace_id`
-
-| | 覆盖范围 | 什么时候够用 |
-|---|---|---|
-| `request_id` | **一次请求、一台机器** | 单机开发 / 单服务 ✅ |
-| `trace_id`（W3C `traceparent`） | **一次调用链、跨多个服务** | 微服务 / 网关 + 服务 + 上游 ⬜ 上生产再补 |
-
-多机部署要补的三样：① 日志**集中收集**（Loki / ELK / 云日志）② `trace_id` 打通服务边界 ③ **结构化日志**（JSON + 固定字段 `request_id` / `path` / `status`）。
-
-### 易错点
-
-- ⚠️ **`logger.exception(...)` 只能用在 `except` 块里**（它读当前异常），块外调用不会附带 traceback。
-- ⚠️ **兜底处理器里别写可能抛异常的代码**：实测 500 处理器自身抛异常 → 客户端拿到**空 body、无 content-type** 的 500（uvicorn 的原始错误页）。
-- ⚠️ 日志里**别打完整对象**（规范 §10.5）：`logger.info(payload)` 可能把密钥写进日志。
-- ℹ️ 用 `%s` 占位符而不是 f-string：级别不够时不会浪费字符串拼接。
+📎 **「一次 500 两段 traceback」「多出一行 access log」「PowerShell 红字」** 三个容易误判的现象 →
+[logging.md](logging.md) §11 踩坑表。
+📎 **12-Factor 第 11 条（只写 stdout）** → [logging.md](logging.md) §5.2；
+**`request_id` vs `trace_id`** → [logging.md](logging.md) §9.0。
 
 ---
 
@@ -1565,7 +1548,7 @@ read timeout 是 1 秒，但请求跑了 4.95 秒 —— 没有超时
 | 2026-10-26 | §10 新增「关系与索引：`ForeignKey` / `relationship` / `index=True`」（10.6a 实测）：两层分工（`ondelete` vs `cascade`）/ 五种删父子写法对比 / 📎 索引 25 倍收益 + 规模曲线证明 O(log n) / 索引三个代价（插入 +38%、空间 +18%、可能不被使用）/ `COVERING INDEX` / 三个静默坑 |
 | 2026-10-25 | §2 新增「`StringConstraints`：给字符串类型本身加约束」（10.5f 实测）：`strip_whitespace=True` 先清洗再判长度 / 📎 修前 `"   "` `"\t\n"` 全角空格都返回 200 并入库空白标题、修后全 422 / 📎 `Field(min_length)` 在 `field_validator` **之前**执行，所以不能用 validator 做 strip / 📎 顺带修掉「空格+100字符+空格」被误判 `string_too_long` 的旧行为。同时订正 §2「常用语法」里「`field_validator` 可顺带清洗」那条（半错） |
 | 2026-10-28 | §10 新增「`Result` 的五个取值方法 + 「一次性游标」陷阱」（10.6d-2 实测）：`execute()` 返回的是结果集容器不是值；`.all()` / `.first()` / `.one()` / `.scalar()` / `.scalar_one()` 在「1 行 / 多行 / 0 行」三种情况下的行为对照表；⭐⭐ `COUNT` 用 `.scalar_one()` 而不是 `.scalar()` —— 把「假设恰好一行」写进代码，改查询时立刻炸而不是静默返回错的数；⚠️⚠️ `Result` 是一次性游标，第 2 次 `.all()` 返回 `[]`、`.first()` 返回 `None`，**都不报错** |
-| 2026-10-28 | 新增 **§11 健康探针（k8s / Docker）**（原更新日志顺延为 §12）：区分「端点（代码里的路由）」与「探针（YAML 里的配置）」两个层；三种探针（liveness 重启 / readiness 摘流量 / startup 等启动完）；⭐ HTTP 探针判定规则 **200~399 算成功**，拼错路径 → 404 → 无限重启；⭐⭐ **把数据库放
+| 2026-10-28 | 新增 **§11 健康探针（k8s / Docker）**（原更新日志顺延为 §12）：区分「端点（代码里的路由）」与「探针（YAML 里的配置）」两个层；三种探针（liveness 重启 / readiness 摘流量 / startup 等启动完）；⭐ HTTP 探针判定规则 **200~399 算成功**，拼错路径 → 404 → 无限重启；⭐⭐ **把数据库放进 liveness = 雪崩**（重启治不好数据库）；⚠️ FastAPI 一个健康端点都不自带（只自带 4 个文档路由）；📎 实测本项目 `/health` 200 / `/health/ready` 200 / `/healthz` 404 / `/health/live` 404 |
 | 2026-10-28 | §2 新增「`field_validator` 的 `mode="before"` vs `"after"`」（10.6d-4a 实测）：📎 「补 UTC」场景下 before 遇到**字符串**输入时 `isinstance` 失败 → **静默不补**；after 唯一缺点 **返回值不重校验**（📎 返回字符串竟建对象成功）；⭐⭐ 判据「转换类型用 before，修正已校验的值用 after」；⚠️ `@classmethod` 与 mode **无关**，两种都要求 |
-| 2026-10-28 | §10 新增「SQLite 下 `datetime` 的时区必然丢失」（10.6d-4a 实测）：📎 丢失点在 `sqlite.DATETIME()._storage_format` —— **格式串里没有时区占位符**；📎 `DateTime(timezone=True)` 在 SQLite 下展开，DDL 与 plain
-| 2026-10-28 | 新增 **§12 时钟**（原更新日志顺延为 §13）：📎 本机 `get_clock_info` 实测只有 `time.time()` 是 `adjustable=True`；📎 模拟 NTP 前跳 60s → 墙钟方案在真实过去 3 秒时误触发 30 秒超时，单调钟正常；⭐⭐ 判据「**「多久」用单调钟，「何时」用墙钟**」；⭐⭐ 订正「为避免休眠不计时改用系统时钟」这个反向做法（用高频故障换低频故障）；📎 实测 `loop.time()` == `time.monotonic()`；🔴 顺带实测 **`read timeout` 是「每次读取的间隔」不是「总时长」**（read=1s 而请求跑满 4.95s 不超时）→ 新增待办 #55 | 完全相同，PostgreSQL 才变 `TIMESTAMP WITH TIME ZONE`；⭐ 判据「SQLite 阶段在出口补 UTC，换 PG 时列才加 `timezone=True`」 |进 liveness = 雪崩**（重启治不好数据库）；⚠️ FastAPI 一个健康端点都不自带（只自带 4 个文档路由）；📎 实测本项目 `/health` 200 / `/health/ready` 200 / `/healthz` 404 / `/health/live` 404 |
+| 2026-10-28 | §10 新增「SQLite 下 `datetime` 的时区必然丢失」（10.6d-4a 实测）：📎 丢失点在 `sqlite.DATETIME()._storage_format` —— **格式串里没有时区占位符**；📎 `DateTime(timezone=True)` 在 SQLite 下展开，DDL 与 plain完全相同，PostgreSQL 才变 `TIMESTAMP WITH TIME ZONE`；⭐ 判据「SQLite 阶段在出口补 UTC，换 PG 时列才加 `timezone=True`」 |
+| 2026-10-28 | 新增 **§12 时钟**（原更新日志顺延为 §13）：📎 本机 `get_clock_info` 实测只有 `time.time()` 是 `adjustable=True`；📎 模拟 NTP 前跳 60s → 墙钟方案在真实过去 3 秒时误触发 30 秒超时，单调钟正常；⭐⭐ 判据「**「多久」用单调钟，「何时」用墙钟**」；⭐⭐ 订正「为避免休眠不计时改用系统时钟」这个反向做法（用高频故障换低频故障）；📎 实测 `loop.time()` == `time.monotonic()`；🔴 顺带实测 **`read timeout` 是「每次读取的间隔」不是「总时长」**（read=1s 而请求跑满 4.95s 不超时）→ 新增待办 #55 |
