@@ -9281,9 +9281,47 @@ def test_health() -> None:
 | `TestClient(app)` | ❌ **不执行** | 表没建（`create_all` 在 lifespan 里）+ `app.state` 上没挂上游 client → **测试里一堆莫名错误** |
 | `with TestClient(app) as c:` | ✅ 执行 | 正确 |
 
-### 机制层：`with` 到底在做什么（ASGI 通道级证据）
+### 机制层：到底哪两条通道？`with` 做了什么
 
-📎 **2026-11-01 探针**：写一个只有 12 行、只会打印的裸 ASGI `app`（不带 FastAPI），看它到底收到几条消息：
+#### 先给全局：ASGI 应用有两条入口通道（本项目只用到这两条）
+
+| 通道（`scope["type"]`） | 谁往里发消息 | 干什么 | **多久走一次** |
+|---|---|---|---|
+| **`http`** | 每来一个 HTTP 请求 | 把「方法 + 路径 + 请求体」交给路由函数，再把响应送回去 | **每条请求走一次** |
+| **`lifespan`** | 启动器（uvicorn / `TestClient` 的 `with`） | 只发两条通知：`lifespan.startup`（开工）、`lifespan.shutdown`（收工） | **整个进程一生只走一次** |
+
+> 📌 还有第三条 `websocket`，本项目没用，不影响结论。
+>
+> ⭐ **这就是全局图**：`http` 通道是**按请求**的，`lifespan` 通道是**按进程**的。
+> 你写的 `@asynccontextmanager async def lifespan(app)` 被 FastAPI 包成了**只注册在 lifespan 通道上的处理函数** ——
+> 它不属于 `http` 通道，所以**不拨 lifespan 通道，那段代码一次都不会执行**（不是「执行了但失败」）。
+
+#### 为什么需要第二条通道
+
+因为有些事「每个请求做一次」太浪费，有些事「必须在退出前做一次」：
+
+| 要做的事 | 频率 | 放哪条通道 |
+|---|---|---|
+| 建表 `create_all` | 一生一次 | `lifespan` 的 startup |
+| 造共享的上游 client 并挂到 `app.state` | 一生一次 | `lifespan` 的 startup |
+| 关 client / `engine.dispose()` | 一生一次（退出时） | `lifespan` 的 shutdown |
+| 查数据库、返回响应 | 每请求一次 | `http` |
+
+#### 那 `TestClient` 呢
+
+| 写法 | 喂 `http` | 喂 `lifespan` |
+|---|---|---|
+| `TestClient(app)` | ✅ | ❌ **不喂** |
+| `with TestClient(app) as c:` | ✅ | ✅ 进 `with` 发 `startup`，退 `with` 发 `shutdown` |
+
+⭐ 一句话判据：**`with` 不是「发请求的方式」，是「开机键」。**
+请求永远发得出去；能用多少功能，取决于你有没有开机。
+
+> 📌 生产环境里开 `lifespan` 通道的是 **uvicorn**（不是 `TestClient`），所以线上不需要你写 `with`。
+
+#### 证据（📎 2026-11-01 探针，放最后）
+
+写一个只有 12 行、只会打印的裸 ASGI `app`（**不带 FastAPI**），看它到底收到几条消息：
 
 ```text
 ===== A: 不用 with =====
@@ -9301,23 +9339,14 @@ B 进入 with 之后（还没发请求）收到的: ['lifespan', 'http']
 B 退出 with 之后收到的全部: ['lifespan', 'http']
 ```
 
-⭐ **这张输出就是答案**：
-
-| 事实 | 含义 |
+| 输出里的事实 | 对应上面的哪一句 |
 |---|---|
-| ASGI 应用有**多条入口通道**：`scope["type"]` 可以是 `http` / `websocket` / **`lifespan`** | 你的 app 不是"一个处理请求的函数"，是"一个按通道分发的函数" |
-| 你的 `@asynccontextmanager async def lifespan(app)` 被 FastAPI 包成了**`lifespan` 通道**的处理函数 | 它**只住在 lifespan 通道里**，`http` 通道永远调不到它 |
-| `TestClient(app)` 只喂 `http` 通道 | 所以 lifespan 里的代码**一次都不会执行** |
-| `with` = **额外开一条 lifespan 通道**：进 → `lifespan.startup`，出 → `lifespan.shutdown` | 📎 证据就在 B 里："进入 with 之后、还没发请求"就已经看到 `lifespan` 了 |
+| 不用 `with` 时只有 `['http']` | 只拨了业务通道 |
+| 用 `with` 时**第一条**就是 `lifespan`，且**发生在任何请求之前** | `with` 是开机键，不是发请求的方式 |
+| 退出 `with` 时收到 `lifespan.shutdown` | 顺带验证了关闭逻辑不报错 |
 
-> 🧒 **类比**：你的 app 有**两部电话**。一部接业务（`http`），一部接"开工 / 收工"通知（`lifespan`）。
-> `TestClient(app)` 默认只帮你拨业务那部 —— 所以你问什么都有人答，**但从来没人通知它"开工"**。
-> `with` 干的事就是：**先拨开工，再拨业务，最后拨收工**。
->
-> ⭐ 一句话判据：**`with` 不是"发请求的方式"，是"开机键"。**
-> 请求永远发得出去；能用多少功能，取决于你有没有开机。
->
-> 📌 生产环境里开这条 lifespan 通道的是 **uvicorn**（不是 `TestClient`），所以线上不需要你写 `with`。
+> 🧒 **类比**：两部电话 —— 一部接业务（`http`），一部接「开工 / 收工」通知（`lifespan`）。
+> `TestClient(app)` 默认只帮你拨业务那部，所以你问什么都有人答，**但从来没人通知它「开工」**。
 
 
 📎 **2026-11-01 在本仓库实测（临时库，五类接口 × 三种写法）**：
