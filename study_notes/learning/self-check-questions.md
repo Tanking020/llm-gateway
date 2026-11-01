@@ -1185,6 +1185,14 @@
    > ② 更省事 —— **退出 `with` 之后试探一下**：`conn.execute("SELECT 1")` 还能跑 = 没关，抛 `ProgrammingError` = 关了。
    > ⭐ 推论：**`with` 不承诺「关闭」**。要「一定关闭」得用 `contextlib.closing()`，或者像 `database.py` 那样自己写 `try/finally`。
    > 📌 顺带：`with a, b:` 是嵌套、不是并行，退出顺序**从右到左**。
+10. 📎 `FakeLlm(LlmClient)` 只覆盖了 2 个方法，`LlmClient` 有 6 个。**路由以后调用了一个没覆盖的方法，会发生什么？会真的连上游、花钱吗？**
+    > **不会花钱。** 📎 实测：`hasattr(fake, "_http")` 是 **`False`**（因为 `FakeLlm.__init__` **故意没调** `super().__init__(...)`），
+    > 所以 `await fake._request(...)` 立刻抛 `AttributeError: 'FakeLlm' object has no attribute '_http'` —— **请求根本没被构造出来**。
+    > ⚠️ **但这层保护不是继承自动给的**：是「不调 `super().__init__()`」给的。哪天有人为了「更像真的」补上
+    > `super().__init__(httpx.AsyncClient(...))`，继承来的方法就**真的会连网**。
+    > 📌 反例：`await fake.__aenter__()`（没覆盖、但**不碰 `_http`**）**正常返回** —— 所以「会响亮失败」不是绝对的，取决于那个方法碰不碰 `_http`。
+    > ⭐ 那为什么还要继承？**为了让 mypy 盯住签名漂移**（见上一题和第 10 题上方的 §12.6b）：
+    > 📎 故意把 `list_models` 返回改成 `list[str]` → `error: Return type ... incompatible with ... in supertype app.llm_client.LlmClient [override]`。
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
