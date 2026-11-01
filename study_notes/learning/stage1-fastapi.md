@@ -9632,6 +9632,33 @@ super().__init__(httpx.AsyncClient(base_url=...))
 
 ---
 
+### ⚠️ 坑：`lambda f=fake: f` 会炸（2026-11-01 实测，连着报错才发现的）
+
+写 `dependency_overrides[get_llm_client] = lambda f=fake: f` 看起来是"标准防 late-binding 写法"，
+但 **FastAPI 会去读这个函数的签名**，把 `f: AppError = <某个 AppError 实例>` 当成**查询参数**，
+然后试图从 query string 构造一个 `AppError`：
+
+```text
+TypeError: AppError.__init__() missing 1 required positional argument: 'message'
+  ... in request_params_to_args(...)
+```
+
+📎 实测三种写法：
+
+| 写法 | 结果 |
+|---|---|
+| `lambda: fake` | ✅ 正常 |
+| `def _provide() -> FakeLlm: return fake` | ✅ 正常 |
+| `lambda f=fake: f` | ❌ `TypeError: AppError.__init__() missing 1 required positional argument` |
+
+> ⭐ 判据：**`dependency_overrides` 的值必须是一个「不接收参数」的可调用对象**（参数只能是别的依赖）。
+> 它不是普通回调，FastAPI 会当作依赖函数一样解析它的签名。
+
+⚠️ 那循环里想避免 late-binding 怎么办？**把请求写在同一次迭代内**（覆盖 → 发请求 → 清理），
+或者用「具名函数 + 闭包变量」。不要靠默认参数。
+
+---
+
 ## 12.7 该测哪些接口行为（LLM 后端清单）
 
 | 类别 | 具体断言 |
