@@ -9805,6 +9805,151 @@ with TestClient(app)     ← lifespan 的 create_all 建表
 ---
 
 
+## 12.8c 契约测试文件逐句：`test_conversations.py` 用到的语法
+
+### 先给全局：这个文件只有三种角色
+
+| 角色 | 数量 | 长什么样 |
+|---|---|---|
+| **helper**（造数据） | 1 个，`_` 前缀 | `_create(client, title)` —— 一次 POST + 断言 201 + 返回 body |
+| **测试函数** | 8 个 | 名字以 `test_` 开头，参数是 fixture 名，返回 `None` |
+| **参数化用例** | 1 个函数 → 3 个用例 | `@pytest.mark.parametrize` |
+
+**pytest 的收集规则只有三条**（其余全是普通 Python）：文件叫 `test_*.py`、函数叫 `test_*`、参数名 = fixture 名。
+
+### ① `cast`：只给 mypy 看的「我知道它是什么」
+
+```python
+from typing import cast
+
+return cast(dict[str, object], response.json())
+```
+
+📎 **实测 `cast` 在运行时什么都不做**：`cast(int, "我不是 int")` 得到的就是 `'我不是 int'`（类型仍是 `str`），**不转换、不检查、不包装、不拷贝**。
+
+那为什么必须写？因为 `Response.json()` 的返回注解就是 `-> Any`。三种写法对比：
+
+| 写法 | mypy strict 下 | 后果 |
+|---|---|---|
+| `def f() -> dict[str, object]: return response.json()` | ❌ `Returning Any from function declared to return ...` | 报错 |
+| `def f() -> Any: return response.json()` | ✅ | 但调用方拿到的也是 `Any` → **后面所有断言都不再被检查** |
+| `def f() -> dict[str, object]: return cast(dict[str, object], response.json())` | ✅ | 调用方按 `dict[str, object]` 被检查 |
+
+> ⭐ `cast` 的含义是**「我确认运行时就是这个形状，我为此负责」**。
+> 它不是"让 mypy 闭嘴"，而是**把 `Any` 的传染截断在这一行**。
+
+### ② `dict[str, object]`：内置泛型
+
+📎 实测：`typing.get_origin(dict[str, object])` = `dict`，`get_args(...)` = `(str, object)`。
+
+| 事实 | 说明 |
+|---|---|
+| Python 3.9+ 可直接写 `dict[str, int]`，不必用 `typing.Dict` | 本项目 `requires-python = ">=3.12"`，一律用内置写法 |
+| 📎 **不能用在 `isinstance` 里** | `isinstance({}, dict[str, object])` → `TypeError: isinstance() argument 2 cannot be a parameterized generic` |
+| 值类型写 `object` 而不是 `Any` | `Any` 关掉一切检查；`object` 逼你先判断类型才能用 |
+
+### ③ `f` 字符串里带引号
+
+```python
+client.get(f"/v1/conversations/{created['id']}")
+```
+
+| 版本 | 规则 |
+|---|---|
+| **所有版本** | 外层双引号、内层单引号 —— **永远不会出问题**（本项目就这么写） |
+| **3.12+（PEP 701）** | 📎 实测外内**同一种**引号也行：`f"...{d["id"]}"` 正常输出 |
+
+> 建议沿用「外双内单」：写在所有老教程里，也仍然最保险。
+
+### ④ `params=` 和 `json=`：不是同一个东西
+
+```python
+# 查询串 ?limit=2&after_id=2
+client.get("/v1/conversations", params={"limit": 2, "after_id": 2})
+
+# 请求体 {"title": "x"}，自动序列化成 JSON
+client.post("/v1/conversations", json={"title": "x"})
+```
+
+| 参数 | 去哪 | 对应后端 |
+|---|---|---|
+| `params=` | URL 的 `?` 后面 | `Query(...)` 声明的参数 |
+| `json=` | 请求体，自动带 `Content-Type: application/json` | `pydantic` 请求体模型 |
+| `data=` | 请求体，表单编码 | 不适用本项目 |
+
+⚠️ 写反的后果：把 title 放进 `params=` → 后端读请求体拿不到 → **422 `Field required`**。
+
+### ⑤ `.json()` 链式调用
+
+```python
+first = client.get("/v1/conversations", params={"limit": 2}).json()
+first["items"]
+```
+
+| 片段 | 作用 |
+|---|---|
+| `.json()` | **解析并反序列化**响应体成 dict / list。**不做任何校验** —— 它不是 pydantic，不知道你的契约 |
+| `.a().b()` | 只是"把左边返回值当右边 `.` 的对象"，不是特殊语法 |
+| body 不是 JSON 时 | 抛 `json.JSONDecodeError`，**不是**断言失败 —— 报错信息很难读 |
+
+### ⑥ `@pytest.mark.parametrize` + `pytest.param(..., id=...)`
+
+```python
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"title": "   "}, id="blank"),
+        pytest.param({"title": "x" * 101}, id="too_long"),
+        pytest.param({}, id="missing"),
+    ],
+)
+def test_invalid_title_returns_422(client: TestClient, payload: dict[str, str]) -> None:
+```
+
+| 片段 | 作用 |
+|---|---|
+| 第一个参数 `"payload"` | **字符串**，必须是测试函数的**参数名**（靠名字匹配，不是顺序） |
+| 第二个参数 `[...]` | 每个元素 = 一次运行时的该参数值 |
+| `"x" * 101` | 字符串重复 —— 造 101 个 `x`，打 `max_length=100` 的边界 |
+| `pytest.param(值, id="名字")` | 给用例起名。📎 实测 `-v` 输出就是 `test_invalid_title_returns_422[blank]` |
+| `payload: dict[str, str]` | 注解**不参与匹配**，只给 mypy 看 |
+
+📎 实测：一个函数 → **3 个独立用例**，各自单独跑、单独计分。
+
+> ⭐ 为什么不写三个函数：**边界是用数据表达的**，加一条边界只加一行。
+
+### ⑦ 列表推导式
+
+```python
+assert [item["title"] for item in first["items"]] == ["c1", "c2"]
+```
+
+| 等价写法 | 说明 |
+|---|---|
+| `[item["title"] for item in first["items"]]` | 推导式：一行造一个 list |
+| `list(map(lambda i: i["title"], first["items"]))` | 传统写法，更长 |
+| 循环 + `append`（3 行） | 最啰嗦 |
+
+> ⭐ **测试里为什么要它**：断言要看的是**完整列表**（顺序 + 条数 + 内容一次比完）。
+> `== ["c1", "c2"]` 这一个断言同时钉住「升序」和「只有两条」。
+
+### ⑧ 测试函数为什么都 `-> None`（复习 §8.3a）
+
+| 事实 | 说明 |
+|---|---|
+| `-> None` 让 mypy 抓「误写 `return 值`」 | 📎 pytest 对 `return 值` 只发 `PytestReturnNotNoneWarning`，**测试照样 `passed`** |
+| 参数注解让编辑器能提示 | `client: TestClient` → 敲 `.` 有补全，`json=` / `params=` 有提示 |
+
+### ⑨ helper 为什么带 `_` 前缀、且自己就断言状态码
+
+| 设计 | 理由 |
+|---|---|
+| `_create`（下划线） | pytest **不会**收集它（收集规则要 `test_` 开头），同时约定「模块私有」 |
+| helper 里就 `assert 201` | **失败点前移**：创建失败时报错指向 helper 那一行，而不是后面某个莫名其妙的 `KeyError` |
+| 返回 body 而不是 response | 调用方 99% 只要 body；需要状态码时自己再发一次 |
+
+---
+
 ## 12.9 「环境变量」和 `.env` 文件是两张皮
 
 ### 先分清两个东西
