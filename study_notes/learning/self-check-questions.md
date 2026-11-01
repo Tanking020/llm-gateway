@@ -1170,6 +1170,11 @@
    > 因为 `app/config.py` 最后一行 `settings = Settings()` 是**模块级单例**，import 那一刻就把 `.env` + 环境变量读完并定型；之后改 `os.environ` 对它没有任何影响（📎 实测 import 后改成 `other.db`，`settings.database_url` 仍是旧值）。
    > 📌 推论：`engine` 也是模块级对象（`create_async_engine(settings.database_url)`），所以**一个进程只能绑定一个库 URL** —— 想「每个测试一个新库文件」做不到，隔离只能在同一个库内做（清表 / 事务回滚 / 唯一数据）。
 
+8. 📎 **机制层**：`with TestClient(app)` 到底对应用做了什么？为什么不用 `with` 时，lifespan 里的代码**一次都不会执行**（而不是「执行了但失败」）？
+   > 因为 ASGI 应用有**多条入口通道**，靠 `scope["type"]` 区分：`http` / `websocket` / **`lifespan`**。
+   > `@asynccontextmanager` 的 `lifespan(app)` 被 FastAPI 包成了 **`lifespan` 通道**的处理函数 —— 它**只住在那条通道里**，`http` 通道永远调不到它。
+   > 📎 裸 ASGI 探针实测：**不用 `with`** → app 只收到 `['http']`；**用 `with`** → 先收到 `scope['type'] == 'lifespan'`（进入 `with` 时、**还没发任何请求**），里面 `lifespan.startup`，退出 `with` 时再收到 `lifespan.shutdown`，最后才是 `http`。
+   > ⭐ 所以 `with` 不是「发请求的方式」，是**开机键** —— 它额外开一条 lifespan 通道并握手。📌 生产环境里开这条通道的是 **uvicorn**，所以线上不用写 `with`。
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
