@@ -7,14 +7,16 @@
 > 判据与「可以让步 vs 绝不能让步」的清单见[工程规范 §7.0c](工程规范与协作约定.md)。
 
 **当前状态**：阶段 0 · 工程基础已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 10 已完成，Step 11 工程化进行中（11a 启动入口 / 11b `debug` 接线+prod 保护 / 11c 日志 `dictConfig` / 11d 错误形状统一 ✅；剩 11e 生产关 `/docs`、11f 流式文档标注）**
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 11 已完成，下一步 Step 12 测试**
 （HTTP/ASGI 地基 → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御 → 数据库与账单 → 工程化）。
 已具备：请求追踪中间件、**一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
 一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
 实测首帧 60ms / 总 906ms；上游失败时客户端拿 **502** 而不是 `200` + 断连）、
 **可对账的账单体系**（`llm_calls` 表，`status` 三态区分 `completed` / `aborted` / `pending`），
-以及**全项目统一的错误响应**（任何错误都是 `{"error":{code,message,request_id}}`，422 多一个 `details`）
-和**单一出口的日志配置**（`dictConfig`，三条启动路径同一格式）。
+以及**全项目统一的错误响应**（任何错误都是 `{"error":{code,message,request_id}}`，422 多一个 `details`）、
+**单一出口的日志配置**（`dictConfig`，三条启动路径同一格式）、
+**prod 环境的多重保护**（`DEBUG=true` 启动即崩、`/docs` `/redoc` `/openapi.json` 一并关闭），
+以及**说真话的 `/docs`**（流式接口标 `text/event-stream`）。
 详见[路线图](#路线图)。
 
 > ⚠️ **离「能上线」还差什么**：无鉴权 / 无限流 / 无自动化测试 / 无 `Dockerfile`，
@@ -156,8 +158,8 @@ uv run python -m app.main ping   # 真实调用上游 /models，列出可用模�
 `src/app/errors.py` 的 `_STATUS_BY_CODE`，所有错误响应经同一个出口 `_error_response()` 生成，
 `X-Request-ID` 响应头**恒等于** body 里的 `request_id`。
 
-> ⚠️ 流式接口的 `/docs` 目前把 `200` 标成 `application/json`（返回注解是 `Response` 子类时 FastAPI 会置空
-> `response_model`），实际响应是 `text/event-stream` —— 见待办 #11（Step 11f 处理）。
+> ✅ 流式接口在 `/docs` 里已正确标成 `text/event-stream`（Step 11f：`SseResponse` 的类属性 `media_type` +
+> `response_class=`；只加 `responses={200: …}` 不够，会把 `application/json` 一起留着）。
 
 **SSE 流式响应**（Step 9b-3 起：真调上游 `stream=true`，含状态帧与用量记账）：
 
@@ -456,6 +458,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 - **异常类的必填参数不给默认值，是为了让"漏写"在写代码时就崩**：📎 `AppError()` → `TypeError: missing 2 required positional arguments`，mypy strict 还会静态报 `call-arg`。若给 `code: str = "UNKNOWN"`，mypy 不报、运行时静默造出一个 `code='UNKNOWN'` → 查表落空 → **静默 400**。⚠️ 但"必填"只挡漏传：📎 `AppError("MODEL_NOT_FOUNDD", …)` 拼错一个字母 → **零道闸**，照样静默 400（待办 #58）
 - **`HTTPException` 的旅程分两段**：**异常**只走到 `ExceptionMiddleware`（紧贴 Router 外面）就结束了，从那以后往回走的是**一个普通 Response**，才轮到 CORS / 自己的中间件去补头。📎 证据：404 的访问日志是 `-> 404`，只有真 500 才是 `-> ERR`；且 404 响应带 ACAO + `X-Request-ID`。所以同一个 `AppError`：路由里抛 → 400，**中间件里抛 → 500**（`ExceptionMiddleware` 在它里面，够不着）
 - **`@app.middleware("http")` 的 `"http"` 参数是被忽略的**：📎 四组实测（`http` / `websocket` / `banana` / 空）行为完全一致，源码里 `middleware_type` 一次都没被读。🔴 更坑的是写 `"websocket"` **不会**让 ws 请求进 dispatch（`BaseHTTPMiddleware.__call__` 首行按 `scope["type"] != "http"` 直接放行）。⭐ 判据：**给参数填了值就要问「我怎么知道它被读了」**
+- **`responses=` 是「追加」不是「替换」**：📎 给 `/v1/chat/stream` 加 `responses={200: {"content": {"text/event-stream": …}}}` 后，OpenAPI 里 200 变成 `['application/json', 'text/event-stream']` **两种** —— 自动生成的那条 `application/json` 还在。✅ 正确做法是 `SseResponse(StreamingResponse)` 设类属性 `media_type` + 装饰器 `response_class=SseResponse` → `['text/event-stream']` 只有一种。⭐ 判据：**要替换自动生成的 content-type，只能靠 `response_class` 的 `media_type`**
 - **`raise` 与 `return` 不是风格问题，是语义问题**：`return` = "交给你继续"，每一层都得自己判断；`raise` = "到此为止"。📎 实测：把「造好 404 响应」写成普通函数但**忘了 `return`** → `[200] {'ok': True}`，错误被静默吞掉。另外依赖里没有返回值可用、流式响应头已发出，这两处**只能** raise
 
 | 文档 | 内容 |
