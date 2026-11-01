@@ -44,6 +44,43 @@ logger.info("GET %s -> %s", path, status)
 
 ⭐⭐ **判据：日志"没出来"时，按这个顺序查** —— 是级别闸拦了？是没找到 handler？是 handler 级别拦了？还是写到了你看不到的地方（stderr / 文件）？
 
+### 📎 不配任何东西时的默认状态（2026-10-18 实测）
+
+```text
+root 的 handlers: []          ← 根 logger 一个 handler 都没配
+app.errors 的 handlers: [] | level: 0 | propagate: True
+root level: WARNING
+```
+
+| 调用 | 会不会出现 | 说明 |
+|---|---|---|
+| `logger.debug(...)` / `.info(...)` | ❌ **静默丢弃** | 低于 root 级别；⚠️ 最容易踩：以为"没生效" |
+| `.warning(...)` / `.error(...)` / `.exception(...)` | ✅ 出现在 **stderr** | 走 `logging.lastResort` 兜底 handler |
+
+⭐ **`lastResort` 的输出没有格式**：只有消息本体，**没有时间戳、级别、模块名**。
+所以本项目早期终端里看到的是
+
+```text
+未处理异常 request_id=... path=/__boom          ← 只有这一句，没有时间和级别
+```
+
+而**不是**（这是配好之后的样子）：
+
+```text
+2026-10-31 20:21:43,893 ERROR   app.errors | 未处理异常 request_id=… path=/__boom
+```
+
+### 📎 日志去哪了（默认）
+
+| 项 | 实测结论 |
+|---|---|
+| 目的地 | 启动 uvicorn 的那个进程的 **stderr** = **那个终端窗口** |
+| 持久化 | **没有**。关掉终端 / 服务即消失 |
+| 文件 | **默认不写任何文件** |
+| 想看历史（不改代码） | `uvicorn ... 2>&1 \| Tee-Object -FilePath "$env:TEMP\app.log"`（PowerShell） |
+
+⚠️ 最后一行是**客户端侧捕获**，不是"应用自己写日志文件" —— 与 §5.2 的 12-Factor 不矛盾。
+
 ---
 
 ## 2. 五个角色：Logger / Handler / Formatter / Filter / Level
