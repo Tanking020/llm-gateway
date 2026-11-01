@@ -9278,19 +9278,36 @@ def test_health() -> None:
 
 | 写法 | lifespan | 后果 |
 |------|----------|------|
-| `TestClient(app)` | ❌ **不执行** | 数据库没建表、连接池没初始化 → **测试里一堆莫名错误** |
+| `TestClient(app)` | ❌ **不执行** | 表没建（`create_all` 在 lifespan 里）+ `app.state` 上没挂上游 client → **测试里一堆莫名错误** |
 | `with TestClient(app) as c:` | ✅ 执行 | 正确 |
 
-📎 **2026-11-01 在本仓库实测（临时库，四组对比）**：
+📎 **2026-11-01 在本仓库实测（临时库，五类接口 × 三种写法）**：
 
-| 写法 | `GET /health` | `GET /v1/models` | `GET /health/ready` | `POST /v1/conversations` |
-|---|---|---|---|---|
-| 不用 `with` | 200 | 200 | **200** | ❌ 抛 `OperationalError: no such table: conversations` |
-| 不用 `with` + `raise_server_exceptions=False` | 200 | 200 | 200 | **500** `{"error":{"code":"INTERNAL_ERROR",…}}` |
-| 用 `with` | 200 | 200 | 200 | **201** |
+| 写法 | `/health` | `/v1/models` | `/health/ready` | `/v1/upstream/models` | `POST /v1/conversations` |
+|---|---|---|---|---|---|
+| 不用 `with` + `raise_server_exceptions=False` | 200 | 200 | **200** | **500** `INTERNAL_ERROR` | **500** `INTERNAL_ERROR` |
+| 不用 `with`，默认（异常抛出） | 200 | 200 | 200 | `AttributeError: 'State' object has no attribute 'llm_client'` | `OperationalError: no such table: conversations` |
+| 用 `with` | 200 | 200 | 200 | 200 | **201** |
 
-⚠️ **最反直觉的是一格**：`/health/ready` 不用 `with` 也是 200 —— 因为它只跑 `SELECT 1`，**不需要任何表**；
-而 SQLite 在"建立连接"那一刻就把空库文件建出来了。
+⭐ **按下表读，就不会把「查不查数据库」当成分界线**：
+
+| 接口 | 需要 lifespan 里的什么 | 不用 `with` |
+|---|---|---|
+| `/health` | 什么都不要 | 200 |
+| `/v1/models` | 什么都不要（只读模块常量 `KNOWN_MODELS`） | 200 |
+| `/health/ready` | **只要一个能用的连接** —— 而连接是引擎**懒建立**的，与 lifespan 无关 | **200** |
+| `POST /v1/conversations` | **表结构**（`create_all` 建的） | ❌ `no such table` |
+| `/v1/upstream/models` | **`app.state.llm_client`**（lifespan 造的共享客户端） | ❌ `AttributeError` |
+
+⚠️ **两条被实测推翻的常见理解**（2026-11-01，学习者按①②提问）：
+
+| 错误理解 | 实测 |
+|---|---|
+| ① 「`with` 才会真实产生数据库连接」 | 📎 `import app` 之后库文件**根本不存在**（`create_async_engine` 只造池对象，不连库）；📎 不用 `with` 时 `/health/ready` 200 且**库文件正是它建出来的** —— 连接在第一次执行 SQL 时才借 |
+| ② 「readiness 考察数据库依赖，所以不用 `with` 会失败」 | 📎 它确实考察数据库（`SELECT 1`），但**照样 200** —— 因为 `SELECT 1` 不需要表 |
+
+> ⭐ 判据：**lifespan 的产物是「表结构」和「`app.state` 上的共享对象」，不是「连接」。**
+> 所以「哪些接口不用 `with` 也 200」不取决于它**查不查数据库**，只取决于它**要不要那两样产物**。
 
 > ⭐ 两个判据：
 > ① **readiness 探针查不出「表没建」** —— 它能查"连得上吗"，查不出"结构对吗"。

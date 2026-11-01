@@ -1155,6 +1155,9 @@
    > （看起来像 SQL 写错了），而**不是**「你忘了 `with`」—— 误导成本极高。
    > 而且 startup 段里任何一件事失败（建表 / 拿上游 client / 预热配置），都不会在这两个接口上暴露。
    > 📌 判据句：**「请求能不能成功」是业务断言；「lifespan 跑没跑」是脚手架前提 —— 前者推不出后者。**
+   > 📌 **别把「查不查数据库」当分界线**（📎 2026-11-01 实测订正）：lifespan 的产物是**表结构**和**`app.state` 上的共享对象**，不是连接 ——
+   > 连接由引擎懒建立（`import app` 之后库文件都还不存在）。所以 `/health/ready`（只 `SELECT 1`）不用 `with` 也 200，
+   > 而 `POST /v1/conversations`（要表）报 `no such table`、`/v1/upstream/models`（要共享 client）报 `AttributeError: 'State' object has no attribute 'llm_client'`。
 3. `ASGITransport` 的好处和**代价**分别是什么？
    > 好处：能用 `httpx.AsyncClient` 的异步接口（可 `await`）、不启服务器。代价：**不跑 lifespan**（除非加 `LifespanManager`）、不经过真实网络栈。
 4. 测 SSE 要断言哪三件事？
