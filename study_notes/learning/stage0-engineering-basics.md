@@ -5,6 +5,7 @@
 > **目标读者**：数学背景、写过 Python 脚本、没接触过工程规范。
 > **实践方式**：仓库不附带预配置的项目骨架。请跟随本笔记从空目录亲手创建项目，并用自己的环境验证每一步。
 > **同系列**：ML 阶段笔记（房价预测，同一套写法）—— *该笔记不在本仓库*。
+> **代码示例的注解约定**（2026-11-01 加）：文中的片段为了突出当前主题，**偶尔省略参数/返回值注解**（例如只讲 `async` 差异的 `async def bad():`）。**真实代码必须写全** —— 包括测试函数和 `-> None`，原因与实测见 §8.3a。
 
 ---
 
@@ -1314,11 +1315,20 @@ Found 1 error in 1 source file                     ← ✅ 报了
 class TestMainEntry:
     """入口分支必须被覆盖：默认路径绝不能联网。"""
 
-    async def test_default_path_prints_demo(self, capsys): ...
-    async def test_ping_without_key_skips_network(self, capsys, monkeypatch): ...
-    async def test_ping_with_key_reports_models(self, capsys, monkeypatch): ...
-    def test_cli_exits_with_zero(self, monkeypatch): ...
+    async def test_default_path_prints_demo(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None: ...
+    async def test_ping_without_key_skips_network(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None: ...
+    async def test_ping_with_key_reports_models(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None: ...
+    def test_cli_exits_with_zero(self, monkeypatch: pytest.MonkeyPatch) -> None: ...
 ```
+
+> 📌 上面是四个用例的**签名概览**（`...` 是省略的函数体）。真实代码里注解必须写全 ——
+> 原因见 §8.3a，尤其 `-> None` 不是装饰：它能抓出「测试里误写了 `return 值`」。
 
 **测试数从 15 → 19**，覆盖率补上，这类回归被永久锁死。
 
@@ -1398,6 +1408,56 @@ def client() -> TestClient:
 
 > ⭐ 用 `yield` 的 fixture 天然支持**清理**。本仓库 `get_session` 依赖也是同样结构 —— **这不是巧合，是同一个模式**。
 
+## 8.3a 测试函数为什么也必须写函数注解（2026-11-01 学习者追问）
+
+> 原话：「测试部分给的函数为啥都不写函数注解？」
+
+**结论：必须写，包括 `-> None`。测试代码不是「免检区」。**
+
+`pyproject.toml` 里 mypy 配的是 `strict = true` + `files = ["."]` —— 整个项目都在检查范围内，
+`tests/` 也在里面，所以测试文件里少一个注解就是一条 `no-untyped-def`。
+
+### 📎 实测：三种写法 mypy 怎么说
+
+| 写法 | mypy |
+|---|---|
+| `def test_x(client):` | ❌ `Function is missing a type annotation [no-untyped-def]` |
+| `def test_x(client: TestClient) -> None:` 里写 `return 5` | ❌ `No return value expected [return-value]` |
+| `def test_x(client: TestClient) -> None:` 正常 | ✅ |
+
+### ⭐ `-> None` 到底拦住了什么（这条最值得记）
+
+📎 实测：测试函数 `return 5` 时，**pytest 会让它通过**，只给一条警告：
+
+```text
+PytestReturnNotNoneWarning: Test functions should return None, but
+  test_returns_non_none returned <class 'int'>.
+  Did you mean to use `assert` instead of `return`?
+...
+3 passed, 2 warnings
+```
+
+**`3 passed`** —— 也就是说：
+
+> **把 `assert 条件` 误写成 `return 条件`，pytest 不会判它失败。**
+> 只有 mypy 的 `-> None` 能把这种笔误变成**错误**。
+
+⭐ 判据：**`-> None` 不是格式要求，它是一条「这个函数不该有返回值」的断言。**
+
+### 参数注解的第二个作用：让 IDE 能提示
+
+`def test_x(client: TestClient)` 之后，编辑器才知道 `client` 有 `.get` / `.post` / `.stream`，
+参数框里会提示 `json=` / `params=` —— 写错参数名当场能看出来。
+不写注解时编辑器一律当 `Any`，什么都不提示。
+
+### 哪些可以省
+
+| 位置 | 能省吗 |
+|---|---|
+| 测试函数的参数 / 返回值 | ❌ 不能省（mypy 会报） |
+| `self`（class 写法的测试类） | 不需要注解（约定俗成） |
+| 笔记里的**示意片段** | 🟡 可以省，但要**标明是简写** —— 否则会让人以为真实代码也这样 |
+
 ## 8.4 不联网也能测 HTTP：`httpx.MockTransport` ⭐
 
 **问题**：`fetch_model_ids` 要发网络请求。测试总不能真去调 OpenAI（慢、要 key、结果不稳定、还可能花你钱）。
@@ -1424,13 +1484,15 @@ async def test_parses_openai_style_payload(self) -> None:
 
 ```python
 async def test_raises_on_http_error(self) -> None:
-    def handler(request): return httpx.Response(500)     # 500 错误
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)                       # 500 错误
     ...
     with pytest.raises(httpx.HTTPStatusError):
         await fetch_model_ids(client)
 
 async def test_tolerates_unexpected_payload(self) -> None:
-    def handler(request): return httpx.Response(200, json={"data": "oops"})   # 格式不对
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": "oops"})   # 格式不对
     ...
     assert await fetch_model_ids(client) == []           # 应优雅降级
 ```
