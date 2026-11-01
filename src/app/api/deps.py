@@ -26,8 +26,8 @@ def get_settings() -> Settings:
     """
     提供全局配置对象
 
-    做成依赖的意义：测试时可以用 app.dependency_overrides 把它替换成
-    假配置，不必去改 .env，也不必 mock 模块
+    做成依赖的意义：测试时可以用 app.dependency_overrides 把它替换成假配置，
+    不必去改 .env，也不必 mock 模块
 
     造了一个可替换的接缝，有接缝才能替换：dependency_overrides[get_settings] = ...
     """
