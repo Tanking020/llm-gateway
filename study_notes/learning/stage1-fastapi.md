@@ -9228,8 +9228,8 @@ async def chat_stream(req: ChatRequest, user: CurrentUserDep, db: DbDep): ...
 | **`TestClient` 与 `with`（lifespan）** | 本节 §12.2 | ✅ 新增（12a） |
 | **`raise_server_exceptions`（默认 `True`）** | 本节 §12.2 | ✅ 新增（12a） |
 | **`dependency_overrides` 换掉真 LLM / 真配置** | 本节 §12.6 | ✅ 新增（12c） |
-| **测试库隔离**（引擎是模块级单例 → 一个进程只能有一个库 URL） | 本节 §12.9（12b 写入） | ✅ 新增（12b） |
-| **导入顺序**（`settings` 是单例，环境变量必须在 `import app` **之前**设） | 本节 §12.10（12a 收口时写入） | ✅ 新增（12a） |
+| **测试库隔离**（引擎是模块级单例 → 一个进程只能有一个库 URL） | 本节 §12.8（12a 写入） | ✅ 新增（12b） |
+| **导入顺序**（`settings` 是单例，环境变量必须在 `import app` **之前**设） | 本节 §12.9（12a 收口时写入） | ✅ 新增（12a） |
 
 > ⭐ 一句话分工：
 > **stage0 讲「怎么用 pytest」，本 Step 讲「怎么测一个有 lifespan、有数据库、有外部 API 的真应用」。**
@@ -9565,7 +9565,144 @@ def override_deps() -> Iterator[None]:
 > ```
 > 这和阶段 0 用 `MockTransport` 假 HTTP 是**同一个思路**。
 
-## 12.8 自检
+## 12.8 `conftest.py` 逐句：库文件是谁建的、为什么要删 3 个
+
+先把这段代码**分成三件事**看，别当成一坨：
+
+| 顺序 | 这一段在做什么 | 碰磁盘吗 |
+|---|---|---|
+| ① **算路径** | `_TEST_DB = Path(tempfile.gettempdir()) / "llm-app-test.db"` | ❌ **不碰**（只是拼字符串） |
+| ② **清场** | `for _suffix ...: Path(...).unlink(missing_ok=True)` | ✅ 删（第一次跑时是**空操作**） |
+| ③ **写环境变量** | `os.environ["DATABASE_URL"] = ...` 等 3 行 | ❌ 只改进程内存 |
+
+### 逐句语法
+
+```python
+_TEST_DB = Path(tempfile.gettempdir()) / "llm-app-test.db"
+```
+
+| 片段 | 作用 |
+|---|---|
+| `tempfile.gettempdir()` | 返回系统临时目录**字符串**（📎 实测本机 = `C:\Users\23353\AppData\Local\Temp`） |
+| `Path(...)` | 把字符串包成 `Path` 对象（📎 实测类型是 `WindowsPath`） |
+| `Path(...) / "名字"` | **不是**除法 —— `Path` 重载了 `/` 运算符（`__truediv__`），用法是"左路径拼右名字" |
+| 结果 | 一个 `Path` 对象。📎 实测：**这一步不会创建任何文件**（`p.exists()` = `False`） |
+
+```python
+for _suffix in ("", "-wal", "-shm"):
+    Path(str(_TEST_DB) + _suffix).unlink(missing_ok=True)
+```
+
+| 片段 | 作用 |
+|---|---|
+| `for _suffix in (...)` | 模块级 `for` 循环是合法的（不需要包在函数里）；下划线开头 = "临时变量，别在外面用" |
+| `str(_TEST_DB) + _suffix` | 先转回字符串再拼。**不能用 `_TEST_DB.with_suffix("-wal")`** —— 那会把 `.db` 换掉，得到 `llm-app-test-wal`，路径就错了 |
+| `.unlink()` | **删除文件**（这是"哪里删除了"的答案） |
+| `missing_ok=True` | 文件不存在**不报错**。📎 实测不加它 → `FileNotFoundError: [WinError 2] 系统找不到指定的文件` |
+
+```python
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///" + _TEST_DB.as_posix()
+```
+
+| 片段 | 作用 |
+|---|---|
+| `os.environ[...] = ...` | 改进程的环境变量（`pydantic-settings` 读的就是它） |
+| `.as_posix()` | 把 `\` 换成 `/`。SQLite URL 里出现反斜杠容易解析出错，统一成正斜杠最稳 |
+| 为什么放在 import 之前 | `settings = Settings()` 是**模块级单例** —— 见 §12.9 |
+
+### 到底删了什么？第一次跑时删得到吗
+
+删的是 **3 个可能的文件**，围绕同一个库：
+
+| 文件 | 是什么 | 本项目实测会不会存在 |
+|---|---|---|
+| `llm-app-test.db` | 主库文件 | ✅ 上次跑完会留下 |
+| `llm-app-test.db-wal` | SQLite 的**预写日志**（WAL 模式下的伴生文件） | ❌ 本项目默认 `journal_mode=DELETE`，不产生 |
+| `llm-app-test.db-shm` | WAL 模式的**共享内存索引** | ❌ 同上 |
+
+📎 实测：建完连接并执行 SQL 后，`{'': True, '-wal': False, '-shm': False}` —— 只产生主库文件。
+
+> ⭐ **所以第一次跑的时候，这 3 行什么也没删**（3 个文件都不存在，`missing_ok=True` 让它们静默跳过）。
+> 它们是**给"第二次及以后"准备的**，也是**防御性的**：哪天把库切成 WAL 模式，只删主库会留下旧 WAL → 可能读到不一致的数据。
+
+### 那 `llm-app-test.db` 原本不存在，是谁创建的
+
+**SQLite 自己创建的**，不是你，也不是 `Path()`。
+
+📎 实测时间线（`aiosqlite`）：
+
+| 时刻 | 文件存在吗 | 表有几张 |
+|---|---|---|
+| 只做 `Path(...)` 运算 | ❌ | — |
+| `aiosqlite.connect()` **一进去** | ✅ **已存在** | **0 张**（空库） |
+| 执行 `SELECT 1` 之后 | ✅ | 0 张 |
+| 退出连接后 | ✅ | 0 张 |
+
+放到我们项目里，完整链条是：
+
+```text
+with TestClient(app)          ← 你按了开机键
+  └─ lifespan 的 startup 段
+       └─ engine.begin()      ← 引擎去借连接
+            └─ aiosqlite 真正 connect()  ← ★ SQLite 在这一刻创建空库文件
+            └─ run_sync(Base.metadata.create_all)  ← 表在这一刻被建出来
+```
+
+> ⭐ 一句话：**连接负责"创建文件"，`create_all` 负责"创建表"。** 两件事发生在不同时刻，所以"文件存在"不等于"表存在"。
+
+### 为什么必须删：不删会怎样（📎 三次连跑实测）
+
+把 `unlink` 那 3 行去掉，同一个库连跑三次 `pytest`：
+
+| 第几次 | 结果 | 库里 `conversations` 行数 |
+|---|---|---|
+| 第 1 次 | 2 passed | `[(1, '测试对话')]` |
+| 第 2 次 | 2 passed | `[(1, '测试对话'), (2, '测试对话')]` |
+| 第 3 次 | 2 passed | `[(1, '测试对话'), (2, '测试对话'), (3, '测试对话')]` |
+
+今天这两个用例不读库里的总数，所以**一直全绿**；但只要你写一个"列表应该有 1 条"的用例，它会在**第三次跑时突然变红** —— 而代码一个字都没改。
+
+> ⭐ 这就是"测试污染"最典型的形态：**失败原因不在代码里，在上一轮留下的数据里。**
+> 现在这 3 行的作用只是**跨进程**清一次；**同一个进程内**测试之间的隔离是 §12b 的事（清表 / 事务回滚）。
+
+---
+
+## 12.9 为什么必须赶在 `import app` 之前设环境变量
+
+一句话：**`settings` 是模块级单例，`import` 那一刻就把环境读完了，之后再改没人看。**
+
+`app/config.py` 的最后一行是：
+
+```python
+settings = Settings()      # 模块被 import 时立刻执行，读完 .env + os.environ
+```
+
+📎 实测：`import app.config` 之后再改 `os.environ["DATABASE_URL"]`，`settings.database_url` **仍然是旧值**。
+
+顺带一个更硬的约束：`app/database.py` 里是
+
+```python
+engine = create_async_engine(settings.database_url)   # 也是模块级
+```
+
+所以 **`engine` 绑定的是"import 那一刻"的 URL** —— 一个进程**只能绑一个库**。
+推论：不可能"每个测试一个新库文件"；测试之间的隔离只能在**同一个库内**做（§12b）。
+
+### pytest 保证的导入顺序（这才是 `conftest.py` 能起作用的原因）
+
+```text
+pytest 启动
+  └─ 收集 tests/ 下的文件
+       └─ 先导入 conftest.py        ← ★ 我们的 3 行 os.environ 在这里执行
+            └─ 然后才 import tests/test_*.py
+                 └─ 它们 import app.api.app → 触发 app.config 的 settings = Settings()
+```
+
+⭐ 所以 `conftest.py` 的**模块顶层**是**唯一**能赶在 `settings` 定型之前下手的位置。
+这也解释了为什么那 3 个 `import` 要带 `# noqa: E402`（故意写在代码后面）。
+
+
+## 12.10 自检
 
 > 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 12 测试 FastAPI）。
 
