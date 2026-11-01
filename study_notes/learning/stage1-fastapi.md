@@ -9659,6 +9659,40 @@ TypeError: AppError.__init__() missing 1 required positional argument: 'message'
 
 ---
 
+### 接线测试：断言必须写「假对象独有的数据」（2026-11-01 学习者答对了）
+
+```python
+fake = FakeLlm(models=[ModelItem(id="m1"), ModelItem(id="m2")])
+app.dependency_overrides[get_llm_client] = lambda: fake
+response = client.get("/v1/upstream/models")
+assert response.status_code == 200
+assert body["total"] == 2
+assert [item["id"] for item in body["items"]] == ["m1", "m2"]     # ← 关键
+```
+
+**如果只写 `assert response.status_code == 200` 就废了**：
+
+| 假对象生效 | 假对象没生效 |
+|---|---|
+| 返回 `m1` / `m2` | 走**真上游** → 返回 DeepSeek 真实模型列表（我们**控制不了**名字），或者没配 key 时直接 **502** |
+
+> ⭐ 而**真上游正常工作时也是 200** —— 所以状态码这一个断言分不出"注入生效"和"压根没生效"。
+> **只有 `m1` / `m2` 这种"只有我造的假对象才知道"的数据，才能证明注入真的生效了。**
+
+⚠️ 顺带一个容易混的事实（学习者这题答得基本对，但把两个端点记混了）：
+
+| 端点 | 数据来源 | 假对象不生效时会怎样 |
+|---|---|---|
+| `/v1/models` | **硬编码常量** `KNOWN_MODELS = ["deepseek-flash", "deepseek-v4-pro"]` | 仍然 200，返回这两个写死的名字 —— **看不出要不要网络** |
+| `/v1/upstream/models` | **真上游** `client.list_models()` | **真的发网络请求**（`.env` 里有 key）→ 拿到真实列表（大概率不含 `m1`）或 502 |
+
+📌 所以这条测试还有一层副作用价值：**它是"测试绝不真调上游"的守门员**。
+如果哪天注入机制失效，这条测试会真花钱 —— 但至少它**会红**，不会静默。
+
+⭐ 判据：**接线测试的断言里，必须包含一个「只有假对象才会产生」的值。**
+
+---
+
 ## 12.7 该测哪些接口行为（LLM 后端清单）
 
 | 类别 | 具体断言 |
