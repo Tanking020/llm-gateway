@@ -102,9 +102,13 @@ line-length = 100
 # （刻意对齐的注释、故意报错的例子、不完整片段），被格式化后反而失去可读性
 extend-exclude = ["*.md"]
 
+[tool.ruff.lint.isort]
+# tests/fakes.py 是本项目自己的代码，但它不在 src/app 包里，
+# ruff 默认会把它归到「第三方」import 组里，导致 import 顺序检查报 I001
+known-first-party = ["app", "fakes"]
+
 [tool.ruff.lint]
-# select = 启用哪些规则集
-# ⚠️ ruff 默认只开一小部分（E4/E7/E9/F），这里显式点亮更多
+# select = 启用哪些规则集# ⚠️ ruff 默认只开一小部分（E4/E7/E9/F），这里显式点亮更多
 # 每个字母是一个"规则家族"：
 #   E  = pycodestyle 的 Error（缩进、空格等）
 #   F  = Pyflakes（未使用的变量/import、未定义的名称等真正的 bug）
