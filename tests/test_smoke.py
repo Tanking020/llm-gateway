@@ -1,3 +1,5 @@
+"""最小冒烟测试：证明 tests/ 能跑起来、lifespan 真的执行过、独立临时库生效"""
+
 from fastapi.testclient import TestClient
 
 

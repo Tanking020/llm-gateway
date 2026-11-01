@@ -1,6 +1,7 @@
 """pytest 的全局准备：本文件在任何测试模块被 import 前执行"""
 
 import os
+import sqlite3
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,10 +21,28 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.api.app import app  # noqa: E402
+from app.models import Base  # noqa: E402
+
+
+def _truncate_all() -> None:
+    """
+    清空所有业务表：让每个测试都从空库开始
+
+    【注意】：必须在 with 之后调用 —— 表是 lifespan 里的 create_all 建的
+    """
+    conn = sqlite3.connect(str(_TEST_DB))
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        for table in reversed(Base.metadata.sorted_tables):
+            conn.execute(f"DELETE FROM {table.name}")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     """每个测试一份客户端：with 用来触发 lifespan"""
     with TestClient(app) as c:
+        _truncate_all()
         yield c
