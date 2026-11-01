@@ -9733,6 +9733,43 @@ def _truncate_all() -> None:
 
 （`with` 退出时它做的是 **commit 或 rollback**，不是 close。要"自动关闭"得用 `contextlib.closing()`。）
 
+#### ⭐ 判据：判断一个 `with` 到底做了什么，只看两处
+
+`with x:` 是纯语法糖，它**只做一件事**：
+
+```text
+进入 with  ->  x.__enter__()                     （as 后面拿到的就是它的返回值）
+离开 with  ->  x.__exit__(exc_type, exc, tb)      （出异常时也会调用）
+```
+
+**「with 会关闭 / 会提交 / 会触发启动」全部来自这两个方法内部的代码，与 `with` 语法本身无关。**
+
+📎 拿源码对照（`inspect.getsource`）：
+
+| 对象 | `__enter__` 干了什么 | `__exit__` 干了什么 | 有没有 close |
+|---|---|---|---|
+| `sqlite3.Connection` | 几乎什么都不做，`return self` | 只做 commit / rollback | ❌ **没有** |
+| `TestClient` | 启动 blocking portal → 跑 `self.lifespan` 任务 → `wait_startup()`，并在退出栈上注册 `wait_shutdown` | `self.exit_stack.close()`（触发上面注册的 `wait_shutdown`） | ✅ 顺带关掉 portal |
+
+📎 `TestClient.__enter__` 的关键几行（原文）：
+
+```python
+self.task = portal.start_task_soon(self.lifespan)
+portal.call(self.wait_startup)
+
+@stack.callback
+def wait_shutdown() -> None:
+    portal.call(self.wait_shutdown)
+```
+
+⭐ 这张表解释了一切：**`TestClient` 触发 lifespan，是因为 `__enter__` 里显式调了 `start_task_soon(self.lifespan)`**；
+`sqlite3.Connection` 不关连接，是因为**它的 `__exit__` 里根本没有 `close()`**。
+
+🔧 **更省事的判据（不用读源码）**：退出 `with` 之后**试探一下** ——
+`conn.execute("SELECT 1")` 还能跑 → 没关；抛 `ProgrammingError` → 关了。
+
+⚠️ 顺带一条：`with a, b:` 是**嵌套**不是并行，退出顺序**从右到左**（`b` 先、`a` 后）。
+
 ### `client` fixture 逐句
 
 ```python
@@ -9928,7 +9965,58 @@ pytest 启动
 这也解释了为什么那 3 个 `import` 要带 `# noqa: E402`（故意写在代码后面）。
 
 
-## 12.10 自检
+## 12.10 ⭐ 变异测试：证明断言「有牙」（2026-11-01 12b 收口时实做）
+
+**问题**：11 个用例全绿，怎么知道它们**真的会失败**？
+一个只写 `assert response.status_code == 200` 就再没别的东西的测试，可能永远绿 —— 哪怕业务逻辑全错了。
+
+**做法（变异测试 / mutation check）**：**故意把源码改坏一行**，跑测试，看它**红不红**；然后 `git checkout` 还原。
+
+| 步骤 | 命令 |
+|---|---|
+| 1 | 改坏一处源码（一字符级别） |
+| 2 | `uv run pytest -q` —— **必须看到红** |
+| 3 | `git checkout -- <文件>` 还原 |
+| 4 | `git status -s` 确认干净 + 再跑一次确认恢复绿 |
+
+⚠️ **前提**：被改的文件**必须已提交**，否则 `git checkout` 会连你的正当改动一起丢掉。
+
+### 📎 本项目的 5 次实测
+
+| # | 改坏了什么 | 结果 | 说明 |
+|---|---|---|---|
+| 1 | `schemas.py`：`strip_whitespace=True` → `False` | ❌ **2 failed** | `[blank]` 与 `test_title_is_stripped` 同时抓到 |
+| 2 | `app.py`：`.limit(limit + 1)` → `.limit(limit)` | ❌ 1 failed | 分页「多取一条判断有没有下一页」被钉住了 |
+| 3 | `errors.py`：去掉 `_error_response` 里的 `X-Request-ID` 头 | ✅ **11 passed** | ⭐ **等价变异** —— 见下 |
+| 4 | `errors.py`：envelope 里 `"code"` → `"error_code"` | ❌ **4 failed** | 404 + 3 个 422 全红 |
+| 5 | `app.py`：DELETE 的 `204` → `200` | ❌ 1 failed | `assert 200 == 204` |
+
+### ⭐ 第 3 条为什么「没抓到」反而是对的
+
+因为**我们的 request_id 中间件也会往响应头写 `X-Request-ID`**（`add_request_id` 里那行）。
+所以去掉 `errors.py` 那份，**用户看到的行为一个字没变** —— 测试放行是**正确**的。
+
+📎 补测：**同时**去掉 errors.py 和中间件里的头 → ❌ `test_get_missing_returns_404` 抛 `KeyError` 失败。
+
+> ⭐ **这条教的是「测行为，不测实现」**：测试问的是「响应体里的 `request_id` 和响应头里的是否一致」，
+> 而不是「这个头是哪个函数写的」。实现换了但契约没变 → 测试不该红。
+
+### 什么时候该做变异测试
+
+| 该做 | 不必做 |
+|---|---|
+| 新一批用例刚写完，怀疑「是不是写太松」 | 每个 commit 都做 |
+| 核心契约（错误形状 / 分页 / 状态码 / 事务） | 纯格式化 / 注释改动 |
+| 每阶段收口时抽 3 ~ 5 处 | 全项目逐行扫 |
+
+### 另一种等价手段：删掉断言看它是否还绿
+
+不熟 `git checkout` 时可以用更轻的方式：**把 `assert` 那行注释掉**，如果测试**仍然绿**，
+说明它本来就没在验证任何东西（或者被别的断言顺带覆盖了）。
+
+---
+
+## 12.11 自检
 
 > 本节自检题与简要答案已移入 [self-check-questions.md](self-check-questions.md)（阶段 1 · Step 12 测试 FastAPI）。
 

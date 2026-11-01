@@ -1175,6 +1175,16 @@
    > `@asynccontextmanager` 的 `lifespan(app)` 被 FastAPI 包成了 **`lifespan` 通道**的处理函数 —— 它**只住在那条通道里**，`http` 通道永远调不到它。
    > 📎 裸 ASGI 探针实测：**不用 `with`** → app 只收到 `['http']`；**用 `with`** → 先收到 `scope['type'] == 'lifespan'`（进入 `with` 时、**还没发任何请求**），里面 `lifespan.startup`，退出 `with` 时再收到 `lifespan.shutdown`，最后才是 `http`。
    > ⭐ 所以 `with` 不是「发请求的方式」，是**开机键** —— 它额外开一条 lifespan 通道并握手。📌 生产环境里开这条通道的是 **uvicorn**，所以线上不用写 `with`。
+9. 📎 **判据层**：`with sqlite3.connect(...)` 退出后连接**还开着**，`with TestClient(app)` 退出却跑了 shutdown。
+   同样是 `with`，为什么行为差这么远？**判断一个 `with` 到底做了什么，你该看什么？**
+   > `with x:` 是纯语法糖，**只做一件事**：进入时调 `x.__enter__()`，离开时调 `x.__exit__(exc_type, exc, tb)`（出异常也调）。
+   > 所以「会关闭 / 会提交 / 会触发启动」**全部来自这两个方法内部的代码**，与 `with` 语法本身毫无关系。
+   > 📎 源码对照：`TestClient.__enter__` 里显式写着 `self.task = portal.start_task_soon(self.lifespan)` + `portal.call(self.wait_startup)`，
+   > 并在退出栈上注册了 `wait_shutdown` —— 所以它触发了 lifespan；`sqlite3.Connection.__exit__` **只做 commit / rollback，没有 `close()`**。
+   > ⭐ **该看什么**：① 类的 `__enter__` / `__exit__`（异步是 `__aenter__` / `__aexit__`）源码；
+   > ② 更省事 —— **退出 `with` 之后试探一下**：`conn.execute("SELECT 1")` 还能跑 = 没关，抛 `ProgrammingError` = 关了。
+   > ⭐ 推论：**`with` 不承诺「关闭」**。要「一定关闭」得用 `contextlib.closing()`，或者像 `database.py` 那样自己写 `try/finally`。
+   > 📌 顺带：`with a, b:` 是嵌套、不是并行，退出顺序**从右到左**。
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？

@@ -77,7 +77,7 @@
   - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**
   - **Step 11 工程化（2026-10-29 ~ 11-01）✅ 全部完成**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / **11e ✅ 生产关交互式文档** / **11f ✅ 流式接口在 `/docs` 标 `text/event-stream`**
   - 🟡 **Step 12 测试进行中（2026-11-01 起）**：依赖已装（`pytest==9.2.0` / `pytest-asyncio==1.4.1` / `httpx2==2.16.0`）+ `[tool.pytest.ini_options]` 已配（`testpaths` / `asyncio_default_fixture_loop_scope`）；**12a 由学习者手写中**（`tests\conftest.py`、`tests\test_smoke.py` 已新建为空文件）
-  - ⏭️ **下一步 = 12b 数据隔离 + 数据类用例**（每个测试之间清库；CRUD / 分页 / 422 / 404 搬进断言）；12a~12f 拆步见下方「待办 → 步骤 对照」表
+  - ⏭️ **下一步 = 12c 假 LLM + 错误形状断言**（`dependency_overrides` 注入假上游；把 11d 的 envelope / 全状态码一致钉成断言）；12a~12f 拆步见下方「待办 → 步骤 对照」表
   - **Step 13 未开始**（部署）
 
 ### 自检统一安排（2026-10-29 决定，2026-11-01 订正编号口径）
@@ -366,8 +366,8 @@
 | **11f** | 流式接口在 `/docs` 标 `text/event-stream` | ✅ 已完成 · **#11**（关闭） |
 | **12** | 测试：目标判据 = **改坏一行代码 5 分钟内能知道**（门 1），拆 6 小步 | **#40** |
 | **12a** | 地基：`tests/` + `conftest.py`（`import app` 前设 `DATABASE_URL` → 独立临时库）+ `with TestClient` fixture + 2 个冒烟用例 · 📎 已验：`app.db` 的 mtime 前后不变 | ✅ 2026-11-01 完成 · #40 · 📎 四道门全绿（`ruff` / `format` / `mypy` 22 files / `pytest` 2 passed 0.34s）；📎 `app.db` 的 `LastWriteTimeUtc` 前后完全相同（测试落 `%TEMP%\llm-app-test.db`）；⚠️ 学习者代码 3 处格式问题由 `ruff check --fix` + `ruff format` 修掉（`import  tempfile` 双空格、3 处行内注释只留 1 个空格） |
-| **12b** | **数据隔离**（每个测试之间清库）+ 把 10.x 的手工 curl 变成断言：CRUD 全生命周期 / 游标分页 / 422 校验 / 404 语义 | 🟡 **进行中**（隔离方案已定：清表 fixture）· #40 |
-| **12c** | `dependency_overrides` 假 LLM + 假配置；**把 11d 的统一错误形状钉成断言**（三键 envelope、全状态码一致、`X-Request-ID`） | ⬜ 待做 · #40（关联 #57） |
+| **12b** | **数据隔离**（每个测试之间清库）+ 把 10.x 的手工 curl 变成断言：CRUD 全生命周期 / 游标分页 / 422 校验 / 404 语义 | ✅ 2026-11-01 完成 · #40 · 隔离用**清表 fixture**（`reversed(Base.metadata.sorted_tables)`，表清单从模型推导而非手抄）；📎 11 passed ×2、9 个用例**逐个单跑全绿**（无顺序依赖）；📎 **5 次变异测试**证明断言有牙（4 次抓到、1 次为等价变异）|
+| **12c** | `dependency_overrides` 假 LLM + 假配置；**把 11d 的统一错误形状钉成断言**（三键 envelope、全状态码一致、`X-Request-ID`） | 🟡 **下一步** · #40（关联 #57） |
 | **12d** | 把 9b 那 **12 个流式边界用例**搬进 pytest（`thinking` 首帧 / 零内容 / 坏 JSON 帧 / `usage` 重复 / `finish_reason` 非字符串 / 断开） | ⬜ 待做 · #40 |
 | **12e** | 异步测试（`httpx.ASGITransport` / `asyncio_mode="auto"`）+ **用 3 条并发流复现 #59**（连接被整条流独占） | ⬜ 待做 · #40（关联 #59） |
 | **12f** | 收口：覆盖率**看分支不看数字** + 台账 + 门 1 打勾；CI（#62）留 `P1` | ⬜ 待做 · #40 ↔ 关联 #62 |
