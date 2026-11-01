@@ -9724,6 +9724,74 @@ with TestClient(app)          ← 你按了开机键
 ---
 
 
+## 12.9a 进程环境变量是从哪来的？谁给的？
+
+**绝大部分不是我们代码写的，是「生下来就带着的」。**
+
+### 三个来源
+
+| # | 来源 | 占比 | 例子（本项目） |
+|---|---|---|---|
+| ① | **继承**：进程被创建时，操作系统把**父进程的环境块复制一份** | **绝大多数** | `PATH`、`APPDATA`、`TEMP`、`USERPROFILE` |
+| ② | **启动器顺手加的** | 少数 | 📎 `VIRTUAL_ENV` —— **是 `uv run` 加的**，不是 Python 也不是 PowerShell |
+| ③ | **代码里写** | **极少** | 本项目只有 `conftest.py` 那 3 行 `os.environ[...] = ...` |
+
+### 「谁给的」= 谁启动了这个进程
+
+Windows 上，进程是一层套一层启动的。📎 本机实测的父进程链：
+
+```text
+explorer.exe            ← 桌面
+  └─ Code.exe           ← VS Code
+       └─ Code.exe
+            └─ copilot-runtime
+                 └─ powershell
+                      └─ uv run
+                           └─ python      ← 我们在这里读 os.environ
+```
+
+每一层启动下一层时，**把当时自己那份环境块复制过去**。所以 python 拿到的 84 个变量，
+是这条链上每一层「自己的初始值 + 自己加的」累积下来的结果。
+
+📎 `VIRTUAL_ENV` 的归属实测（同一个脚本，换启动方式）：
+
+| 启动方式 | `VIRTUAL_ENV` | 变量总数 |
+|---|---|---|
+| `uv run python ...` | `...\.venv` | 83 |
+| `.venv\Scripts\python.exe ...`（不经 uv） | `None` | 80 |
+| PowerShell 自身 | 没有 | — |
+
+> ⭐ 结论：`VIRTUAL_ENV` 是 **uv 这个启动器**加的。所以「环境变量是谁给的」这句话，
+> 答案经常是一个**工具**，而不是操作系统、也不是你的代码。
+
+### 没有「初始值」这回事：没设过的键**根本不存在**
+
+📎 实测：`"I_NEVER_SET_THIS" in os.environ` → **`False`**（不是空字符串）。
+所以判断"配置有没有设"必须用 `in`，不能判断"值是不是空"。
+
+📎 同理：`APP_ENV` / `DATABASE_URL` 在 conftest 跑之前**都不存在** ——
+因为 `.env` 里的东西**不会**进 `os.environ`（见上一节）。
+
+### 它是「进程私有的副本」
+
+📎 实测三条：
+
+| 动作 | 结果 |
+|---|---|
+| python 里设 `os.environ["MADE_BY_CODE"] = "yes"`，再起子进程 | 子进程**看得到**（`child sees: yes`） |
+| python 进程退出后，回到 PowerShell 查这个键 | **没了** —— 改动只存在于那个进程里 |
+| PowerShell 里设 `$env:FROM_POWERSHELL` 再启动 python | python **看得到**（继承的方向是父 → 子，不能反向） |
+
+> ⭐ 所以 `conftest.py` 里 `os.environ["DATABASE_URL"] = ...` 的**作用范围就是这个 pytest 进程**，
+> 跑完自动消失，不会污染你的 shell，也不会写进任何文件 —— 这正是它比"改 `.env`"安全的原因。
+
+⚠️ **唯一的例外**：Windows 的**用户级 / 系统级环境变量**（注册表 `HKCU\Environment` / `HKLM\...`）
+是"出厂模板"，新开的进程会从这里拿初始值。📎 实测本机 User 级 8 个、Machine 级 15 个，
+其中**没有** `APP_ENV` / `DATABASE_URL` —— 所以我们的配置没被系统层偷偷设过。
+
+---
+
+
 ## 12.9b 为什么必须赶在 `import app` 之前设
 
 一句话：**`settings` 是模块级单例，`import` 那一刻就把环境读完了，之后再改没人看。**
