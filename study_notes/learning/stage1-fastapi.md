@@ -9238,8 +9238,20 @@ async def chat_stream(req: ChatRequest, user: CurrentUserDep, db: DbDep): ...
 
 ### 分几步做
 
-拆成 **6 小步（12a ~ 12f）**，每步一张步骤卡、一次收口。
-**唯一台账在 [roadmap.md](../project/roadmap.md)**「待办 → 步骤 对照」表的 12 段 —— 本文件不复制那张表（避免两处要同步）。
+拆成 **6 小步**（12a ~ 12f），每步一张步骤卡、一次收口。其中 12c 又按规范 §3.0「一次只建 1 个文件」拆成 3 个更小的步子。
+
+| 步 | 做什么 | 状态 |
+|---|---|---|
+| **12a** | `tests/` + `conftest.py`（独立临时库）+ `with TestClient` fixture + 2 个冒烟用例 | ✅ 已完成 |
+| **12b** | 清表隔离 + 对话接口 HTTP 契约（CRUD / 游标分页 / 422 / 404）→ 9 个用例 | ✅ 已完成 |
+| **12c-1** | `tests/fakes.py`：`FakeLlm` + `FakeChatStream`（**继承真类**，让 mypy 盯接口漂移） | ✅ 已完成 |
+| **12c-2** | `tests/test_upstream.py`：假 LLM 接线 + 三类上游故障 → 502 + 流式 pre-flight | ✅ 已完成 |
+| **12c-3** | `tests/test_errors.py`：**错误形状契约**（7 种状态码的 envelope 一致、`X-Request-ID` 一致、500 不泄漏堆栈） | ⬜ 下一步 |
+| **12d** | 9b 那 12 个流式边界用例搬进 pytest | ⬜ |
+| **12e** | 异步测试 + 用 3 条并发流复现待办 #59 | ⬜ |
+| **12f** | 收口：覆盖率看分支 + 门 1 打勾 | ⬜ |
+
+**唯一台账在 [roadmap.md](../project/roadmap.md)**「待办 → 步骤 对照」表的 12 段 —— 本文件不复制进度与实测数字（避免两处要同步）。
 
 ---
 
