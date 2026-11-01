@@ -49,6 +49,8 @@ def test_delete_then_gone(client: TestClient) -> None:
     assert client.delete(f"/v1/conversations/{created['id']}").status_code == 404
 
 
+# 这个装饰器的作用是：把下面这个测试函数，变成 3 个独立的测试用例
+#   分别用 3 组不同的 payload 数据去执行
 @pytest.mark.parametrize(
     "payload",
     [
