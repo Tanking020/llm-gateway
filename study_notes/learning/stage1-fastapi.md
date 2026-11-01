@@ -9209,19 +9209,53 @@ async def chat_stream(req: ChatRequest, user: CurrentUserDep, db: DbDep): ...
 > 阶段 0 的结论在这里继续生效：**静态检查看形状，测试看行为**。
 > FastAPI 有很好的测试工具，能把"启动服务再 curl"变成**毫秒级的自动化断言**。
 
+## 12.0 全局：本 Step 要解决的判据，以及"哪些不讲"
+
+### 唯一判据
+
+> **改坏一行代码，5 分钟内你能不能知道？**
+> 这就是 [production-readiness.md](../project/production-readiness.md) **门 1** 的过门标准。
+> 现在答案是「不能」——所有验证都是手跑 curl，然后把输出手抄进 markdown。
+
+### 前置知识：哪些已经讲过、哪些是本 Step 新增的
+
+⚠️ 本 Step **不重讲 pytest 本身**。阶段 0 已经把"怎么用 pytest"讲完了，重复讲只会让你失去一处权威出处。
+
+| 主题 | 去哪看 | 本 Step |
+|---|---|---|
+| pytest 收集规则 / `assert` / `parametrize` / `yield` fixture / `asyncio_mode="auto"` | [stage0 §8.3](stage0-engineering-basics.md) | ⛔ 不重复 |
+| 假 HTTP（`httpx.MockTransport`）、覆盖率的意义与三个陷阱、该测什么不该测什么、7 条测试坑 | [stage0 §8.4 ~ §8.7](stage0-engineering-basics.md) | ⛔ 不重复 |
+| **`TestClient` 与 `with`（lifespan）** | 本节 §12.2 | ✅ 新增（12a） |
+| **`raise_server_exceptions`（默认 `True`）** | 本节 §12.2 | ✅ 新增（12a） |
+| **`dependency_overrides` 换掉真 LLM / 真配置** | 本节 §12.6 | ✅ 新增（12c） |
+| **测试库隔离**（引擎是模块级单例 → 一个进程只能有一个库 URL） | 本节 §12.9（12b 写入） | ✅ 新增（12b） |
+| **导入顺序**（`settings` 是单例，环境变量必须在 `import app` **之前**设） | 本节 §12.10（12a 收口时写入） | ✅ 新增（12a） |
+
+> ⭐ 一句话分工：
+> **stage0 讲「怎么用 pytest」，本 Step 讲「怎么测一个有 lifespan、有数据库、有外部 API 的真应用」。**
+> 真正的难点从来不在断言语法，而在**三件测试之外的东西会反过来咬你**：
+> 单例配置的 import 顺序、模块级引擎的库绑定、以及"哪些接口其实根本没碰到 lifespan 里的资源"。
+
+### 分几步做
+
+拆成 **6 小步（12a ~ 12f）**，每步一张步骤卡、一次收口。
+**唯一台账在 [roadmap.md](../project/roadmap.md)**「待办 → 步骤 对照」表的 12 段 —— 本文件不复制那张表（避免两处要同步）。
+
+---
+
 ## 12.1 `TestClient`：不启服务器的"假客户端"
 
 ```python
 from fastapi.testclient import TestClient
 
-from main import app
+from app.api.app import app
 
 
 def test_health() -> None:
     client = TestClient(app)
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json() == {"status": "ok"}
 ```
 
 **原理**：`TestClient` 内部用 `httpx` + **ASGI 传输层**，请求**直接喂给你的 ASGI 应用**，
@@ -9247,6 +9281,25 @@ def test_health() -> None:
 | `TestClient(app)` | ❌ **不执行** | 数据库没建表、连接池没初始化 → **测试里一堆莫名错误** |
 | `with TestClient(app) as c:` | ✅ 执行 | 正确 |
 
+📎 **2026-11-01 在本仓库实测（临时库，四组对比）**：
+
+| 写法 | `GET /health` | `GET /v1/models` | `GET /health/ready` | `POST /v1/conversations` |
+|---|---|---|---|---|
+| 不用 `with` | 200 | 200 | **200** | ❌ 抛 `OperationalError: no such table: conversations` |
+| 不用 `with` + `raise_server_exceptions=False` | 200 | 200 | 200 | **500** `{"error":{"code":"INTERNAL_ERROR",…}}` |
+| 用 `with` | 200 | 200 | 200 | **201** |
+
+⚠️ **最反直觉的是一格**：`/health/ready` 不用 `with` 也是 200 —— 因为它只跑 `SELECT 1`，**不需要任何表**；
+而 SQLite 在"建立连接"那一刻就把空库文件建出来了。
+
+> ⭐ 两个判据：
+> ① **readiness 探针查不出「表没建」** —— 它能查"连得上吗"，查不出"结构对吗"。
+> ② **「某个接口还是 200」不能证明 lifespan 跑过了** —— 只有真正用到 lifespan 里那份资源的接口才能验出来。
+> 所以 12a 的第二个用例挑的是 `POST /v1/conversations`（真用表），不是 `/health/ready`。
+>
+> 📌 顺带：`with` 退出后 `app.state.llm_client` **属性还在**（`hasattr` 仍为 `True`，只是连接已关）——
+> **不要用 `hasattr(app.state, …)` 判断 lifespan 跑没跑。**
+
 > ⭐ **这是 FastAPI 测试第一大坑**：
 > "我明明在 lifespan 里建了表，为什么测试说表不存在？"
 > **因为没用 `with`。**
@@ -9263,6 +9316,22 @@ def client() -> Iterator[TestClient]:
     # 退出 with 时自动跑 shutdown
 ```
 
+### ⚠️ `raise_server_exceptions` 默认是 `True`（同一个坑的另一半）
+
+📎 实测构造参数默认值：`raise_server_exceptions=True`。
+
+意思是：**服务端抛异常时，`TestClient` 不会给你一个 500 响应，而是把原始异常直接抛进测试进程。**
+
+上面那张对比表第一行就是这样：不加 `with` 时 `POST /v1/conversations` 让整个测试脚本崩掉，
+抛的是 `sqlalchemy.exc.OperationalError`，**不是**一个 500 响应。
+
+| 你想测什么 | 怎么写 |
+|---|---|
+| 业务逻辑（数据对不对、表建没建） | 默认即可 —— 异常直接冒出来，栈更容易定位 |
+| **500 的响应形状**（`code` / `message` / `request_id` 那套 envelope） | 必须 `TestClient(app, raise_server_exceptions=False)` |
+
+> ⭐ 判据：**"测 500"和"测出现 500 的那一刻"是两件事。** 前者要的是响应体，后者要的是栈。
+
 ## 12.3 ⚠️ `TestClient` 的依赖警告（2026 实测）
 
 ```text
@@ -9278,9 +9347,15 @@ install `httpx2` instead.
 | 只有 `httpx` | 21 个测试通过，但**带弃用警告** |
 | `uv add --dev httpx2` 后 | **警告消失**，21 个测试仍全通过 |
 
-> ⭐ **结论**：`httpx2`（实测装上的是 `httpx2==2.13.1`，附带 `httpcore2`、`truststore`）
-> 是 Starlette 1.x 时代推荐的测试客户端依赖。
+> ⭐ **结论**：`httpx2` 是 Starlette 1.x 时代推荐的测试客户端依赖。
 > **这不是你的代码有问题**，是生态在换代 —— 但警告会污染输出，建议直接装上。
+>
+> 📌 **版本更新（2026-11-01 在本仓库实测）**：现在解析到 `httpx2==2.16.0`
+> （附 `httpcore2==2.16.0`、`truststore==0.10.5`）；2026 早期那次实测是 `2.13.1`。
+> 📌 装上之后，`starlette.testclient` 里叫 `httpx` 的那个名字**实际就是 `httpx2`**
+> （📎 实测 `st.httpx.__name__ == "httpx2"`、`TestClient.__mro__[1].__module__ == "httpx2"`）——
+> 所以本文别处写的「继承自 `httpx.Client`」，在当前环境里应读作「继承自 `httpx2.Client`」，
+> `ASGITransport` 同理。**代码不用改**（两者 API 同名同形），但排查报错时要认对包名。
 
 ## 12.4 异步测试：`httpx.ASGITransport`
 

@@ -44,9 +44,22 @@ packages = ["src/app"]
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.16.0",
     "mypy>=2.4.0",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
     "ruff>=0.16.10",
 ]
+
+# ============ pytest 的配置 ============
+[tool.pytest.ini_options]
+
+# 不给参数时默认只跑 tests/ 下的用例（避免误跑到 playground/ 的实验脚本）
+testpaths = ["tests"]
+
+# pytest-asyncio 1.x 要求显式声明「异步 fixture 的事件循环作用域」，
+# 不写会每次跑都吐一条 PytestDeprecationWarning
+asyncio_default_fixture_loop_scope = "function"
 
 # ============ 类型检查工具 mypy 的配置 ============
 # mypy 做的事：不运行代码，只读源码，检查"类型是否自相矛盾"

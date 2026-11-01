@@ -1140,15 +1140,23 @@
 ### Step 12 · 测试 FastAPI
 
 1. `TestClient` 为什么不启服务器就能测接口？
-   > 它按 **ASGI 协议在本进程内直接调用 app 对象**，不经过网络（继承自 `httpx.Client`，用自定义 transport 转发）。
-2. `with TestClient(app)` 和 `TestClient(app)` 差什么？症状是什么？
-   > `with` 会**执行 lifespan**（启动/关闭钩子）。不用 `with` 时 lifespan 不跑 → 全局 client/连接池没建、`app.state` 里没东西 → 依赖取不到。
+   > 它按 **ASGI 协议在本进程内直接调用 app 对象**，不经过网络（它是 `httpx` 客户端的子类，用 `ASGITransport` 换掉了真实传输层）。📎 实测当前环境里那个「`httpx`」其实是 **`httpx2`**：`starlette.testclient.httpx.__name__ == "httpx2"`、`TestClient.__mro__[1].__module__ == "httpx2"`。域名 `http://testserver` 是假的，永远不会被 DNS 解析。
+2. `with TestClient(app)` 和 `TestClient(app)` 差什么？症状是什么？**光看某个接口 200，能判断 lifespan 跑了吗？**
+   > `with` 会**执行 lifespan**（启动/关闭钩子），退出时执行 shutdown。不用 `with` 时 lifespan 不跑 → 表没建、`app.state` 里的共享 client 没有。
+   > 📎 实测四组：`/health` **200**、`/v1/models` **200**、`/health/ready` **200**（只跑 `SELECT 1`，不需要表）、`POST /v1/conversations` **炸 `no such table: conversations`**。
+   > ⭐ **所以「某个接口 200」完全不能证明 lifespan 跑过** —— 只有真正用到 lifespan 里那份资源的接口才能验出来。
+   > 📌 另一个错的判据：`hasattr(app.state, "llm_client")` 在退出 `with` 之后**仍为 `True`**（属性还在，连接已关），不能用它判断。
 3. `ASGITransport` 的好处和**代价**分别是什么？
    > 好处：能用 `httpx.AsyncClient` 的异步接口（可 `await`）、不启服务器。代价：**不跑 lifespan**（除非加 `LifespanManager`）、不经过真实网络栈。
 4. 测 SSE 要断言哪三件事？
    > ① **分多帧到达**（不是一次性）② 帧格式正确（`data:` + 双换行）③ 结束标记 / 错误帧行为正确。
 5. 测试里为什么绝不能真调 LLM？怎么替换？
    > 慢、要钱、结果**不确定**（无法断言）。替换：`app.dependency_overrides[get_llm_client] = 假 client`（`MockTransport` 或假生成器）。
+6. 📎 `TestClient(app)` 默认 `raise_server_exceptions=True`，这会怎么影响「测 500」？什么时候必须关掉它？
+   > 默认情况下服务端抛异常时，`TestClient` **不返回 500 响应，而是把原始异常抛进测试进程**（📎 实测不用 `with` 时抛的是 `sqlalchemy.exc.OperationalError`，脚本直接崩）。所以：**测业务逻辑**用默认（栈更好定位）；**测 500 的响应形状**（`code` / `message` / `request_id` 那套 envelope）必须 `TestClient(app, raise_server_exceptions=False)`。⭐ 判据：「测 500」和「测出现 500 的那一刻」是两件事。
+7. 📎 测试里要用一份**独立的临时库**。为什么 `DATABASE_URL` 必须在 `import app` **之前**设，`os.environ` 在 import 之后再改为什么无效？
+   > 因为 `app/config.py` 最后一行 `settings = Settings()` 是**模块级单例**，import 那一刻就把 `.env` + 环境变量读完并定型；之后改 `os.environ` 对它没有任何影响（📎 实测 import 后改成 `other.db`，`settings.database_url` 仍是旧值）。
+   > 📌 推论：`engine` 也是模块级对象（`create_async_engine(settings.database_url)`），所以**一个进程只能绑定一个库 URL** —— 想「每个测试一个新库文件」做不到，隔离只能在同一个库内做（清表 / 事务回滚 / 唯一数据）。
 
 ### Step 13 · 部署
 
@@ -1243,4 +1251,5 @@
 | 2026-11-01 | 阶段 1 · **Step 11** 补 1 题（第 22 题，11e）：三个文档端点为什么必须一起关（📎 只关 `docs_url` 时 `/redoc` 与 `/openapi.json` 仍 200）。配套笔记 §11e |
 | 2026-11-01 | 阶段 1 · **Step 11** 补 1 题（第 23 题，11f）：`responses=` 为何是追加而不是替换（📎 三种写法对比：只 `responses` → 两种 content-type）。配套笔记 §11f、待办 #11（原修法已订正） |
 | 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
+| 2026-11-01 | 阶段 1 · **Step 12** 开工前修订第 1~2 题（📎 `httpx2` 实测 2.16.0；且 `starlette.testclient` 里那个叫 `httpx` 的名字实际是 `httpx2`；📎 不用 `with` 时 `/health`·`/v1/models`·`/health/ready` 全 200、只有 `POST /v1/conversations` 炸 `no such table`）+ 补 2 题（第 6 题 `raise_server_exceptions` 默认 `True` / 第 7 题 `settings` 单例与 `import app` 顺序）。配套笔记 stage1 §12.0 §12.2 |
 | 2026-10-31 | 新增独立章节 [logging.md](logging.md)：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数与幂等 / 14 条注意事项 / 踩坑表。同时把 `stage1-fastapi.md §11.2` 收缩成指针（避免同一份事实两处维护） |
