@@ -9543,6 +9543,63 @@ def override_deps() -> Iterator[None]:
 > ⚠️ **不清理的后果**："单独跑通过，一起跑失败" —— 上一个测试的假用户泄漏到了下一个测试。
 > **这是测试污染最典型的形式。**
 
+## 12.6b 假对象的正确写法：**继承真类**，让 mypy 替你盯接口漂移（2026-11-01 12c）
+
+`dependency_overrides` 只是"换个实现"的**机制**，真正要设计的是**假对象长什么样**。
+
+### 先给全局：假对象要满足三件事
+
+| 要求 | 为什么 |
+|---|---|
+| **只实现被调用的方法** | `LlmClient` 有 6 个方法，路由只用 2 个（`list_models` / `open_chat_stream`）—— 全实现是浪费 |
+| **签名与真类一致** | 否则"假对象能过、真对象过不了"，测试就是自欺欺人 |
+| **行为可控**（正常 / 抛指定错误） | 否则造不出 502 这类分支 |
+
+### 两种写法，选后者
+
+| 写法 | 签名漂移时会不会被发现 | 说明 |
+|---|---|---|
+| `class FakeLlm:`（什么都不继承） | ❌ **不会** | 真类改了签名，假对象还是老样子，测试照样绿 |
+| `class FakeLlm(LlmClient):` | ✅ **mypy 立刻报错** | 见下面实测 |
+
+📎 **实测（故意把返回类型改坏）**：
+
+```python
+class FakeLlm(LlmClient):
+    async def list_models(self) -> list[str]:      # 真类返回 list[ModelItem]
+        return []
+```
+
+```text
+tests\fakes.py:26: error: Return type "Coroutine[Any, Any, list[str]]" of "list_models"
+  incompatible with return type "Coroutine[Any, Any, list[ModelItem]]"
+  in supertype "app.llm_client.LlmClient"  [override]
+```
+
+> ⭐ **这就是"继承"在测试里的真正价值：不是为了复用代码，是为了让编译器盯住接口。**
+> 没有它，`LlmClient.list_models` 哪天改成返回 `dict`，6 个月后才会在别处炸。
+
+### 三个要注意的点
+
+| 点 | 说明 |
+|---|---|
+| **`__init__` 不调 `super().__init__()`** | `LlmClient.__init__` 要一个 `httpx.AsyncClient`；假对象没有，所以**完全覆盖** `__init__` |
+| **`_http` 属性不存在** | 万一路由调到假对象没覆盖的方法（如 `_request`），会立刻 `AttributeError` —— **这是好事：响亮地失败**，不会静默真连网 |
+| **返回类型写 `LlmChatStream` 而不是 `FakeChatStream`** | 与真类签名一致；`FakeChatStream` 继承 `LlmChatStream`，所以是它的子类型 |
+
+### `FakeChatStream` 为什么要两个成员
+
+| 成员 | 谁调它 |
+|---|---|
+| `aiter_chunks()` | 路由里的 `async for chunk in upstream.aiter_chunks()` |
+| `aclose()` | 路由 `finally` 里 |
+| `closed` 标志（不是接口的一部分） | **测试自己用**：断言"路由此确实关流了" |
+
+> 📌 `closed` 是**假对象独有的观测点** —— 真实 `LlmChatStream` 没有这个属性。
+> 这就是假对象比 mock 库好的地方：**你能往里加"记录发生了什么"的字段**。
+
+---
+
 ## 12.7 该测哪些接口行为（LLM 后端清单）
 
 | 类别 | 具体断言 |
