@@ -335,6 +335,7 @@
 | 64 | 🟡 **无幂等键**：客户端重试 = 重复计费 / 重复建对话 | `POST /v1/chat` `/v1/chat/stream` `/v1/conversations` 都没有幂等键去重。网络抖动下的重试是**常态**不是异常，每次重试都可能产生一次真实上游调用 | **P2（有真实用户前）**：客户端传幂等键 → 服务端短 TTL 去重 |
 | 65 | 🟠 **无备份 / 无保留策略 / 提示词明文入库** | 只有一个 `app.db` 文件，**没有备份，也没做过一次恢复演练**；提示词目前根本没落库（#35），一旦落库就成了 PII 问题（明文、无脱敏、无保留期限） | **P2（公开上线前）**：备份 + 一次恢复演练；定保留策略；日志不落正文字段 |
 | 66 | 🔴 **无指标、无告警、无链路**：只有文本日志 | 没有 metrics（请求数 / 5xx 比例 / p99 / 上游错误率 / token 吞吐 / 连接池占用），没有告警规则，没有 trace。用户报障时只能拿 `request_id` 去 `Select-String` 翻日志 —— 等于服务对自己是不透明的 | **P1（第一批外部流量前）**：指标最小集 + 3 条告警（5xx > 1% / 429 > 10·min⁻¹ / p99 > 8s） |
+| 67 | 🟡 **`status.HTTP_422_UNPROCESSABLE_ENTITY` 在 starlette 1.8 已弃用** | 📎 Step 12 的 pytest **第一次跑就报出**：`StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead`（出现在 3 个 422 用例上）。📎 实测新常量存在且值相同（都是 `422`），所以只是改名，语义不变。来源：[errors.py](../../src/app/errors.py) 的 `register_exception_handlers` 里一处。⭐ 意义：**这是「第一条真正被自动化测试抓到的缺陷」** —— 以前手跑 curl 时这条警告混在 uvicorn 的启动日志里，从没被注意到 | **`P2` · 顺手改**（12b 收口时可一并改，一行替换） |
 > 🟡 **#51 拆成两半**（11c，2026-10-31）：
 > - ✅ **已解决**：`basicConfig` 的静默失效 + 两套格式并存 + 每请求两行 → `dictConfig(force=True)` 落地，三条启动路径同一格式。
 > - ⬜ **仍未做**：**JSON 结构化**与**按天轮转** —— 它们只在「有日志平台 / 多机」时才有意义，随部署阶段一起做（另见待办 #55 的"无总时长上限"对日志量的影响）。
@@ -365,7 +366,7 @@
 | **11f** | 流式接口在 `/docs` 标 `text/event-stream` | ✅ 已完成 · **#11**（关闭） |
 | **12** | 测试：目标判据 = **改坏一行代码 5 分钟内能知道**（门 1），拆 6 小步 | **#40** |
 | **12a** | 地基：`tests/` + `conftest.py`（`import app` 前设 `DATABASE_URL` → 独立临时库）+ `with TestClient` fixture + 2 个冒烟用例 · 📎 已验：`app.db` 的 mtime 前后不变 | ✅ 2026-11-01 完成 · #40 · 📎 四道门全绿（`ruff` / `format` / `mypy` 22 files / `pytest` 2 passed 0.34s）；📎 `app.db` 的 `LastWriteTimeUtc` 前后完全相同（测试落 `%TEMP%\llm-app-test.db`）；⚠️ 学习者代码 3 处格式问题由 `ruff check --fix` + `ruff format` 修掉（`import  tempfile` 双空格、3 处行内注释只留 1 个空格） |
-| **12b** | **数据隔离**（每个测试之间清库）+ 把 10.x 的手工 curl 变成断言：CRUD 全生命周期 / 游标分页 / 422 校验 / 404 语义 | ⬜ 待做 · #40 |
+| **12b** | **数据隔离**（每个测试之间清库）+ 把 10.x 的手工 curl 变成断言：CRUD 全生命周期 / 游标分页 / 422 校验 / 404 语义 | 🟡 **进行中**（隔离方案已定：清表 fixture）· #40 |
 | **12c** | `dependency_overrides` 假 LLM + 假配置；**把 11d 的统一错误形状钉成断言**（三键 envelope、全状态码一致、`X-Request-ID`） | ⬜ 待做 · #40（关联 #57） |
 | **12d** | 把 9b 那 **12 个流式边界用例**搬进 pytest（`thinking` 首帧 / 零内容 / 坏 JSON 帧 / `usage` 重复 / `finish_reason` 非字符串 / 断开） | ⬜ 待做 · #40 |
 | **12e** | 异步测试（`httpx.ASGITransport` / `asyncio_mode="auto"`）+ **用 3 条并发流复现 #59**（连接被整条流独占） | ⬜ 待做 · #40（关联 #59） |
