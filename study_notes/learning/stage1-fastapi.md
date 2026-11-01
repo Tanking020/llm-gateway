@@ -9319,6 +9319,28 @@ def test_health() -> None:
 
 > 📌 生产环境里开 `lifespan` 通道的是 **uvicorn**（不是 `TestClient`），所以线上不需要你写 `with`。
 
+#### 少了 `with` 会怎样：分「开工」和「收工」两半看
+
+不开 `lifespan` 通道 = **startup 段和 shutdown 段都没执行**。后果要分开算：
+
+| 缺的是 | 直接后果 | 谁会被影响 |
+|---|---|---|
+| **startup 没跑** | ① 表没建（`create_all`）② `app.state` 上没有共享 client | **只影响真正用到这两样产物的接口**（见下面的分类表） |
+| **shutdown 没跑** | ① `client.aclose()` 不执行 ② `engine.dispose()` 不执行 → **连接池占着的文件句柄不释放** ③ 关闭逻辑本身的 bug 永远测不出来 | 进程内的资源回收；测试里表现为「删不掉库文件」 |
+
+📎 **shutdown 侧实测**（同进程内，`/health/ready` 借过一次连接）：
+
+| 写法 | 请求后池状态 | 退出后池状态 | 能否删掉库文件 |
+|---|---|---|---|
+| 不用 `with` | `checkedout=0 checkedin=1` | **不会变**（没有退出点） | ❌ `PermissionError: [WinError 32] 另一个程序正在使用此文件` |
+| 用 `with` | `checkedout=0 checkedin=1` | `checkedout=0 checkedin=0` | ✅ 可删除 |
+
+⭐ 注意两件事：
+- **不是「连接没还」**（`checkedout=0`，连接早就还回池了），而是**池本身没被 dispose**，句柄还开着。
+- 这个占用是**进程内**的；进程退出后 OS 会回收。所以它不会"拖垮"测试，但会让**同进程内**的「删库重来」类操作失败，
+  并且**关闭段的代码（`aclose()` / `dispose()`）完全没被验证过** —— 它们写错了你永远不知道。
+
+
 #### 证据（📎 2026-11-01 探针，放最后）
 
 写一个只有 12 行、只会打印的裸 ASGI `app`（**不带 FastAPI**），看它到底收到几条消息：
