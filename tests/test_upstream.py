@@ -67,6 +67,8 @@ def test_stream_consumes_fake_chunks(client: TestClient) -> None:
     fake = FakeLlm(chunks=[{"choices": [{"index": 0, "delta": {"content": "你"}}]}])
     app.dependency_overrides[get_llm_client] = lambda: fake
 
+    # 用 with 是因为流式响应是"长连接"——连接会一直开着，直到服务器把所有数据吐完。
+    #    with 保证无论测试成功还是失败，连接都会被关闭，不会泄漏
     with client.stream(
         "POST", "/v1/chat/stream", json={"messages": [{"role": "user", "content": "hi"}]}
     ) as response:
