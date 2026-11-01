@@ -9667,6 +9667,107 @@ with TestClient(app)          ← 你按了开机键
 
 ---
 
+## 12.8b 清表 fixture 逐句（`_truncate_all` + `client`）
+
+### 先看整体形状：一个「同步函数 + 一个生成器 fixture」
+
+| 部件 | 干什么 | 被谁调用 |
+|---|---|---|
+| `_truncate_all()` | 普通同步函数：开一条裸连接，把所有表清空，关连接 | 由 fixture 显式调用 |
+| `client()` | **生成器函数**（有 `yield`），被 `@pytest.fixture` 包成 fixture | **pytest** 调用 |
+
+> ⭐ 「fixture 是函数」这句话要说得更准：**被 `@pytest.fixture` 装饰之后，测试里拿到的是它的返回值（`yield` 出去的那个 `c`），不是函数本身。**
+
+### `_truncate_all` 逐句
+
+```python
+def _truncate_all() -> None:
+```
+
+| 片段 | 作用 |
+|---|---|
+| `_` 前缀 | 约定：**模块私有**，别的文件别 import 它（Python 不强制，靠约定 + linter） |
+| `() -> None` | 不接收参数、不返回值。**`-> None` 必须写**：mypy `strict = true` 下不写会报 `no-untyped-def` |
+
+```python
+    conn = sqlite3.connect(_TEST_DB)
+```
+
+| 片段 | 作用 |
+|---|---|
+| `sqlite3.connect(...)` | **建立一条同步连接**。📎 实测直接传 `Path` 是可以的（mypy 也接受），**不需要 `str()`** |
+| 为什么写在 `try` **外面** | 万一 `connect` 自己失败，`conn` 还没被赋值；写在 `try` 里会让 `finally` 里的 `conn.close()` 抛 `NameError`，把真正的错误盖掉 |
+
+```python
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        for table in reversed(Base.metadata.sorted_tables):
+            conn.execute(f"DELETE FROM {table.name}")
+        conn.commit()
+    finally:
+        conn.close()
+```
+
+| 片段 | 作用 |
+|---|---|
+| `try/finally` | **无论成功还是中途抛异常，`close()` 一定执行** —— 这是"资源必须释放"的标准写法 |
+| `conn.execute(...)` | 📎 实测返回一个 `Cursor`；不需要结果时可以不接 |
+| `PRAGMA foreign_keys=ON` | SQLite 的外键校验**每条连接一份、默认关闭**；这是新开的裸连接，必须自己打开 |
+| `reversed(Base.metadata.sorted_tables)` | 📎 `sorted_tables` 是 **父 → 子**（`['conversations', 'llm_calls']`），`reversed` 后是 **子 → 父**，删除必须按这个顺序 |
+| `f"DELETE FROM {table.name}"` | **表名**用 f-string 拼。⚠️ 这不违反"禁止 SQL 拼接"—— `table.name` 来自**代码里的模型定义**，不是用户输入；用户数据一律走参数绑定 |
+| `conn.commit()` | `DELETE` 也要提交，否则关连接时自动回滚（📎 实测：未提交的插入在关连接后消失） |
+
+### ⚠️ 为什么不用 `with sqlite3.connect(...) as conn`
+
+这是本项目最容易踩的一个坑：
+
+> **`sqlite3.Connection` 的 `with` 只管「事务」，不管「关闭」。**
+
+📎 实测三条：
+
+| 实验 | 结果 |
+|---|---|
+| `with sqlite3.connect(...) as conn:` 退出后，再 `conn.execute("SELECT 1")` | ✅ **仍然能执行** → 连接**没被关闭** |
+| 连接没关时，在 Windows 上删这个库文件 | ❌ `PermissionError`（句柄还被占着） |
+| 手动 `conn.close()` 之后再删 | ✅ 删掉了 |
+
+（`with` 退出时它做的是 **commit 或 rollback**，不是 close。要"自动关闭"得用 `contextlib.closing()`。）
+
+### `client` fixture 逐句
+
+```python
+@pytest.fixture
+def client() -> Iterator[TestClient]:
+    with TestClient(app) as c:
+        _truncate_all()
+        yield c
+```
+
+| 片段 | 作用 |
+|---|---|
+| `@pytest.fixture` | 把函数登记成 fixture。**默认作用域 = `function`**（每个测试调一次 = 每个测试一份新客户端 + 跑一遍 lifespan） |
+| `-> Iterator[TestClient]` | 有 `yield` 的函数是**生成器函数**，它的"返回值"是迭代器 —— 所以注解写 `Iterator[...]`，不能写 `TestClient` |
+| `with TestClient(app) as c:` | 触发 lifespan，**表在这之后才存在** |
+| `_truncate_all()` | 放在 `with` 里面、`yield` 之前 → 属于 **setup 段** |
+| `yield c` | 把客户端交给测试函数；**测试跑完会从这一行继续**，然后退出 `with`（= teardown，跑 shutdown） |
+
+⭐ **`yield` 之前 = setup，`yield` 之后 = teardown。** 这就是 fixture 的全部魔法。
+（本项目 `get_db` 依赖也是同一个形状 —— 不是巧合，是同一个模式。）
+
+### 顺序为什么必须是「先 with，再 truncate」
+
+```text
+with TestClient(app)     ← lifespan 的 create_all 建表
+     _truncate_all()     ← 表存在了，DELETE 才有对象
+     yield c             ← 测试开始
+```
+
+📎 如果放在 `with` 外面（先清表、后建 lifespan），第一次跑就会 `no such table` ——
+因为那时库文件连存在都还没存在（见 §12.8）。
+
+---
+
+
 ## 12.9 「环境变量」和 `.env` 文件是两张皮
 
 ### 先分清两个东西
