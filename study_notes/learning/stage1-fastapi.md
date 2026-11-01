@@ -9667,7 +9667,64 @@ with TestClient(app)          ← 你按了开机键
 
 ---
 
-## 12.9 为什么必须赶在 `import app` 之前设环境变量
+## 12.9 「环境变量」和 `.env` 文件是两张皮
+
+### 先分清两个东西
+
+| | `.env` 文件 | 进程环境变量（`os.environ`） |
+|---|---|---|
+| 是什么 | **磁盘上的一个文件** | **内存里的一本字典**，由操作系统维护 |
+| 谁创建 | 你（或从 `.env.example` 复制） | 启动进程的东西：shell / IDE / Docker / CI |
+| 谁读它 | **只有 `pydantic-settings`** —— Python 和操作系统**都不认** `.env` | 所有程序都能读（`os.environ[...]`） |
+| 改了要不要重启 | 要（`Settings()` 初始化时读一次） | 要（子进程继承的是父进程那一刻的快照） |
+
+⭐ **关键**：`.env` 不是"环境变量"，它只是**一份用来喂给 `Settings` 的文本文件**。
+`pydantic-settings` 会把**两个来源都读进来**，合并成一个 `Settings` 对象。
+
+### 谁优先（📎 2026-11-01 实测）
+
+**进程环境变量 > `.env` 文件 > 字段默认值**
+
+| 实验 | `.env` | 进程环境变量 | `settings.app_name` 实际值 |
+|---|---|---|---|
+| A | `APP_NAME=FromDotEnvFile` | （没设） | `FromDotEnvFile` |
+| C | `APP_NAME=FromDotEnvFile` | `APP_NAME=FromOsEnviron` | **`FromOsEnviron`** ← 进程赢 |
+
+📌 **另一个容易搞错的事实**：读 `.env` **不会**把它塞进 `os.environ`。
+📎 实测 A：`Settings()` 成功读到 `app_name = FromDotEnvFile`，但 `"APP_NAME" in os.environ` 仍然是 **`False`**。
+所以「`os.environ` 里有这个键」和「`.env` 里有这个键」是**两件互不影响**的事。
+
+### 所以 `conftest.py` 为什么改 `os.environ`，而不改 `.env`
+
+| 方案 | 问题 |
+|---|---|
+| 改写仓库里的 `.env` | ① 污染仓库文件（`git status` 会脏、可能误提交）② 改完还要记得改回来 |
+| 新建一个测试专用 `.env` | `env_file=".env"` 是**相对工作目录**解析的，切 cwd 会引入新问题 |
+| ✅ `os.environ[...] = ...` | 只影响**当前进程**，进程一退就没了，零副作用 |
+
+📌 **本项目现状**：仓库 `.env` 里**没有 `DATABASE_URL`**（只有 `.env.example` 有）。
+所以 conftest 设的那一行没有竞争对手。但**即使 `.env` 里有** `DATABASE_URL`，`os.environ` 也会赢（见上面的优先级），
+所以这行代码对「有人把 `.env.example` 复制成 `.env`」这种情况也是安全的。
+
+### ⚠️ 一个静默失效：`extra="forbid"` 只对 `.env` 生效
+
+`config.py` 里写了 `extra="forbid"`，但它的作用范围是**不对称的**：
+
+| 未知键放在哪 | 结果 |
+|---|---|
+| `.env` 文件里写 `UNKNOWN_KEY=1` | ❌ **报错**：`ValidationError: Extra inputs are not permitted [type=extra_forbidden]` |
+| 进程环境变量里 `UNKNOWN_KEY=1` | ✅ **静默忽略**，`Settings()` 正常创建 |
+
+📎 两条都实测过。
+
+> ⭐ 后果：**`.env` 里拼错键名会被抓，shell 里拼错键名不会。**
+> 例如 `$env:DATABASE_URLL = "..."` —— 程序一声不响地用默认值跑，你以为换库了，其实没换。
+> ⭐ 判据：**排查"配置没生效"时，先确认键到底落在哪一层**，别只看 `.env`。
+
+---
+
+
+## 12.9b 为什么必须赶在 `import app` 之前设
 
 一句话：**`settings` 是模块级单例，`import` 那一刻就把环境读完了，之后再改没人看。**
 
