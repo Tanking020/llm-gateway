@@ -9531,6 +9531,62 @@ def test_sse_stream(client: TestClient) -> None:
 > ⭐ **测 SSE 的关键**：断言三件事 —— **状态码、`content-type`、帧格式**。
 > 特别是**帧结尾的两个换行**：少了它前端不会触发事件，而这种 bug 在浏览器里表现得很诡异（"什么都没发生"）。
 
+## 12.5b `client.stream(...)` 为什么必须 `with`（2026-11-02 学习者加注释后一起核过）
+
+### 先给全局：`with` 在这里的真实作用是「一定会调 `response.close()`」
+
+📎 源码（`inspect.getsource(httpx2.Client.stream)`）：它是 `@contextlib.contextmanager` 包起来的生成器，
+
+```python
+yield response          # ← 交给 with 的 as 变量
+response.close()        # ← 退出 with 时执行（包括出异常）
+```
+
+📎 `Response.close()` 的官方 docstring 就一句：**"Close the response and release the connection."**
+
+| 结论 | 状态 |
+|---|---|
+| 「`with` 保证无论成功还是失败都会关闭、不泄漏」 | ✅ **与库自己的文档一致** |
+| 机制不是魔法，是 `@contextmanager` 的 `finally` | ✅ 见上面的源码 |
+
+### ⚠️ 唯一需要限定的一处：TestClient 里没有「真连接」
+
+| 语境 | 「连接」指什么 |
+|---|---|
+| **生产**（uvicorn + 真 socket） | **真的 TCP 连接**。一条 SSE 流期间它一直被占着 |
+| **`TestClient`**（`ASGITransport`） | **没有网络连接** —— 在同一个进程里直接调用 ASGI app。`close()` 在这里的实质是**中止/释放响应体迭代器** |
+
+所以那段注释的**结论成立**，只是「连接」这个词在测试语境里要理解成「响应体资源」。
+
+### ⭐⭐ 一个更重要的发现：TestClient 下服务端会把 body **一次性写完**
+
+📎 实测（假上游给 4 个内容帧，三种读法各看一次连接池）：
+
+| 读法 | 池状态（`checkedout` / `checkedin`） |
+|---|---|
+| `with` + 读完整个 body | `0 / 1` |
+| `with` + **只读第一帧**就退出 | 读第一帧时就是 `0 / 1` |
+| 进入但不读 | 进入后就是 `0 / 1` |
+
+**三种都是 `checkedout=0`** —— 说明 `get_db` 的收尾（commit + 归还连接）**早就做完了**，哪怕客户端一帧都没读。
+
+原因：`TestClient` 的两端靠**无界内存流**（`math.inf`）连接，没有 TCP 背压，
+所以服务端的生成器**一口气跑到底**，把整个响应塞进缓冲区，然后立刻收尾。
+
+> 🔴 **对 12e 的直接影响**：**待办 #59（数据库连接被整条 SSE 流独占）在 `TestClient` 里复现不出来。**
+> 想复现必须起**真 uvicorn + 真 HTTP 客户端**（或至少让服务端因为 `send` 阻塞而停住）。
+> 📌 这条已记进 roadmap 的 12e，避免那天白折腾。
+
+### 那测试里用 `stream` 的真正理由是什么
+
+| 理由 | 说明 |
+|---|---|
+| **能逐块读** | `iter_text()` 让你边读边断言；`r.text` 会等整条流结束 |
+| **能拿到响应头** | `content-type` 必须进 `with` 里断言 |
+| **失败也释放** | 断言在 `with` 里炸掉时，`close()` 仍执行 —— 不依赖你记得写 `finally` |
+
+⭐ 判据：**凡是「返回一个需要收尾的对象」的调用，就用 `with`。** 不要逐个去论证"这次会不会泄漏"。
+
 ## 12.6 依赖覆盖：绕过认证和数据库
 
 ```python

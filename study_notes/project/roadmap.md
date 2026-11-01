@@ -372,7 +372,7 @@
 | **12c-2** | 建 `tests/test_upstream.py`：假 LLM 接线（200 断言 `m1`/`m2`）+ 三类上游故障 → 502 + 流式 pre-flight 失败仍能改状态码 | ✅ 2026-11-01 完成 · #40 · 📎 **17 passed**（11 + 6）、四道门 `25 files` 全绿；📎 变异 A（把 pre-flight 挪进生成器）→ `test_stream_preflight_failure_changes_status_code` **红**；📎 变异 C（`FakeLlm.list_models` 返回 `[]`）→ `test_upstream_models_uses_fake` **红**（`assert 0 == 2`） |
 | **12c-3** | 🟡 **下一步** 建 `tests/test_errors.py`：**错误形状契约**。📎 已实测 7 种的 code：405 `METHOD_NOT_ALLOWED` / 400 `LAST_MESSAGE_NOT_USER` / 404 `MODEL_NOT_FOUND` / 404 `NOT_FOUND`（路由未命中）/ 404 `CONVERSATION_NOT_FOUND` / 422 `VALIDATION_ERROR`(带 `details`) / 500 `INTERNAL_ERROR`(📎 响应体**不含** `RuntimeError`、不含异常文案) / 502 `UPSTREAM_*`；全部带 `X-Request-ID` 且与 body 一致 | ⬜ 待做 · #40 |
 | **12d** | 把 9b 那 **12 个流式边界用例**搬进 pytest（`thinking` 首帧 / 零内容 / 坏 JSON 帧 / `usage` 重复 / `finish_reason` 非字符串 / 断开） | ⬜ 待做 · #40 |
-| **12e** | 异步测试（`httpx.ASGITransport` / `asyncio_mode="auto"`）+ **用 3 条并发流复现 #59**（连接被整条流独占） | ⬜ 待做 · #40（关联 #59） |
+| **12e** | 异步测试（`httpx.ASGITransport` / `asyncio_mode="auto"`）+ **用 3 条并发流复现 #59**（连接被整条流独占） | ⬜ 待做 · #40（关联 #59）<br>🔴 **前提（2026-11-02 实测）**：#59 **在 `TestClient` 里复现不出来** —— 📎 客户端一帧不读时 `get_db` 也已收尾（`checkedout=0`），因为 TestClient 两端是无界内存流、没有 TCP 背压，服务端一口气跑到底。**必须起真 uvicorn + 真 HTTP 客户端** |
 | **12f** | 收口：覆盖率**看分支不看数字** + 台账 + 门 1 打勾；CI（#62）留 `P1` | ⬜ 待做 · #40 ↔ 关联 #62 |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |
 | **阶段 2** | 消息落库 / 软删除 / 并发控制 / KNOWN_MODELS 改真实数据 | **#3 #32 #34 #35** |
