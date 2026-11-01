@@ -1,6 +1,8 @@
 """pytest 的全局准备：本文件在任何测试模块被 import 前执行"""
 
 import os
+
+# sqlite3 这个库支持直接执行 SQL 字符串
 import sqlite3
 import tempfile
 from collections.abc import Iterator
@@ -33,7 +35,9 @@ def _truncate_all() -> None:
     conn = sqlite3.connect(str(_TEST_DB))
     try:
         conn.execute("PRAGMA foreign_keys=ON")
+        # 开启外键约束后需要按 子->父 的顺序做删除
         for table in reversed(Base.metadata.sorted_tables):
+            # 只清数据，保留表结构，不必再 create_all
             conn.execute(f"DELETE FROM {table.name}")
         conn.commit()
     finally:

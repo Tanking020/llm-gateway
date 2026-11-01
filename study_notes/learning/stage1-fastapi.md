@@ -9950,6 +9950,96 @@ assert [item["title"] for item in first["items"]] == ["c1", "c2"]
 
 ---
 
+## 12.8d 测试函数和业务代码到底靠什么连起来（2026-11-01 学习者追问）
+
+> 原话：「我没看懂我们的测试函数和我们写的业务的关联是从哪来的，还是说现在其实没有关联只是在写函数而已后面才建立联系？」
+
+**结论：关联是真实的，而且已经生效了 —— 但它不是「import」，是「字符串 + 运行时查表」。**
+
+### 先给全局：三根线，只有一根是 import
+
+| # | 线 | 长什么样 | 什么时候绑上 |
+|---|---|---|---|
+| ① | **fixture → 应用对象** | `conftest.py` 里 `from app.api.app import app`，fixture 把它塞进 `TestClient(app)` | **import 时**（这是唯一的 import） |
+| ② | **测试 → 路由** | 测试里的**URL 字符串** `"/v1/conversations"` | **每次请求时**，由 ASGI app 拿字符串去**查路由表** |
+| ③ | **断言 → 契约** | `response.json()["error"]["code"]` 里的键名 | 运行时读 JSON，**没有类型、没有编译期检查** |
+
+⚠️ **关键事实**：`tests/test_conversations.py` **一行都没 import 我们的源码**。📎 实测它的全部 import：
+
+```text
+from typing import cast
+import pytest
+from fastapi.testclient import TestClient
+```
+
+> ⭐ 这正是集成测试的样子：**测试不认识你的函数，只认识你对外承诺的 URL / 请求体 / 响应体。**
+
+### 那"关联"到底在哪 —— 看路由表
+
+📎 实测 `app.routes`（应用真正注册的端点）：
+
+```text
+GET     /health
+GET     /health/ready
+GET     /v1/models
+POST    /v1/conversations
+GET     /v1/conversations/{conv_id}
+DELETE  /v1/conversations/{conv_id}
+PATCH   /v1/conversations/{conv_id}
+GET     /v1/conversations
+POST    /v1/chat/stream
+...
+```
+
+📎 测试里出现的 URL 字符串：
+
+```text
+/v1/conversations
+/v1/conversations/999
+/v1/conversations/{created['id']}     ← 拼出来是 /v1/conversations/1
+```
+
+**这两张表对上了，关联就成立。** 请求发生时 `TestClient` → ASGI app → **拿 URL 查上面那张路由表** → 找到函数 → 执行。
+
+### 📎 写错了会怎样（证明关联是运行时的）
+
+| 请求 | 结果 | 说明 |
+|---|---|---|
+| `GET /v1/conversations` | **200** | 对上了 |
+| `GET /v1/conversation`（少个 s） | **404 `NOT_FOUND`** | 路由表里没有 → Starlette 抛的 |
+| `GET /v1/Conversations`（大写 C） | **404 `NOT_FOUND`** | URL **区分大小写** |
+| `PUT /v1/conversations` | **405 `METHOD_NOT_ALLOWED`** | 路径对、方法没注册 |
+
+> ⭐ 注意 `404` 的 code 是 `NOT_FOUND`（路由不存在），
+> 而 `GET /v1/conversations/999` 的 code 是 `CONVERSATION_NOT_FOUND`（路由进去了、业务判定不存在）。
+> **两个 404 语义不同** —— 这就是 11d 用业务码的意义。
+
+### 为什么这样设计（不 import 路由函数）
+
+| 如果直接 import 路由函数来测 | 走 HTTP（本项目做法） |
+|---|---|
+| 绕过了中间件、异常处理器、CORS、依赖注入 | **全部经过**，测的是一条真实请求 |
+| 改了函数签名测试就红（哪怕行为没变） | 只要 URL/契约不变，内部随便重构 |
+| 测不出「500 的响应形状」「request_id 头」这类跨层行为 | 正是 11d 那类问题唯一能抓到的地方 |
+| 需要用 mock 手动搭一堆依赖 | 用 `dependency_overrides` 一处替换 |
+
+⭐ 判据：**这个项目的 bug 几乎都在「层与层之间」**（中间件吞异常、连接被流独占），
+所以必须从最外层打进去 —— 也就是必须走 URL。
+
+### 代价要认
+
+| 代价 | 表现 | 缓解 |
+|---|---|---|
+| URL 是**字符串**，打错不报错 | 写错 `/v1/conversation` → 404，而 404 看起来像"业务不存在" | 断言里同时检查 `code == "CONVERSATION_NOT_FOUND"`，能区分开 |
+| 响应体是 `Any` | `body["titel"]` 拼错 → `KeyError`，而不是编译错误 | `cast(dict[str, object], ...)` 只能拦到"外层是 dict"，拦不到键名 |
+| 契约变了测试才发现 | 改字段名 → 一批测试红 | 这正是想要的效果（契约就是被钉住的东西） |
+
+> 📌 更强的做法（本项目暂未做）：**用 `app.openapi()` 生成 schema 再做校验**，
+> 或者给每个响应定义 pydantic 模型在测试里 `Model.model_validate(body)`。
+> 那是 12f 的可选项，现在不值当。
+
+---
+
 ## 12.9 「环境变量」和 `.env` 文件是两张皮
 
 ### 先分清两个东西
