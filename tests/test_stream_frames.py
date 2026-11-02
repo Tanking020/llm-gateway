@@ -141,3 +141,30 @@ def test_empty_choices_with_usage(client: TestClient) -> None:
     assert _has_key(frames, "usage")
     assert not _has_key(frames, "delta")
     assert _error_codes(frames) == ["STREAM_NO_CONTENT"]
+
+
+def test_frames_after_finish_reason_are_still_processed(client: TestClient) -> None:
+    """`finish_reason` 只表示"这一路说完了"，**不是流结束** —— 后面还可能有帧
+
+    【注意】：这是最容易写错的一处。若代码在转发 finish_reason 后 `break`：
+      ① 漏掉同一帧里的最后一个 content（本帧 delta 在 finish 之后才处理）
+      ② 漏掉 OpenAI `stream_options.include_usage` 那种【finish 之后才来】的纯用量帧 → 账单丢账
+    终止条件只能是【上游 EOF】，见 §12.5c
+    """
+    frames = _stream(
+        client,
+        [
+            {"choices": [{"index": 0, "delta": {"content": "第一段"}, "finish_reason": "stop"}]},
+            {"choices": [{"index": 0, "delta": {"content": "第二段"}}]},
+            {
+                "choices": [],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 8, "total_tokens": 15},
+            },
+        ],
+    )
+
+    assert {"delta": "第一段"} in frames
+    assert {"delta": "第二段"} in frames
+    assert {"usage": {"prompt_tokens": 7, "completion_tokens": 8, "total_tokens": 15}} in frames
+    assert _error_codes(frames) == []
+    assert frames[-1] == "[DONE]"

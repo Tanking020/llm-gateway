@@ -1206,6 +1206,11 @@
     > 让人去查帧格式；先断言 header 则直接说「content-type 不对」，一眼知道原因。
     > ⭐ 判据：**能提前失败的断言就写在前面** —— 不是为了正确性，是为了**报错指向正确的方向**。
     > 📌 另注：`502` 那种情况轮不到这两行 —— 上面那条 `assert response.status_code == 200` 会先红。
+13. 📎 流式循环的终止条件是什么？**`[DONE]` 会结束循环吗？`finish_reason` 会吗？** 如果错写成「收到 `finish_reason` 就 `break`」，会漏掉什么？
+    > **终止条件只有一个：上游流 EOF**（`aiter_lines()` 迭代完）。📎 源码：`[DONE]` 分支只做 `seen_done = True` + **`continue`**（注释写着不能 break，break 会让 body 没读完 → 连接被销毁而不是归还池）；`finish_reason` 分支只转发一帧，**完全不影响循环**。
+    > ⭐ **错写成 break 会漏两样**：① 同一帧里的**最后一个 `content`**（本帧的 delta 在 finish 之后才处理）；② **finish 之后才来的纯用量帧**（OpenAI `stream_options.include_usage` 就是这种）→ **账单丢账**。
+    > 📎 实测：加 `break` → `test_normal_stream_frame_order` + `test_frames_after_finish_reason_are_still_processed` **2 个红**。
+    > ⭐ 判据：**「这一路说完了」（`finish_reason`）≠「这条流结束了」（`[DONE]` / EOF）**。服务端只在 EOF 收尾，客户端只在 `[DONE]` 收尾。见 §12.5c。
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？

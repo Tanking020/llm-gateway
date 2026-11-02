@@ -9637,6 +9637,74 @@ response.close()        # ← 退出 with 时执行（包括出异常）
 
 ⭐ 判据：**「帧的类型」决定怎么解析，「帧的位置」一律不做假设。**
 
+### ⭐⭐ 终止条件：到底是 EOF、`[DONE]`、还是 `finish_reason`？（2026-11-02 学习者要求核实）
+
+**答案：循环只在上游流 EOF 时结束。`[DONE]` 不结束循环，`finish_reason` 更不。**
+
+📎 读源码确认（`api/app.py` 的 `event_source` + `llm_client.py` 的 `aiter_chunks`）：
+
+| 位置 | 遇到它做什么 | 会不会结束循环 |
+|---|---|---|
+| `async for chunk in upstream.aiter_chunks()`（路由） | 一层一层往下走 | **只有迭代器耗尽才结束** |
+| `async for line in response.aiter_lines()`（适配器） | 一行一行读 | **只有上游 body 读完才结束** |
+| `raw.strip() == "[DONE]"` | `seen_done = True` + **`continue`** | ❌ **不结束**（源码注释：不能 break —— break 会让 body 没读完 → 连接被销毁而不是归还池） |
+| `finish_reason` 是字符串 | 转发一帧 `{"finish_reason": …}` | ❌ **不影响循环**，后面照常处理 |
+
+📎 **三个实测**（假上游）：
+
+```text
+--- A: finish_reason 之后还有内容帧和用量帧 ---
+{"status": "thinking"}
+{"finish_reason": "stop"}
+{"delta": "第一段"}          <- 同一帧里的 content，在 finish 之后才处理
+{"delta": "第二段"}          <- finish 之后的【新】内容帧，照样转发
+{"usage": {...}}             <- finish 之后的用量帧，照样记账
+[DONE]
+
+--- B: 上游连续给多次 finish_reason ---
+{"finish_reason": "stop"}
+{"delta": "A"}
+{"finish_reason": "length"}   <- 第二次 finish 也照转
+{"delta": "B"}
+[DONE]
+
+--- C: 只有 finish_reason、没有任何内容 ---
+{"finish_reason": "stop"}
+{"error": {"code": "STREAM_NO_CONTENT", ...}}   <- 仍然判零内容
+[DONE]
+```
+
+### 🔴 这个帧序最容易漏掉的两样东西（服务端 / 客户端各一个坑）
+
+| 视角 | 错误写法 | 会漏掉什么 |
+|---|---|---|
+| **服务端（我们）** | 转发 `finish_reason` 后 `break` | ① 同一帧里的**最后一个 `content`**（它在该帧的 `finish_reason` 之后才被处理）② **finish 之后才来的纯用量帧**（OpenAI `stream_options.include_usage` 就是这种）→ **账单丢账** |
+| **客户端（前端）** | 收到 `finish_reason` 就「封笔」停止追加 | **最后一个 `delta`** —— 用户看到少一段字，而且**没有任何报错** |
+
+📎 **两条都有实测支撑**：
+
+- 服务端：变异测试「在 `yield finish_reason` 后加 `break`」→ **2 个用例红**（`test_normal_stream_frame_order` + `test_frames_after_finish_reason_are_still_processed`）
+- 客户端：见上面实测 A 的帧序 —— 最后一个 `delta` 确实在 `finish_reason` 之后
+
+> ⭐ 判据：**「这一路说完了」（`finish_reason`）≠「这条流结束了」（`[DONE]` / EOF）。**
+> 服务端只在 **EOF** 收尾；客户端只在 **`[DONE]`** 收尾。
+
+📌 顺带分清三层收尾标记：
+
+| 标记 | 层次 | 谁认它 |
+|---|---|---|
+| `finish_reason` | **业务/协议语义**（模型为什么停） | 客户端可用来区分「说完 / 被截断」 |
+| `[DONE]` | **传输层收尾**（SSE 流结束） | 适配器消化它；客户端靠它封笔 |
+| EOF | **TCP / body 结束** | 我们的循环靠它退出 |
+
+### 可复用的判据：循环什么时候可以退出
+
+📎 一个反例提醒：本项目的 `aiter_chunks` **故意**在 `[DONE]` 之后 `continue` 而不是 `break`，
+因为它还要把 body 读完才能**把连接归还连接池**。
+
+> ⭐ **「协议上结束了」和「资源上可以收手了」是两件事。**
+> 想早停就必须**主动 `aclose()`**，否则会退化成「每条流销毁一条连接」。
+
 ## 12.6 依赖覆盖：绕过认证和数据库
 
 ```python
