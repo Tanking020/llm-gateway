@@ -583,6 +583,26 @@ data: [DONE]
 > ⚠️ **为什么 `[DONE]` 不能在 `finally` 里发一次**：客户端断开时 Starlette 会往生成器抛 `GeneratorExit`（继承 `BaseException`），
 > 在 `finally` 里 `yield` 会触发 `RuntimeError: async generator ignored GeneratorExit`。所以两条路各写一次。
 
+### 8.4b 坏帧怎么处置：**四类，两种处置**（📎 2026-11-02 实测）
+
+| # | 上游给了什么 | 处置 | 客户端看到 | 服务端日志 |
+|---|---|---|---|---|
+| 1 | **结构错**：`content` 是数组 / `choices` 不是 list / `choices[0]` 不是 dict / `delta` 不是 dict / `index != 0` | **跳过该帧，继续** | 少那一段（如「大家好」→「大好」） | `WARNING` |
+| 2 | **字段类型错（非内容类）**：`finish_reason` 不是字符串 | **只丢这个字段** | 内容**完整**，只是没有「说完/截断」信息 | `WARNING` |
+| 3 | **JSON 语法错**（`data: {坏}`） | **中止整条流** | 已拿到的内容 + `STREAM_FAILED` + `[DONE]` | `ERROR` |
+| 4 | **运行时异常**（连接断 / flush 失败等） | **中止整条流** | 已拿到的内容 + `STREAM_FAILED` + `[DONE]` | `ERROR` |
+
+📎 四组实测（假上游 / 直接喂字节）：
+
+| 实验 | 帧序列 |
+|---|---|
+| `content: ["家"]` 夹在中间 | `thinking` → `delta 大` → `delta 好` → `[DONE]`（**「家」没了**） |
+| `finish_reason: {"x": 1}` 夹在中间 | `thinking` → `delta 大` → `delta 家` → `delta 好` → `[DONE]`（**内容完整**） |
+| 中间一帧是坏 JSON | 适配器**抛出** `JSONDecodeError`；抛出**之前**已吐出 1 个 chunk（`大`） |
+| 流开始后抛异常 | `thinking` → `delta 大` → `error STREAM_FAILED` → `[DONE]` |
+
+⭐ 判据：**「结构错」跳过（这一帧用不了，但流的解释框架还在）；「语法错 / 运行时异常」中止（连这是什么都不知道了）。**
+
 ### 8.5 pre-flight：状态码还没发出去的最后机会
 
 ```text
