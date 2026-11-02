@@ -44,6 +44,13 @@ def _truncate_all() -> None:
         conn.close()
 
 
+# @pytest.fixture 的三种常见用法: 返回数据，创建对象，清理资源，这里是返回数据（依赖注入）
+@pytest.fixture
+def db_path() -> Path:
+    """测试库的文件路径：想绕过 API 直接查库的测试用它（路径只有本文件知道）"""
+    return _TEST_DB
+
+
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     """每个测试一份客户端：with 用来触发 lifespan"""
