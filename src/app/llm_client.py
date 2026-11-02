@@ -17,7 +17,7 @@
     绝不会把 httpx 的异常泄漏给路由层
 
 【注意】：唯一的例外是流【已经开始之后】才出的错：那时我们的响应头早已发出，
-   AppError 会由路由层接住、编码成 event: error 帧（待办）。
+   AppError 会由路由层接住、编码成 event: error 帧。
 
 为什么 create_llm_client 返回这个类而不是 httpx.AsyncClient：
     仍要回答"怎么造"，但现在造出来的东西自带"怎么翻译错误"。
