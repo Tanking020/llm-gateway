@@ -78,6 +78,8 @@
   - **Step 11 工程化（2026-10-29 ~ 11-01）✅ 全部完成**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / **11e ✅ 生产关交互式文档** / **11f ✅ 流式接口在 `/docs` 标 `text/event-stream`**
   - 🟡 **Step 12 测试进行中（2026-11-01 起）**：依赖已装（`pytest==9.2.0` / `pytest-asyncio==1.4.1` / `httpx2==2.16.0`）+ `[tool.pytest.ini_options]` 已配（`testpaths` / `asyncio_default_fixture_loop_scope`）；**12a 由学习者手写中**（`tests\conftest.py`、`tests\test_smoke.py` 已新建为空文件）
   - ⏭️ **下一步 = 12c 假 LLM + 错误形状断言**（`dependency_overrides` 注入假上游；把 11d 的 envelope / 全状态码一致钉成断言）；12a~12f 拆步见下方「待办 → 步骤 对照」表
+  - 🟡 **Step 14 架构盘点进行中（2026-11-02 插入，优先于 12d）**：学习者决定先把「各种架构与形状」完全弄清楚，再回来做 12d；
+    产物 = [architecture-map.md](architecture-map.md)。**12d ~ 12f 挂起**，不是取消
   - **Step 13 未开始**（部署）
 
 ### 自检统一安排（2026-10-29 决定，2026-11-01 订正编号口径）
@@ -370,10 +372,13 @@
 | **12c** | 假 LLM + **把 11d 的统一错误形状钉成断言**（拆 3 小步，按规范 §3.0「一次一个文件」） | **#40**（关联 #57） |
 | **12c-1** | 建 `tests/fakes.py`：`FakeLlm` + `FakeChatStream`。📎 实测**继承真类**（`LlmClient` / `LlmChatStream`）后 mypy 会抓签名漂移：故意把 `list_models` 返回改 `list[str]` → `error: Return type ... incompatible with ... in supertype` | ✅ 2026-11-01 完成 · #40 · 📎 三道门 `24 files` 全绿；已验「没覆盖的方法」→ `AttributeError: 'FakeLlm' object has no attribute '_http'`（**不花钱**，见 §12.6b） |
 | **12c-2** | 建 `tests/test_upstream.py`：假 LLM 接线（200 断言 `m1`/`m2`）+ 三类上游故障 → 502 + 流式 pre-flight 失败仍能改状态码 | ✅ 2026-11-01 完成 · #40 · 📎 **17 passed**（11 + 6）、四道门 `25 files` 全绿；📎 变异 A（把 pre-flight 挪进生成器）→ `test_stream_preflight_failure_changes_status_code` **红**；📎 变异 C（`FakeLlm.list_models` 返回 `[]`）→ `test_upstream_models_uses_fake` **红**（`assert 0 == 2`） |
-| **12c-3** | ✅ 2026-11-02 完成 · #40 · 📎 **24 passed**（17 + 7）、四道门 `26 files` 全绿；📎 **3 次变异**：envelope 的 `code` 改名 → **7 红** / `error` 里多塞 `extra` → **7 红** / 500 回 `f"…: {exc}"` → **仅 500 那条红**（精准）；📎 实测 405 与 404(路由) 的 `message` 是**英文**（框架 `detail` 原样透传，客户端只认 `code`）；📎 500 响应**没有任何 CORS 头**（#57 的又一份证据）。建 `tests/test_errors.py`：**错误形状契约**。📎 已实测 7 种的 code：405 `METHOD_NOT_ALLOWED` / 400 `LAST_MESSAGE_NOT_USER` / 404 `MODEL_NOT_FOUND` / 404 `NOT_FOUND`（路由未命中）/ 404 `CONVERSATION_NOT_FOUND` / 422 `VALIDATION_ERROR`(带 `details`) / 500 `INTERNAL_ERROR`(📎 响应体**不含** `RuntimeError`、不含异常文案) / 502 `UPSTREAM_*`；全部带 `X-Request-ID` 且与 body 一致 | ⬜ 待做 · #40 |
-| **12d** | 🟡 **下一步** 把 9b 那 **12 个流式边界用例**搬进 pytest（`thinking` 首帧 / 零内容 / 坏 JSON 帧 / `usage` 重复 / `finish_reason` 非字符串 / 断开） | ⬜ 待做 · #40 |
+| **12c-3** | 建 `tests/test_errors.py`：**错误形状契约**（envelope 三键 / 三种 404 靠业务码区分 / 422 的 `details` 只留三键 / 500 不泄漏内部信息） | ✅ 2026-11-02 完成 · #40 · 📎 **24 passed**（17 + 7）、四道门 `26 files` 全绿；📎 **3 次变异**：envelope 的 `code` 改名 → **7 红** / `error` 里多塞 `extra` → **7 红** / 500 回 `f"…: {exc}"` → **仅 500 那条红**（精准）；📎 实测 405 与 404(路由) 的 `message` 是**英文**（框架 `detail` 原样透传，客户端只认 `code`）；📎 500 响应**没有任何 CORS 头**（#57 的又一份证据）；📎 pydantic 原始 `errors()[0]` 有 6 字段，我们只留 `loc`/`msg`/`type` |
+| **12d** | ⏸️ **挂起**（Step 14 之后回来） 把 9b 那 **12 个流式边界用例**搬进 pytest（`thinking` 首帧 / 零内容 / 坏 JSON 帧 / `usage` 重复 / `finish_reason` 非字符串 / 断开） | ⬜ 待做 · #40 |
 | **12e** | 异步测试（`httpx.ASGITransport` / `asyncio_mode="auto"`）+ **用 3 条并发流复现 #59**（连接被整条流独占） | ⬜ 待做 · #40（关联 #59）<br>🔴 **前提（2026-11-02 实测）**：#59 **在 `TestClient` 里复现不出来** —— 📎 客户端一帧不读时 `get_db` 也已收尾（`checkedout=0`），因为 TestClient 两端是无界内存流、没有 TCP 背压，服务端一口气跑到底。**必须起真 uvicorn + 真 HTTP 客户端** |
 | **12f** | 收口：覆盖率**看分支不看数字** + 台账 + 门 1 打勾；CI（#62）留 `P1` | ⬜ 待做 · #40 ↔ 关联 #62 |
+| **14** | **架构盘点（Architecture Review，2026-11-02 学习者插入）**：把「各种关系 + 各种形状」集中一处、能对得上代码。判据 = **能凭图回答「这个请求经过哪几层 / 出错时前端拿到什么 / 这个字段从哪来」** | — （复盘步骤，不关任何待办） |
+| **14a** | 建 `study_notes/project/architecture-map.md`：13 节（七层栈 / 模块依赖 / lifespan / ER+DDL / 端点总表 / 成功形状 / 错误形状 / SSE 帧 / 配置 / 日志 / 测试 / 状态机 / 速查） | ✅ 2026-11-02 建立 · 📎 全部由探针取真实数据（`build_middleware_stack` 逐层、`app.routes`、`model_fields`、`sqlite_master` DDL、逐端点实跑响应） |
+| **14b** | 学习者逐个提「XX 的形状 / 关系」→ 补图、订正错误图 | 🟡 进行中 · 本节随提问增长 |
 | **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |
 | **阶段 2** | 消息落库 / 软删除 / 并发控制 / KNOWN_MODELS 改真实数据 | **#3 #32 #34 #35** |
 | **随时** | ~~`DATABASE_URL` 补进 `.env.example`~~ | ✅ **11a 已完成**（#27） |

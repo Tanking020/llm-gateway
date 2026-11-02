@@ -11,6 +11,7 @@
 | [roadmap.md](roadmap.md) | 学习路线 / 阶段划分 / **进度** / **待办清单（#1~#66）** | 开工前、想知道「还剩几步」 |
 | [decisions.md](decisions.md) | 业务与架构决策（ADR，25 条 + 待定清单） | 要改数据结构 / 接口形状 / 部署形态**之前** |
 | [production-readiness.md](production-readiness.md) | **生产级自检**：七道门（测试 / 安全 / 容量 / 成本 / 可观测 / 可交付 / 数据治理）+ 档期 `P0/P1/P2` + 过门判据 | 排优先级、判断「能不能上线了」、准备面试 |
+| [architecture-map.md](architecture-map.md) | **各种关系与形状的图**：请求穿过的七层 / 模块依赖 / lifespan / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / 配置 / 日志 / 测试 / 状态机 | 想弄清「这个请求经过哪几层」「出错时前端拿到什么」「这个字段从哪来」 |
 
 ## ⚠️ 改代码或改结构前，先查 `decisions.md`
 
@@ -25,14 +26,14 @@
 | 给 `LlmCall` 写 `conversation_id: int` | [decisions #16](decisions.md#16-计费记录不能跟着对话一起删) | 必须 `int \| None` —— 📎 写 `int` 就是 500 |
 | 在每条路由里各写一遍「对话不存在 → 404」 | [decisions #8](decisions.md#8-业务规则抽成函数由多条路由共用) | ⛔ 抽成 `require_conversation`，5 处共用 |
 
-## 三个文件的边界
+## 四个文件的边界
 
-| | roadmap.md | decisions.md | production-readiness.md |
-|---|---|---|---|
-| 回答 | **做到哪了** | **为什么这么做** | **距离上线还差什么** |
-| 变化频率 | 每次收口都更新 | 只在做决定时追加 | 每次收口重推一遍门的颜色 |
-| 新增方式 | 加一行进度 / 加一条待办编号 | 按五段格式加一条 ADR | 先在 roadmap 登记编号，再挂到门下 |
-| **不写什么** | 不写原理与实测（→ learning/） | 不写实测数据表格（引用 learning/） | **不写缺陷细节与实测数字**（引用 roadmap 的编号与 📎 证据） |
+| | roadmap.md | decisions.md | production-readiness.md | architecture-map.md |
+|---|---|---|---|---|
+| 回答 | **做到哪了** | **为什么这么做** | **距离上线还差什么** | **长什么样** |
+| 变化频率 | 每次收口都更新 | 只在做决定时追加 | 每次收口重推一遍门的颜色 | 想弄清一个形状时 |
+| 新增方式 | 加一行进度 / 加一条待办编号 | 按五段格式加一条 ADR | 先在 roadmap 登记编号，再挂到门下 | 加一节「图 + 真实样本」 |
+| **不写什么** | 不写原理与实测（→ learning/） | 不写实测数据表格（引用 learning/） | **不写缺陷细节与实测数字**（引用 roadmap 的编号与 📎 证据） | 不写「为什么这么设计」（→ decisions）、不写推导过程（→ learning） |
 
 ⚠️ [learning/](../learning/) 里不写「我们决定」；这里不写实测数据表格（引用 learning/）。
 详见 [工程规范与协作约定.md](../../工程规范与协作约定.md) §4.4d。

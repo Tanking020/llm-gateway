@@ -448,6 +448,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（进度 + 待办 #1~#67 唯一台账） | 每步收口 |
 | [study_notes/project/decisions.md](study_notes/project/decisions.md) | **为什么这么设计 / 放弃了什么 / 何时该重审**（ADR 25 条） | 做决定时 |
 | [study_notes/project/production-readiness.md](study_notes/project/production-readiness.md) | **距离敢上线还差什么 / 怎么才算过门**（七道门 + `P0/P1/P2`） | 每次收口重推门的颜色 |
+| [study_notes/project/architecture-map.md](study_notes/project/architecture-map.md) | **各种关系与形状长什么样**（七层栈 / 模块依赖 / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / 配置 / 日志 / 测试 / 状态机） | 想弄清一个形状时 |
 | [study_notes/learning/stage1-fastapi.md](study_notes/learning/stage1-fastapi.md) | **FastAPI 与 SQLAlchemy 的机制**（原理 + 实测） | 学到新东西时 |
 | [study_notes/learning/logging.md](study_notes/learning/logging.md) | **日志原理与写法**（专题，换项目照样成立） | 同上 |
 | [study_notes/learning/learning-log.md](study_notes/learning/learning-log.md) | **那天为什么改成这样**（流水 / 踩坑 / 结论 / 12 个专题） | 每步收口 |
