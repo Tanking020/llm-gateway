@@ -9761,6 +9761,105 @@ assert [item["id"] for item in body["items"]] == ["m1", "m2"]     # ← 关键
 
 ---
 
+## 12.6c 错误响应的**完整形状**：7 种实测（2026-11-02，配 12c-3）
+
+> 为什么要把完整形状贴出来：**不看到真实响应，"为什么这么写断言"就只能靠猜。**
+
+### 共同的骨架（五种非 422 的完全一致）
+
+```text
+STATUS  405 / 400 / 404 / 500
+HEADERS
+        x-request-id: <12 位 hex>          ← 每个响应都有，且与 body 里的一致
+        content-length: <NN>
+        content-type: application/json
+        vary: Origin                        ← CORS 中间件加的（500 没有，见下）
+RAW BODY
+        {"error":{"code":"…","message":"…","request_id":"…"}}
+```
+
+📎 七个响应的**真实内容**（`content-length` 都在 80~226 字节之间 —— 错误体足够小，没有堆栈）：
+
+| 状态 | `code` | `message`（原样） | 字节 |
+|---|---|---|---|
+| **405** | `METHOD_NOT_ALLOWED` | `Method Not Allowed` ← **英文，框架给的** | 98 |
+| **400** | `LAST_MESSAGE_NOT_USER` | `最后一条消息必须是 user，当前是 assistant` | 137 |
+| **404** | `MODEL_NOT_FOUND` | `模型不存在：nope` | 99 |
+| **404** | `NOT_FOUND` | `Not Found` ← **英文，Starlette 给的** | 80 |
+| **404** | `CONVERSATION_NOT_FOUND` | `对话不存在：999` | 105 |
+| **422** | `VALIDATION_ERROR` | `请求参数校验失败` | 226（多 `details`） |
+| **500** | `INTERNAL_ERROR` | `服务内部错误` | 94 |
+
+⚠️ **注意 405 / 404(路由) 的 message 是英文** —— 那是框架的 `detail` 原样透传（`_CODE_BY_STATUS` 只兜 `code`）。
+这不影响契约（客户端只该认 `code`），但**别断言所有 message 都是中文**。
+
+### 422 的完整形状
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "请求参数校验失败",
+    "request_id": "db5073bf0627",
+    "details": [
+      {
+        "loc": ["body", "messages"],
+        "msg": "List should have at least 1 item after validation, not 0",
+        "type": "too_short"
+      }
+    ]
+  }
+}
+```
+
+⭐ **`details` 是被过滤过的**。📎 pydantic 原始 `exc.errors()[0]` 有 **6 个字段**：
+
+```json
+{"type": "too_short", "loc": ["messages"], "msg": "…",
+ "input": [],                                    ← 🔴 用户提交的原值
+ "ctx": {"field_type": "List", "min_length": 1, "actual_length": 0},
+ "url": "https://errors.pydantic.dev/2.13/v/too_short"}
+```
+
+`errors.py` 只保留 `loc` / `msg` / `type` —— **`input` 必须丢掉**：用户如果把密钥填进了 `title`，
+它就会出现在错误响应里（还可能被日志收集系统永久留存）。
+
+> 📌 这就是 `assert set(first) == {"loc", "msg", "type"}` 这条断言的意义：
+> 它拦的不是"现在有没有多字段"，而是**"以后有人图省事把 `exc.errors()` 整个塞进去"**。
+>
+> 📌 另一处差异：原始 `loc` 是 `["messages"]`，我们的是 `["body", "messages"]` ——
+> FastAPI 的 `RequestValidationError` 在 `body` 前面多标了一层来源。
+
+### 500 与其它错误的**唯一结构性差异**：没有 CORS 头
+
+📎 带 `Origin: http://localhost:5173` 请求时：
+
+| 响应 | 响应头 |
+|---|---|
+| **404** | `access-control-allow-origin: http://localhost:5173`、`access-control-allow-credentials: true`、`vary: Origin` |
+| **500** | **一个 CORS 头都没有**（只有 `x-request-id` / `content-length` / `content-type`） |
+
+原因见 §11d-1「分家」：500 由**最外层 `ServerErrorMiddleware`** 产出，**不经过** `CORSMiddleware`。
+
+🔴 后果：浏览器里前端拿到 500 时是**网络错误**，**读不到 body、也读不到 `request_id`** —— 用户报障时连 ID 都给不出。
+这正是待办 **#57**，`P1`。📌 12c-3 的测试**没有断言 CORS**（那是 #57 的活），只断言了 `x-request-id`。
+
+### 为什么 500 必须换一个客户端才能测
+
+📎 用共享 `client`（`raise_server_exceptions` 默认 `True`）打 500：
+
+```text
+共享 client（默认 raise=True）抛出: RuntimeError x
+```
+
+拿到的是**异常**，不是响应。所以 500 那条测试自己建 `TestClient(app, raise_server_exceptions=False)`。
+
+⚠️ **不能把 `raise_server_exceptions=False` 加进 `conftest.py`**：那会让**所有**测试把真实 bug 看成"500 响应"，
+报错信息从完整堆栈退化成一串 status code —— 定位成本大增。判据：
+**只有"专门测 500 的响应体"这一处需要它。**
+
+---
+
 ## 12.7 该测哪些接口行为（LLM 后端清单）
 
 | 类别 | 具体断言 |

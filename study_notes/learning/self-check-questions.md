@@ -1193,6 +1193,12 @@
     > 📌 反例：`await fake.__aenter__()`（没覆盖、但**不碰 `_http`**）**正常返回** —— 所以「会响亮失败」不是绝对的，取决于那个方法碰不碰 `_http`。
     > ⭐ 那为什么还要继承？**为了让 mypy 盯住签名漂移**（见上一题和第 10 题上方的 §12.6b）：
     > 📎 故意把 `list_models` 返回改成 `list[str]` → `error: Return type ... incompatible with ... in supertype app.llm_client.LlmClient [override]`。
+11. 📎 为什么 `conftest.py` 里的 `client` fixture **不**设 `raise_server_exceptions=False`，而是让测 500 的那条测试**自己新建一个客户端**？
+    > 因为默认 `True` 时，服务端的 500 会**把原始异常抛进测试进程**而不是返回响应（📎 用共享 client 打 500 拿到的是 `RuntimeError: x`）。
+    > 要测 500 的**响应体**必须 `TestClient(app, raise_server_exceptions=False)`。
+    > ⚠️ **但不能把它加进共享 fixture**：那会让**所有**测试把真实 bug 看成「500 响应」，
+    > 报错信息从完整堆栈退化成一串 status code —— 定位成本大增。
+    > ⭐ 判据：**只有「专门测 500 响应体」这一处需要关掉它**；其余测试要的是栈。
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
