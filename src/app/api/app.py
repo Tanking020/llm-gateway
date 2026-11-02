@@ -635,6 +635,10 @@ async def chat_stream(
                 #   b) 单独一帧且 choices 为空列表
                 # 所以不能假设"每帧都有 choices"，先取值再判断
                 usage = _as_dict(chunk.get("usage"))
+                # 【注意】：记账必须排在下面三个 continue 之前 —— 结构坏的帧里 usage 可能是好的，
+                #   一旦先 continue，这次调用的金额就永久丢了（见笔记 §12.5d、待办 #70）
+                if usage:
+                    await record_usage(usage)
                 choices = chunk.get("choices") or []  # .get() 的默认值只能处理键不存在的情况
                 if not isinstance(choices, list):
                     logger.warning("上游 choices 不是列表，已丢弃: type=%s", type(choices).__name__)
@@ -643,7 +647,6 @@ async def chat_stream(
                     # 这种帧只可能是"纯用量帧"（OpenAI 开 stream_options.include_usage 时会出现）
                     # 它没有内容也没有结束原因，所以处理完就可以跳过
                     if usage:
-                        await record_usage(usage)
                         details = usage.get("completion_tokens_details") or {}
                         logger.info(
                             "流式用量(纯用量帧): prompt=%s completion=%s total=%s reasoning=%s "
@@ -699,7 +702,6 @@ async def chat_stream(
                 #   OpenAI 则是单独一帧（choices 为空，已在上面处理）。
                 #   两种位置都要覆盖，所以这里再判断一次，且必须在 content 判断之前
                 if usage:
-                    await record_usage(usage)
                     # 写进服务端日志 = 记账：转发给前端 = 让用户看到花了多少
                     details = usage.get("completion_tokens_details") or {}
                     logger.info(
