@@ -1211,6 +1211,16 @@
     > ⭐ **错写成 break 会漏两样**：① 同一帧里的**最后一个 `content`**（本帧的 delta 在 finish 之后才处理）；② **finish 之后才来的纯用量帧**（OpenAI `stream_options.include_usage` 就是这种）→ **账单丢账**。
     > 📎 实测：加 `break` → `test_normal_stream_frame_order` + `test_frames_after_finish_reason_are_still_processed` **2 个红**。
     > ⭐ 判据：**「这一路说完了」（`finish_reason`）≠「这条流结束了」（`[DONE]` / EOF）**。服务端只在 EOF 收尾，客户端只在 `[DONE]` 收尾。见 §12.5c。
+14. 📎 上游最后一帧是 `{"choices": ["x"], "usage": {"prompt_tokens": 31, "completion_tokens": 7, "total_tokens": 38}}` ——
+    **`choices[0]` 不是对象，但 `usage` 是完整的**。这条流跑完后，`llm_calls` 那行是什么状态、什么数字？
+    **为什么同样"结构不对"的 `finish_reason` 非字符串，却不会造成同样后果？**
+    > 📎 实测：`('pending', 0, 0, 0)` —— **记账完全丢失**。
+    > 根因：`event_source` 里 `usage` 的处理块排在三个 `continue`（`choices` 非 list / `choices[0]` 非 dict / `index != 0`）**之后**，
+    > 所以只要这三个守卫先触发，同一帧里的 `usage` 就**陪葬**了。
+    > 而 `finish_reason` 非字符串那条分支**没有 `continue`**，只是不转发 → `usage` 照常记录。
+    > ⚠️ 放大效应：`usage` 通常**只出现一次且在最后一帧**（`finish_reason` 也在那一帧）→ 丢一次＝整次调用**永久**没有金额。
+    > ⭐ 判据：**「守卫写在谁前面」决定了坏帧的爆炸半径。** 与"记账"有关的处理必须尽量排在"内容校验"之前。见 §12.5d、待办 #70。
+
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
@@ -1305,4 +1315,5 @@
 | 2026-11-01 | 阶段 1 · **Step 11** 补 1 题（第 23 题，11f）：`responses=` 为何是追加而不是替换（📎 三种写法对比：只 `responses` → 两种 content-type）。配套笔记 §11f、待办 #11（原修法已订正） |
 | 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
 | 2026-11-01 | 阶段 1 · **Step 12** 开工前修订第 1~2 题（📎 `httpx2` 实测 2.16.0；且 `starlette.testclient` 里那个叫 `httpx` 的名字实际是 `httpx2`；📎 不用 `with` 时 `/health`·`/v1/models`·`/health/ready` 全 200、只有 `POST /v1/conversations` 炸 `no such table`）+ 补 2 题（第 6 题 `raise_server_exceptions` 默认 `True` / 第 7 题 `settings` 单例与 `import app` 顺序）。配套笔记 stage1 §12.0 §12.2 |
+| 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 14 题，12d-2）：`usage` 与坏结构同帧时被三个 `continue` 连坐 → 记账 `pending 0/0/0`（📎 实测；`finish_reason` 那条因**没有 `continue`** 而安全）。配套笔记 §12.5d、待办 #70 |
 | 2026-10-31 | 新增独立章节 [logging.md](logging.md)：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数与幂等 / 14 条注意事项 / 踩坑表。同时把 `stage1-fastapi.md §11.2` 收缩成指针（避免同一份事实两处维护） |
