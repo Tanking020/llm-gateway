@@ -822,7 +822,7 @@ tests/
 | 状态 | 含义 | 谁写它 |
 |---|---|---|
 | `pending` | 流已经开始，还没结束 | 生成器一开始 |
-| `completed` | 拿到完整 `usage` | `record_usage()` |
+| `completed` | 拿到完整 `usage` | `record_usage()`（**在三个结构守卫之前调用**，见 §8.4b / 待办 #70） |
 | `aborted` | 客户端断开 / 上游报错 | `except` 分支（**同步赋值**，不能 `await`） |
 
 > ⚠️ `aborted` 必须是**同步赋值**：被取消后继续 `await` 会抛 `RuntimeError`。

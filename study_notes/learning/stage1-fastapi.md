@@ -9763,6 +9763,32 @@ thinking → delta 大 → delta 好 → [DONE]        ← 客户端拿到的
 
 所以项目里 `aiter_chunks` 对 `json.loads` **不设 `except`**：让异常抛到路由的 `except`，编码成一帧 `STREAM_FAILED` + `[DONE]`，让客户端**能重试**。
 
+### ✅ 已修（12d-3a，2026-11-02）：记账排在三个 `continue` **之前**
+
+**做法（方案 B）**：只把 `record_usage` 提前，`yield usage` 留在原位。
+
+| 方案 | 做什么 | 后果 |
+|---|---|---|
+| A 整块上移 | `record_usage` + 日志 + `yield usage` 全搬到 `choices` 守卫之前 | ❌ 同一帧里 `usage` 帧会排到 `finish_reason` **之前** → 改掉 §12.5c 已实测的帧序，12d-1 的断言全红 |
+| **B 只提前记账（采用）** | 开头 `if usage: await record_usage(usage)`；后面两处删掉重复调用 | ✅ 帧序一字未变、金额不丢 |
+| C 只挪两个守卫 | 把 `choices[0]` / `index` 的守卫挪到 usage 之后 | ⚠️ 覆盖 ②③，但 `choices` 非 list 那条仍会丢 |
+
+⭐ **为什么 B 不需要担心重复扣费**：`record_usage` 里有 `recorded` 守卫（`if recorded: return`），
+所以「纯用量帧」和「finish 同帧」两条路各调一次也只记第一次 —— **幂等**是提前调用的前提。
+
+📎 **TDD 证据（同一个测试文件，补丁前后各跑一次）**：
+
+```text
+补丁前：.FFF.   3 failed, 2 passed
+        assert [('pending', 0, 0, 0)] == [('completed', 31, 7, 38)]
+
+补丁后：.....   5 passed
+全量  ：47 → 52 passed
+```
+
+⭐ 判据：**「记账」和「转发」是两件事，必须能分开走。** 记账要在「这条帧还有没有用」的判断之前，
+转发要在「这条帧内容好不好」的判断之后 —— 混在一起写，坏帧就会同时杀掉两者。
+
 ### 顺带一个后果：跳过和待办 #68 是同一件事的两面
 
 📎 实测同样的失败跑完后，库里那一行 `llm_calls` 的 `status`：

@@ -1221,6 +1221,16 @@
     > ⚠️ 放大效应：`usage` 通常**只出现一次且在最后一帧**（`finish_reason` 也在那一帧）→ 丢一次＝整次调用**永久**没有金额。
     > ⭐ 判据：**「守卫写在谁前面」决定了坏帧的爆炸半径。** 与"记账"有关的处理必须尽量排在"内容校验"之前。见 §12.5d、待办 #70。
 
+15. 📎 已知要修的两条路：**(A)** 把 `record_usage` + 日志 + `yield usage` **整块**搬到 `choices` 守卫之前；
+   **(B)** 只把 `record_usage` 提前，`yield usage` 留在原位。
+   **为什么最终选 B？A 会弄坏什么？B 又凭什么敢"多调一次"？**
+   > **A 会把 `usage` 帧排到 `finish_reason` 之前** —— 同一帧里两个都有的情况下，客户端看到的帧序从
+   > `finish_reason → usage → delta` 变成 `usage → finish_reason → delta`，直接改掉 §12.5c 里已实测并写进 12d-1 断言的帧序。
+   > ⭐ **B 敢多调一次是因为 `record_usage` 里有 `recorded` 守卫**（`if recorded: return`）——
+   > 所以「纯用量帧」和「finish 同帧」两条路各调一次也只记第一次，**幂等**。
+   > 📌 判据：**「记账」和「转发」必须能分开走** —— 记账在「这帧还有没有用」的判断之前，转发在「这帧内容好不好」的判断之后。
+   > 混在一起写，坏帧就同时杀掉两者。见 §12.5d「✅ 已修」、待办 #70（已关闭）。
+
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
@@ -1315,5 +1325,6 @@
 | 2026-11-01 | 阶段 1 · **Step 11** 补 1 题（第 23 题，11f）：`responses=` 为何是追加而不是替换（📎 三种写法对比：只 `responses` → 两种 content-type）。配套笔记 §11f、待办 #11（原修法已订正） |
 | 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
 | 2026-11-01 | 阶段 1 · **Step 12** 开工前修订第 1~2 题（📎 `httpx2` 实测 2.16.0；且 `starlette.testclient` 里那个叫 `httpx` 的名字实际是 `httpx2`；📎 不用 `with` 时 `/health`·`/v1/models`·`/health/ready` 全 200、只有 `POST /v1/conversations` 炸 `no such table`）+ 补 2 题（第 6 题 `raise_server_exceptions` 默认 `True` / 第 7 题 `settings` 单例与 `import app` 顺序）。配套笔记 stage1 §12.0 §12.2 |
+| 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 15 题，12d-3a）：修 #70 为什么选「只提前记账」而不是「整块上移」（A 会把 `usage` 帧排到 `finish_reason` 之前 → 改掉已实测的帧序）/ `recorded` 守卫让提前调用幂等。配套笔记 §12.5d「✅ 已修」 |
 | 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 14 题，12d-2）：`usage` 与坏结构同帧时被三个 `continue` 连坐 → 记账 `pending 0/0/0`（📎 实测；`finish_reason` 那条因**没有 `continue`** 而安全）。配套笔记 §12.5d、待办 #70 |
 | 2026-10-31 | 新增独立章节 [logging.md](logging.md)：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数与幂等 / 14 条注意事项 / 踩坑表。同时把 `stage1-fastapi.md §11.2` 收缩成指针（避免同一份事实两处维护） |
