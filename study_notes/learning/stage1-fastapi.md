@@ -9587,6 +9587,56 @@ response.close()        # ← 退出 with 时执行（包括出异常）
 
 ⭐ 判据：**凡是「返回一个需要收尾的对象」的调用，就用 `with`。** 不要逐个去论证"这次会不会泄漏"。
 
+## 12.5c 帧序实测：`usage` 在最后一个 `delta` **之前**（2026-11-02，配 12d-1）
+
+### 先给结论：前端不能假设「收到 `finish_reason` 就代表内容结束了」
+
+📎 实测帧序（上游一帧里同时给了 `content` 和 `finish_reason` 和 `usage`）：
+
+```text
+1. {"status": "thinking"}
+2. {"delta": "你"}
+3. {"finish_reason": "stop"}        ← 上游的「最后一帧」在这里
+4. {"usage": {…}}                    ← 代码先处理 usage
+5. {"delta": "好"}                  ← 然后才处理同一帧里的 content
+6. [DONE]
+```
+
+**为什么 `delta: 好` 出现在 `finish_reason` 之后**：`event_source` 里的处理顺序是
+`usage → finish_reason → content`（源码里那句注释写的就是「必须在 content 判断之前」）。
+
+### 所以前端该按什么读
+
+| 错误做法 | 正确做法 |
+|---|---|
+| 收到 `finish_reason` 就把回答「封笔」 | **一直收集 `delta`，直到 `[DONE]`** |
+| 用 `finish_reason` 判断「有没有内容」 | 看有没有收到过 `delta` / 有没有 `STREAM_NO_CONTENT` |
+| 假设 `usage` 一定在最后 | 不假设位置，收到就用 |
+
+### 一张表：客户端要处理的所有帧
+
+| 帧 | 必须处理吗 | 不处理会怎样 |
+|---|---|---|
+| `{"status": "thinking"}` | 可选（显示进度用） | 用户看不到反馈，以为卡住 |
+| `{"delta": "…"}` | ✅ **必须** | 回答是空的 |
+| `{"finish_reason": "stop"\|"length"}` | 可选 | 分不清「说完了」和「被截断」 |
+| `{"usage": {…}}` | 可选 | 用户看不到 token 用量 |
+| `{"error": {"code": "STREAM_NO_CONTENT"}}` | ✅ **必须** | 把「什么都没拿到」显示成一个空回答 |
+| `{"error": {"code": "STREAM_FAILED"}}` | ✅ **必须** | 把「中途断了」显示成一个短回答 |
+| `[DONE]` | ✅ **必须** | 永远等不到结束信号（连接挂着） |
+
+⚠️ **两种 error 帧的出现位置不同**：`STREAM_NO_CONTENT` 在流**末尾**（`[DONE]` 之前）；
+`STREAM_FAILED` 后面**也一定还有 `[DONE]`** —— 两条退出路径都发收尾标记。
+
+### 顺带：`usage` 可能在两种位置出现
+
+| 上游给法 | 例子 | 本项目怎么处理 |
+|---|---|---|
+| 和 `finish_reason` 挤在同一帧（DeepSeek） | 实测 | 两个都处理 |
+| **单独一帧**、`choices: []`（OpenAI `include_usage`） | 📎 实测返回 `thinking + usage + STREAM_NO_CONTENT + [DONE]` | 先处理 usage 帧，然后照样判零内容 |
+
+⭐ 判据：**「帧的类型」决定怎么解析，「帧的位置」一律不做假设。**
+
 ## 12.6 依赖覆盖：绕过认证和数据库
 
 ```python

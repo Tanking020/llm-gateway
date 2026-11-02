@@ -1199,6 +1199,13 @@
     > ⚠️ **但不能把它加进共享 fixture**：那会让**所有**测试把真实 bug 看成「500 响应」，
     > 报错信息从完整堆栈退化成一串 status code —— 定位成本大增。
     > ⭐ 判据：**只有「专门测 500 响应体」这一处需要关掉它**；其余测试要的是栈。
+12. 📎 测试 helper 里通常先 `assert response.headers["content-type"].startswith(...)` 再 `"".join(response.iter_text())`。**对调这两行会怎样？**
+    > ⚠️ **很多人第一反应是「header 要在 body 之前读」——那是错的。** 📎 实测：body 读完之后再读 `r.headers["content-type"]`，**仍然返回** `text/event-stream; charset=utf-8`。
+    > 因为 `client.stream()` 一进 `with` 响应头就已经就绪，读 body 不会让它消失。所以**对调不会让测试变红**。
+    > ⭐ **真正变的是失败信息质量**：📎 若响应其实是 `application/json`（200），先读 body 会让 `_frames()` 报 `非法帧（缺 data: 前缀或空格）` —— 
+    > 让人去查帧格式；先断言 header 则直接说「content-type 不对」，一眼知道原因。
+    > ⭐ 判据：**能提前失败的断言就写在前面** —— 不是为了正确性，是为了**报错指向正确的方向**。
+    > 📌 另注：`502` 那种情况轮不到这两行 —— 上面那条 `assert response.status_code == 200` 会先红。
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
