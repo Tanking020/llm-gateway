@@ -125,5 +125,9 @@ select = ["E", "F", "I", "UP", "B", "TID"]
 # 适配器自己是唯一的例外
 [tool.ruff.lint.per-file-ignores]
 "src/app/llm_client.py" = ["TID251"]
+# test_stream_adapter.py 测的是【适配器内部的协议解析】：它必须构造 httpx.Response
+#   才能把原始 SSE 字节喂给 LlmChatStream。这是 TID251 的例外 —— 它不绕过适配器调上游，
+#   而是往适配器里喂数据（判据：文件里没有 client.get / client.post 这类调用）
+"tests/test_stream_adapter.py" = ["TID251"]
 # playground/ 是学习实验脚本，刻意直接写 httpx（不经过适配器），不是业务代码
 "playground/*.py" = ["TID251"]
