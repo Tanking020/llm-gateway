@@ -41,7 +41,7 @@ from app.database import engine
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
 from app.logging_setup import configure_logging
-from app.models import Base, Conversation, LlmCall
+from app.models import Base, Conversation, LlmCall, LlmCallStatus
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -596,12 +596,14 @@ async def chat_stream(
         #   但 flush 不是持久化：进程崩溃时这一行会被回滚掉（实测强杀后 0 行）
         # 必须在 yield thinking 之前：yield 交出控制权，从那一刻起就可能被取消
         call = LlmCall(
-            conversation_id=request.conversation_id, model=actual_model, status="pending"
+            conversation_id=request.conversation_id,
+            model=actual_model,
+            status=LlmCallStatus.PENDING,
         )
         db.add(call)
         await db.flush()
 
-        recorded = False
+        recorded = False  # 两阶段记账：幂等守卫
 
         # 先发一帧状态，前端可以立刻显示"模型思考中"
         #   注意：加了 pre-flight 之后，这一帧要等上游响应头回来才发得出去
@@ -618,7 +620,7 @@ async def chat_stream(
             call.prompt_tokens = _as_int(usage.get("prompt_tokens"))
             call.completion_tokens = _as_int(usage.get("completion_tokens"))
             call.total_tokens = _as_int(usage.get("total_tokens"))
-            call.status = "completed"
+            call.status = LlmCallStatus.COMPLETED
             await db.flush()
 
         try:
@@ -743,6 +745,10 @@ async def chat_stream(
             # 状态码是 200 -> pre-flight 拦不住；头已发出 -> 改不了状态码
             # 唯一做法：在流里明确说"这次没拿到内容"，别让前端以为"回答就是空的"
             if content_frames == 0:
+                # 零内容时金额是【不确定】的；上游可能已经扣费，但我们拿不到数字
+                # 【注意】：有 usage 的情况走不到这里（recorded 已为 True，status 已是 completed）
+                if not recorded:
+                    call.status = LlmCallStatus.NO_CONTENT
                 logger.error(
                     "流式零内容：上游 chunk=%s 内容帧=0 —— "
                     "可能是 HTML / 空 body / 上游忽略 stream=True",
@@ -778,7 +784,7 @@ async def chat_stream(
             # （绝不回显 str(exc) 或堆栈 —— 那可能泄露内部结构）
             # 上游已经产出的 token 照样收费，所以不能抹掉这一行，只能标成 aborted
             if not recorded:
-                call.status = "aborted"
+                call.status = LlmCallStatus.ABORTED
 
             logger.exception("流式过程中失败：%s", type(exc).__name__)
             yield (

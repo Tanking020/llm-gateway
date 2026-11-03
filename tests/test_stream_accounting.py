@@ -1,6 +1,7 @@
 """账单层的契约：一次流式调用必须留下一行【能对账】的记录"""
 
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,9 @@ from fastapi.testclient import TestClient
 
 from app.api.app import app
 from app.api.deps import get_llm_client
-from fakes import FakeLlm
+from app.llm_client import LlmChatStream
+from app.models import LlmCallStatus
+from fakes import FakeChatStream, FakeLlm
 
 REQ = {"messages": [{"role": "user", "content": "hi"}]}
 
@@ -16,15 +19,35 @@ REQ = {"messages": [{"role": "user", "content": "hi"}]}
 USAGE = {"prompt_tokens": 31, "completion_tokens": 7, "total_tokens": 38}
 
 
-def _stream(client: TestClient, chunks: list[dict[str, Any]]) -> None:
-    """注入假上游 → 发一次流式请求 → 把流读干净（读干净 app 才会提交账单）"""
-    app.dependency_overrides[get_llm_client] = lambda: FakeLlm(chunks=chunks)
+class _BrokenStream(FakeChatStream):
+    """吐一帧之后再抛异常：模拟「流已经开始之后上游才断」"""
+
+    async def aiter_chunks(self) -> AsyncIterator[dict[str, Any]]:
+        yield {"choices": [{"index": 0, "delta": {"content": "大"}}]}
+        raise RuntimeError("上游连接断了")
+
+
+class _BrokenLlm(FakeLlm):
+    """不管请求体长什么样，都交给 _BrokenStream"""
+
+    async def open_chat_stream(self, body: dict[str, object]) -> LlmChatStream:
+        return _BrokenStream([])
+
+
+def _run(client: TestClient, llm: FakeLlm) -> None:
+    """注入给定的假上游 → 发一次流式请求 → 把流读干净（读干净 app 才会提交账单）"""
+    app.dependency_overrides[get_llm_client] = lambda: llm
     try:
         with client.stream("POST", "/v1/chat/stream", json=REQ) as response:
             assert response.status_code == 200
             _ = "".join(response.iter_text())
     finally:
         app.dependency_overrides.clear()
+
+
+def _stream(client: TestClient, chunks: list[dict[str, Any]]) -> None:
+    """按一段 chunk 列表造一个假上游"""
+    _run(client, FakeLlm(chunks=chunks))
 
 
 def _rows(db: Path) -> list[tuple[Any, ...]]:
@@ -53,10 +76,7 @@ def test_normal_stream_records_completed_with_tokens(client: TestClient, db_path
 
 
 def test_usage_survives_when_choices_is_not_a_list(client: TestClient, db_path: Path) -> None:
-    """choices 结构坏了，但同一帧的 usage 是好的 -> 金额必须落库
-
-    【注意】：这是待办 #70 —— 记账块排在 choices 守卫之后，坏结构会把 usage 一起丢掉
-    """
+    """choices 结构坏了，但同一帧的 usage 是好的 -> 金额必须落库"""
     _stream(client, [{"choices": {"a": 1}, "usage": USAGE}])
     assert _rows(db_path) == [("completed", 31, 7, 38)]
 
@@ -83,3 +103,45 @@ def test_duplicate_usage_is_recorded_only_once(client: TestClient, db_path: Path
         ],
     )
     assert _rows(db_path) == [("completed", 31, 7, 38)]
+
+
+def test_empty_upstream_is_recorded_as_no_content(client: TestClient, db_path: Path) -> None:
+    """上游一帧都没给（空 body / HTML）-> 金额不确定，记 no_content"""
+    _stream(client, [])
+    assert _rows(db_path) == [("no_content", 0, 0, 0)]
+
+
+def test_pure_thinking_stream_is_recorded_as_no_content(client: TestClient, db_path: Path) -> None:
+    """只拿到思维链、没内容也没 usage -> 同样记 no_content"""
+    _stream(client, [{"choices": [{"index": 0, "delta": {"reasoning_content": "想"}}]}])
+    assert _rows(db_path) == [("no_content", 0, 0, 0)]
+
+
+def test_zero_content_with_usage_stays_completed(client: TestClient, db_path: Path) -> None:
+    """零内容但拿到了 usage：钱准了 -> 仍是 completed（内容空不空归日志管，不归账单管）"""
+    _stream(
+        client,
+        [{"choices": [{"index": 0, "delta": {"role": "assistant"}}], "usage": USAGE}],
+    )
+    assert _rows(db_path) == [("completed", 31, 7, 38)]
+
+
+def test_status_enum_values_are_pinned() -> None:
+    """状态值就是数据库里的字面量：拼错一个字母，对账查询就永远查不到那一行
+
+    【注意】：StrEnum 只防【成员名】拼错（mypy 抓），不防【值】拼错 —— 值必须靠断言钉住
+    """
+    assert {member.value for member in LlmCallStatus} == {
+        "pending",
+        "completed",
+        "aborted",
+        "no_content",
+    }
+
+
+def test_stream_broken_after_first_frame_is_recorded_as_aborted(
+    client: TestClient, db_path: Path
+) -> None:
+    """流开始后抛异常 -> aborted（上游可能已计费，但数字拿不到）"""
+    _run(client, _BrokenLlm())
+    assert _rows(db_path) == [("aborted", 0, 0, 0)]
