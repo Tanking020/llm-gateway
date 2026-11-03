@@ -48,25 +48,8 @@ dev = [
     "mypy>=2.4.0",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1",
-    # 覆盖率：12f 要求「看分支不看数字」—— 分支覆盖才追得出「if 的另一半没人走」
-    "pytest-cov>=7.0.0",
     "ruff>=0.16.10",
 ]
-
-# ============ 覆盖率（12f） ============
-[tool.coverage.run]
-branch = true          # 看分支：只看行覆盖会漏掉「if 的另一半没人走」
-source = ["src/app"]
-omit = [
-    # 阶段 0 的命令行练习脚本（ping 演示），不是 HTTP 服务的一部分 —— 测它没有意义
-    "src/app/main.py",
-    # uvicorn 启动入口：要真起一个进程才能测，归到部署步骤（见 13）
-    "src/app/__main__.py",
-]
-
-[tool.coverage.report]
-show_missing = true    # 报告里直接给出没跑到的行号，省得再开一次 html
-skip_covered = true    # 100% 的文件不列出来，让缺口一眼可见
 
 # ============ pytest 的配置 ============
 [tool.pytest.ini_options]
