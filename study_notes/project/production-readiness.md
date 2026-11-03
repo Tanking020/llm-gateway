@@ -69,6 +69,7 @@
   - 📎 **最大缺口 = `llm_client.py` 63%**：适配器真实 HTTP 路径（`list_models` / `open_chat_stream` / `_request` 三档错误翻译 / `_read_error_body`）**一个都没覆盖** → 已登记 **#75（P1）**
   - 📎 `app.py` 84%：缺分页 `has_more`/`next_cursor`、`max_tokens` 分支、`except BaseException` 取消分支、`/v1/chat` pre-flight
   - ⚠️ **工具坑**：`465`（`await db.delete`）与 `485`（`conv.title = ...`）报「未覆盖」，但 📎 实测 DELETE 后库里 `1 → 0` 行 —— 是 **coverage 少报**（与 SQLAlchemy 的 greenlet 切换有关），不是真缺口。**判据：覆盖率要和行为断言交叉验证**
+  - ⚠️ **而且数字会抖**：📎 同一命令连跑 4 次，`TOTAL Miss` 在 **66/67** 之间跳（`Cover` 84%/85%）。→ **不设 `--cov-fail-under`**；覆盖率只用于找缺口，守行为靠断言。详见 [tests/README.md](../../tests/README.md) §3.5
 - [ ] 推送即跑 `ruff + mypy + pytest`（无 CI，质量门全靠人记得手敲） · `P1` · 关联 **#62**
 
 ### 门 2 · 安全与租户隔离 🔴 **零**

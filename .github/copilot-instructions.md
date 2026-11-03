@@ -31,6 +31,7 @@
 | 3 | `study_notes/project/decisions.md` | **业务/架构决策台账**。动手改数据结构 / 接口形状 / 部署形态前**先查有没有已定决策**，别重新发明 |
 | 4 | `study_notes/learning/learning-log.md` | **已踩过的坑 + 已确认的结论**。动手前先查，别重复踩 |
 | 4b | `study_notes/project/architecture-map.md` | **各种关系与形状的图**（七层栈 / 模块依赖 / ER+DDL / 端点总表 / 成功·错误·SSE 完整形状 / 配置 / 日志 / 测试 / 状态机）。改接口形状 / 加中间件 / 排查「请求走到哪层」前先看 |
+| 4c | `tests/README.md` | **测试怎么跑、怎么读输出、两个连接池谁占谁**。改 `tests/` 或排查并发/池占用前先看 |
 | 5 | `study_notes/learning/stage1-fastapi.md` 对应 Step | 本轮要讲的内容（多数已提前整理好） |
 | 6 | `study_notes/learning/self-check-questions.md` | 出题与批改都从这里取，题目**只在这一处** |
 
