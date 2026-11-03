@@ -1,6 +1,7 @@
 """ORM 模型定义：把数据库表映射成 Python 类（本文件只放表结构，不含业务逻辑）"""
 
 from datetime import UTC, datetime
+from enum import StrEnum
 
 # String(length) 用于声明有长度限制的文本列，例如对话标题
 # ForeignKey 声明"这一列引用另一张表的主键"，这是【数据库层】的约束
@@ -58,6 +59,20 @@ class Conversation(Base):
     calls: Mapped[list["LlmCall"]] = relationship(back_populates="conversation")
 
 
+class LlmCallStatus(StrEnum):
+    """
+    账单行的状态：只表达【这一行的金额准不准】，不表达【内容空不空】
+
+    【注意】：数据库里存的是【字符串值】不是成员名 —— 列类型仍是 String(20)，无需迁移。
+        读回来是普通 str，所以比较时候可以直接写 row.status == "completed"。
+    """
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+    NO_CONTENT = "no_content"
+
+
 class LlmCall(Base):
     """
     一次 LLM 调用的用量记录（账单）
@@ -88,10 +103,12 @@ class LlmCall(Base):
     completion_tokens: Mapped[int] = mapped_column(default=0)
     total_tokens: Mapped[int] = mapped_column(default=0)
 
-    # 这次调用怎么结束的：completed = 拿到完整 usage；aborted = 客户端中途断开
+    # 这次调用怎么结束的，取值见 LlmCallStatus：
+    #   completed = 拿到完整 usage（金额可信）/ aborted = 客户端断开或上游异常
+    #   no_content = 上游 200 但一帧内容都没有 / pending = 没走到收尾（进程崩了）
     # 【注意】：断开时上游【已经产出的 token 照样收费】，所以不能因为没拿到 usage
     # 就把这一行丢掉 —— 否则账面完全看不到这次调用，月底对账查不出差额来自哪里
-    status: Mapped[str] = mapped_column(String(20), default="completed")
+    status: Mapped[str] = mapped_column(String(20), default=LlmCallStatus.COMPLETED)
 
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
