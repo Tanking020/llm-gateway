@@ -463,6 +463,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | [study_notes/learning/logging.md](study_notes/learning/logging.md) | **日志原理与写法**（专题，换项目照样成立） | 同上 |
 | [study_notes/learning/learning-log.md](study_notes/learning/learning-log.md) | **那天为什么改成这样**（流水 / 踩坑 / 结论 / 12 个专题） | 每步收口 |
 | [study_notes/learning/self-check-questions.md](study_notes/learning/self-check-questions.md) | **我到底懂没懂**（全部自检题 + 答案，唯一出处） | 每步补题 |
+| [tests/README.md](tests/README.md) | **怎么测**（8 个文件各测哪层 / 怎么跑 / 怎么读 pytest 与覆盖率输出 / **两个连接池谁占谁** / 并发要问的 5 个问题） | 改测试或排查并发时 |
 | [study_notes/learning/tools-reference.md](study_notes/learning/tools-reference.md) | **这个工具/包怎么用**（速查卡片） | 用错一次就补一条 |
 | [工程规范与协作约定.md](工程规范与协作约定.md) | **我们怎么协作**（步骤卡格式 / 质量门 / 安全约定 / 硬约束） | 约定变化时 |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | **AI 进来先读什么**（新会话自动加载的协作指令） | 少改 |
