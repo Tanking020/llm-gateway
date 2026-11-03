@@ -8,10 +8,10 @@
 
 | 文件 | 内容 | 什么时候看 |
 |---|---|---|
-| [roadmap.md](roadmap.md) | 学习路线 / 阶段划分 / **进度** / **待办清单（#1~#66）** | 开工前、想知道「还剩几步」 |
-| [decisions.md](decisions.md) | 业务与架构决策（ADR，25 条 + 待定清单） | 要改数据结构 / 接口形状 / 部署形态**之前** |
+| [roadmap.md](roadmap.md) | 学习路线 / 阶段划分 / **进度** / **待办清单（#1~#74）** | 开工前、想知道「还剩几步」 |
+| [decisions.md](decisions.md) | 业务与架构决策（ADR，28 条 + 待定清单） | 要改数据结构 / 接口形状 / 部署形态**之前** |
 | [production-readiness.md](production-readiness.md) | **生产级自检**：七道门（测试 / 安全 / 容量 / 成本 / 可观测 / 可交付 / 数据治理）+ 档期 `P0/P1/P2` + 过门判据 | 排优先级、判断「能不能上线了」、准备面试 |
-| [architecture-map.md](architecture-map.md) | **各种关系与形状的图**：请求穿过的七层 / 模块依赖 / lifespan / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / 配置 / 日志 / 测试 / 状态机 | 想弄清「这个请求经过哪几层」「出错时前端拿到什么」「这个字段从哪来」 |
+| [architecture-map.md](architecture-map.md) | **各种关系与形状的图**：请求穿过的七层 / 模块依赖 / lifespan / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / **§8.6 流式完整时序（含账单状态机与每个时刻的故障）** / 配置 / 日志 / 测试 / 状态机 | 想弄清「这个请求经过哪几层」「出错时前端拿到什么」「这个字段从哪来」 |
 
 ## ⚠️ 改代码或改结构前，先查 `decisions.md`
 
@@ -25,6 +25,8 @@
 | 把引擎改成每请求新建 | [decisions #14](decisions.md#14-引擎用模块级单例并在-lifespan-里释放) | ⛔ 连接池就没意义了 |
 | 给 `LlmCall` 写 `conversation_id: int` | [decisions #16](decisions.md#16-计费记录不能跟着对话一起删) | 必须 `int \| None` —— 📎 写 `int` 就是 500 |
 | 在每条路由里各写一遍「对话不存在 → 404」 | [decisions #8](decisions.md#8-业务规则抽成函数由多条路由共用) | ⛔ 抽成 `require_conversation`，5 处共用 |
+| 把记账的 `await db.commit()` 换回 `flush()`「少提交一次」 | [decisions #28](decisions.md#28-两阶段记账的两次写入都用-commit不用-flush) | ⛔ 写锁会横跨整条流 → 并发流串行化（📎 4 条并发 0.71s → 2.60s） |
+| 把零内容收尾的状态改成 `aborted`「少一个值」 | [decisions #27](decisions.md#27-账单-status-只表达金额准不准四态值域用-strenum) | ⛔ 把「用户走了」和「上游坏了」混成一个值 |
 
 ## 四个文件的边界
 

@@ -3,7 +3,7 @@
 > **用途**：本文档是长期学习的唯一上下文来源（single source of truth）。
 > 每次开启新对话时，请先让 AI 阅读本文档，再继续讨论。
 >
-> **最后更新**：2026-11-01（**阶段 1 · Step 11 全部完成**：11a~11f ✅；并新增 [production-readiness.md](production-readiness.md) 生产级自检 + 待办 #59~#66）
+> **最后更新**：2026-11-03（**阶段 1 · Step 12 做到 12e ✅**：12a~12e 全部完成、**61 个用例**；修掉 #73 / #59 / #42 三个 P0 —— 记账两次写入 `flush` → `commit`；新增决策 27 / 28、待办 #67~#74）
 
 ---
 
@@ -70,14 +70,14 @@
 - **产出**：一个可运行的「聊天接口后端」（业务逻辑先用 echo 占位）
 - **验收**：能用 curl / Swagger 调通接口，能流式返回内容
 - **笔记**：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md)（13 步 + 10 个难点拓展 + 5 个附录）
-- **状态**：🟡 **进行中**（2026-10-14 起，**Step 1~10 已全部完成**，Step 11 进行中）
+- **状态**：🟡 **进行中**（2026-10-14 起，**Step 1~11 已全部完成**；Step 12 做到 12e，剩 12f 收口）
   - **Step 1 ~ 6 已完成**，其中 **Step 4 于 10-18 补齐**（4a / 4b）：`ModelItem` + `ModelListResponse` 落地，`/docs` 可展开响应结构
   - Step 6：404 / 400 / 502 / 500+`request_id` / `AppError` 统一错误形状 / `lifespan` 共享 client
   - Step 7 中间件与 CORS ✅ / Step 8 异步正确姿势 ✅ / **Step 9 SSE 流式 ✅（含 9b-4a~9b-4b-3 + 复盘 + 三次补讲，2026-10-23 收口）**
   - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**
   - **Step 11 工程化（2026-10-29 ~ 11-01）✅ 全部完成**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / **11e ✅ 生产关交互式文档** / **11f ✅ 流式接口在 `/docs` 标 `text/event-stream`**
-  - 🟡 **Step 12 测试进行中（2026-11-01 起）**：依赖已装（`pytest==9.2.0` / `pytest-asyncio==1.4.1` / `httpx2==2.16.0`）+ `[tool.pytest.ini_options]` 已配（`testpaths` / `asyncio_default_fixture_loop_scope`）；**12a 由学习者手写中**（`tests\conftest.py`、`tests\test_smoke.py` 已新建为空文件）
-  - ⏭️ **下一步 = 12c 假 LLM + 错误形状断言**（`dependency_overrides` 注入假上游；把 11d 的 envelope / 全状态码一致钉成断言）；12a~12f 拆步见下方「待办 → 步骤 对照」表
+  - ✅ **Step 12 测试（2026-11-01 ~ 11-03，12a~12e 完成、12f 待做）**：依赖 `pytest==9.2.0` / `pytest-asyncio==1.4.1` / `httpx2==2.16.0`；**61 个用例**分四层 —— 冒烟 2 / 对话契约 9 / 上游接线 6 / 错误形状 7 / 流式帧 12 / 适配器协议 11 / 账单四态 10 / 真 uvicorn 并发 4。📎 变异测试累计 **24 次、21 次抓到**（3 次抓不到的都记了原因，见 #74）。⭐ 这一段最大的产出不是用例数，而是**用测试逼出了两个真缺陷并修掉**：坏帧吞掉 usage（#70）、并发流被串行化（#73 → 连带 #59 / #42）
+  - 🟡 **下一步 = 12f 收口**（覆盖率看分支不看数字 + 门 1 打勾）；12a~12f 拆步见下方「待办 → 步骤 对照」表
   - 🟡 **Step 14 架构盘点进行中（2026-11-02 插入，优先于 12d）**：学习者决定先把「各种架构与形状」完全弄清楚，再回来做 12d；
     产物 = [architecture-map.md](architecture-map.md)。**12d ~ 12f 挂起**，不是取消
   - **Step 13 未开始**（部署）
@@ -385,7 +385,7 @@
 | **12d-2** | 🟡 **下一步** 建 `tests/test_stream_adapter.py`：**适配器层**（喂原始 SSE 字节给 `LlmChatStream`）。📎 已验证可行：`httpx.Response(200, content=b"…")` 能直接喂 `aiter_chunks()`；实测 `data:{…}` 无空格 ✅ / `data: ` 空行跳过 ✅ / `data: null` 丢弃+WARNING ✅ / `data: [1,2,3]` 丢弃+WARNING ✅ / 注释行 `: xxx` 与 `event: ping` 跳过 ✅ / `[DONE]` 之后的帧跳过 ✅ | ✅ 2026-11-02 完成 · #40 · 📎 **47 passed**（36 + 11）、四道门 `28 files` 全绿；📎 **5 次变异全部被抓**：要求 `data: ` 带空格 → 1 红 / 不丢 `[DONE]` 后的帧 → 1 红 / 吞掉坏 JSON → 1 红 / 空 `data:` 也去 `loads` → 1 红 / 不校验 dict → **4 红**；📎 另测 **9 组解析边界**（CRLF / 裸 `\r` / 无结尾空行 / `id:retry:` / `data:[DONE]` / 尾随空格 全 ✅；**多行 `data:` 事件抛 `JSONDecodeError`**、**BOM 开头丢首帧** → 新增待办 #71）→ 见 §12.5e |
 | **12d-3a** | ✅ **完成**（2026-11-02）修 **#70**（记账提到三个 `continue` 之前）+ 建 `tests/test_stream_accounting.py` 5 个用例 + `conftest.py` 加 `db_path` fixture | ✅ 5 passed · 全量 **52 passed**、四道门 `29 files` 全绿；📎 **TDD 红→绿**：补丁前 3 红 / 补丁后 5 绿；📎 帧序未变 → 12d-1 的帧序断言照旧全绿 |
 | **12d-3b** | ✅ **完成**（2026-11-02）定 #68 语义 + 补 4 个用例 + 收 StrEnum + **加枚举值守卫用例** | ✅ 10 passed · 全量 **57 passed**、四道门 `29 files` 全绿；📎 7 次变异全抓；🔴 学习者的 `PENDING = "pengding"` **过了四道门** → 新增守卫用例（值必须靠断言钉住，mypy 管不到） |
-| **12e** | 🟡 **下一步** 建 `tests/test_concurrency.py`：真 `uvicorn`（随机端口）+ 真 TCP 客户端，用 2 / 4 条并发流钉住 **#73**（`xfail(strict=True)`）；同时给出「为什么 TestClient 测不出并发」的实证 | ⬜ 待做 · #40 · 关联 **#59 / #73**<br>📎 已验证可行：`uvicorn.Server(uvicorn.Config(app, port=0))` + 线程 + `server.servers[0].sockets[0].getsockname()` 能拿到端口；📎 候选文件已跑通 `1 passed, 2 xfailed in 5.68s`；📎 并已验证 `xfail(strict=True)` 真的会响（把阈值放大 → `FAILED ... [XPASS(strict)]`）<br>🔴 **前提（2026-11-02 实测）**：#59 **在 `TestClient` 里复现不出来** —— 📎 客户端一帧不读时 `get_db` 也已收尾（`checkedout=0`），因为 TestClient 两端是无界内存流、没有 TCP 背压。**必须起真 uvicorn + 真 HTTP 客户端** |
+| **12e** | ✅ **完成**（2026-11-03）建 `tests/test_concurrency.py`：真 `uvicorn`（随机端口）+ 真 TCP 客户端，4 个用例（单流基线 / 2 条并发 / 4 条并发 / 流跑到一半 `pending` 已落库）→ **并据此修掉 #73 / #59 / #42** | ✅ 4 passed · 全量 **61 passed**、四道门 `30 files` 全绿<br>📎 用 `xfail(strict=True)` 先钉住缺陷，修好后它们如预期变 **XPASS → 2 红**，删标记后转绿（这就是 strict 的用途）；📎 变异：⑥ 改回 `flush` → 并发测试红；usage 那处改回 `flush` → **61 个全绿**（登记 #74）<br>📎 已验证可行：`uvicorn.Server(uvicorn.Config(app, port=0))` + 线程 + `server.servers[0].sockets[0].getsockname()` 能拿到端口；📎 候选文件已跑通 `1 passed, 2 xfailed in 5.68s`；📎 并已验证 `xfail(strict=True)` 真的会响（把阈值放大 → `FAILED ... [XPASS(strict)]`）<br>🔴 **前提（2026-11-02 实测）**：#59 **在 `TestClient` 里复现不出来** —— 📎 客户端一帧不读时 `get_db` 也已收尾（`checkedout=0`），因为 TestClient 两端是无界内存流、没有 TCP 背压。**必须起真 uvicorn + 真 HTTP 客户端** |
 | **12f** | 收口：覆盖率**看分支不看数字** + 台账 + 门 1 打勾；CI（#62）留 `P1` | ⬜ 待做 · #40 ↔ 关联 #62 |
 | **14** | **架构盘点（Architecture Review，2026-11-02 学习者插入）**：把「各种关系 + 各种形状」集中一处、能对得上代码。判据 = **能凭图回答「这个请求经过哪几层 / 出错时前端拿到什么 / 这个字段从哪来」** | — （复盘步骤，不关任何待办） |
 | **14a** | 建 `study_notes/project/architecture-map.md`：13 节（七层栈 / 模块依赖 / lifespan / ER+DDL / 端点总表 / 成功形状 / 错误形状 / SSE 帧 / 配置 / 日志 / 测试 / 状态机 / 速查） | ✅ 2026-11-02 建立 · 📎 全部由探针取真实数据（`build_middleware_stack` 逐层、`app.routes`、`model_fields`、`sqlite_master` DDL、逐端点实跑响应） |

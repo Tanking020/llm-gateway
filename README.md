@@ -7,21 +7,21 @@
 > 判据与「可以让步 vs 绝不能让步」的清单见[工程规范 §7.0c](工程规范与协作约定.md)。
 
 **当前状态**：阶段 0 · 工程基础已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 11 已完成；Step 12 测试进行到 12c-2（17 个用例全绿）**
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 11 已完成；Step 12 测试做到 12e（61 个用例全绿，含真 uvicorn 并发测试）**
 （HTTP/ASGI 地基 → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御 → 数据库与账单 → 工程化 → 自动化测试）。
 已具备：请求追踪中间件、**一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
 一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
 实测首帧 60ms / 总 906ms；上游失败时客户端拿 **502** 而不是 `200` + 断连）、
-**可对账的账单体系**（`llm_calls` 表，`status` 三态区分 `completed` / `aborted` / `pending`）、
+**可对账的账单体系**（`llm_calls` 表，`status` **四态**：`completed` / `aborted` / `no_content` / `pending`，值域用 `StrEnum` 收敛，📎 并发 6 条流时连接池峰值仅 2）、
 **全项目统一的错误响应**（任何错误都是 `{"error":{code,message,request_id}}`，422 多一个 `details`）、
 **单一出口的日志配置**（`dictConfig`，三条启动路径同一格式）、
 **prod 环境的多重保护**（`DEBUG=true` 启动即崩、`/docs` `/redoc` `/openapi.json` 一并关闭）、
 **说真话的 `/docs`**（流式接口标 `text/event-stream`），
-以及**第一批自动化回归测试**：`tests/` + `TestClient` + 假上游，`uv run pytest` 一条命令跑完 **17 个用例**（含 5 次变异测试证明断言真的会失败）。
+以及**自动化回归测试**：`tests/` + `TestClient` + 假上游，`uv run pytest` 一条命令跑完 **61 个用例**（含**真 uvicorn 并发测试**；**24 次变异测试**证明断言真的有牙）。⭐ 这套测试已经逼出并修掉了两个真缺陷：坏帧吞掉 token 用量、并发流被完全串行化。
 详见[路线图](#路线图)。
 
 > ⚠️ **离「能上线」还差什么**：无鉴权 / 无限流 / 无 CI / 无 `Dockerfile` / 无指标，
-> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#67）。
+> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#74）。
 
 ---
 
@@ -47,7 +47,7 @@
 | 静态检查 | mypy（strict）/ ruff | 2.4.0 / 0.16.10 |
 | Web 框架 | FastAPI + uvicorn（ASGI） | 0.143.0 / 0.54.0 |
 | 数据库 | SQLAlchemy 2.1 async（2.0 风格 ORM）+ aiosqlite；SQLite → PostgreSQL | 2.1.6 / 0.22.1；Step 10 已完成（依赖 / 模型 / 引擎 / 请求级会话 / 对话 CRUD 四操作五接口 / 账单表 / 游标分页） |
-| 测试 | pytest + pytest-asyncio + httpx2（Starlette 1.x 的测试客户端依赖） | 9.2.0 / 1.4.1 / 2.16.0；Step 12 已落地 17 个用例 |
+| 测试 | pytest + pytest-asyncio + httpx2（Starlette 1.x 的测试客户端依赖） | 9.2.0 / 1.4.1 / 2.16.0；Step 12 已落地 **61 个用例**（含真 uvicorn 并发测试） |
 | 交付 | Docker（多阶段构建 + 非 root 运行） | 阶段 1 引入 |
 
 依赖分工：**运行必需的**写在 `[project] dependencies`，**仅开发需要的**（mypy / ruff / pytest）写在
@@ -347,7 +347,7 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 uv run ruff format .          # 1. 格式化
 uv run ruff check . --fix     # 2. lint（规则集 E/F/I/UP/B/TID）
 uv run mypy .                 # 3. 类型检查（strict + warn_unreachable，全项目含 tests/ 与 playground/）
-uv run pytest -q              # 4. 回归测试（17 个用例，不碰真上游、不碰开发库）
+uv run pytest -q              # 4. 回归测试（61 个用例，不碰真上游、不碰开发库；约 7s，含真 uvicorn）
 ```
 
 当前状态：
@@ -355,9 +355,9 @@ uv run pytest -q              # 4. 回归测试（17 个用例，不碰真上游
 | 检查 | 结果 |
 |---|---|
 | `ruff check .` | All checks passed! |
-| `ruff format --check .` | 25 files already formatted |
-| `mypy .` | Success: no issues found in 25 source files |
-| `pytest -q` | 17 passed |
+| `ruff format --check .` | 30 files already formatted |
+| `mypy .` | Success: no issues found in 30 source files |
+| `pytest -q` | 61 passed |
 
 > 三条静态检查命令的**范围一律用 `.`**（全项目，含 `playground/` 与 `tests/`）。`mypy` 的默认范围由
 > `[tool.mypy] files = ["."]` 保证，所以带不带参数结果一致。
@@ -371,8 +371,16 @@ uv run pytest -q              # 4. 回归测试（17 个用例，不碰真上游
 | **必须走 HTTP，不 import 路由函数** | 测试文件一行都不 import 源码 —— 关联靠 **URL 字符串 + 运行时查表**。这样中间件 / 异常处理器 / 依赖注入全都真实经过 |
 
 ⭐ 最容易被忽略的一条：**「全绿」不等于「断言有牙」。** 所以每批用例写完要抽 3~5 处做**变异测试** ——
-故意把源码改坏一行、看它红不红、再 `git checkout` 还原。实测过 5 次：4 次抓到，1 次是**等价变异**
-（去掉 `errors.py` 里那份 `X-Request-ID` 头，但中间件也写这个头，行为没变 → 测试放行是**对的**）。
+故意把源码改坏一行、看它红不红、再 `git checkout` 还原。累计 **24 次、21 次抓到**，3 次抓不到的都记了原因：
+
+| 抓不到的变异 | 为什么抓不到 | 记录 |
+|---|---|---|
+| 去掉 `errors.py` 的 `X-Request-ID` 头 | 中间件也写这个头，**行为没变** | 等价变异，测试放行是对的 |
+| `PENDING = "pengding"` | 当时**没有任何用例断言过这个值** → 之后补了「枚举值守卫」用例 | 现已被抓住 |
+| `record_usage` 里 `commit` 改回 `flush` | **最终状态一样**，只有锁持有窗口变长 | 待办 #74（测试只断言得到「最终状态」） |
+
+⚠️ 另一条同样重要：**「并发」是网络层的行为**。`TestClient` 走 ASGI 直连，客户端一帧不读也不产生背压 ——
+📎 同一份代码在 `TestClient` 下连接池峰值 **0**、在真 uvicorn 下 **= 并发数**。所以并发缺陷只能在真服务上测。
 
 mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` 等），并额外开启 `warn_unreachable`
 —— 后者**不在 `strict` 预设内**，需要显式打开，用于发现"永远执行不到"的死代码。
@@ -381,7 +389,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 
 ## 关键技术决策
 
-> 完整 25 条（含「放弃了什么」「何时该重审」）在 [decisions.md](study_notes/project/decisions.md)。这里只留**面试时值得主动讲**的 8 条。
+> 完整 28 条（含「放弃了什么」「何时该重审」）在 [decisions.md](study_notes/project/decisions.md)。这里只留**面试时值得主动讲**的 8 条。
 
 | 决策 | 一句话理由 | 代价 / 取舍 |
 |---|---|---|
@@ -431,7 +439,8 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | **流式接口的访问日志耗时 ≠ 请求耗时** | 📎 假上游每 0.4s 一帧共 3 帧，中间件在 **42.7ms** 就打出 `-> 200 16.4ms`，整条流到 **1266.9ms** 才结束 —— `call_next` 返回于**响应头就绪**那一刻。⭐ 推论：真实耗时要另记，且**绝不能读 `response.body`**（读一次就把流抽干） |
 | **「字段值宽松」不等于「出问题」** | 📎 判空写成 `is not None` → 空字符串也报警、还打出 `type=str`（自相矛盾），一个正常请求刷几十条 warning，等于把告警调成没人看。判据：`null`/`''`/缺键往往是协议规定的**正常中间状态** |
 | **一个曾被记错的结论被自己推翻** | 行宽规则原先记成"按字符数"，后用**判定性实验**证伪并纠正为"按显示宽度（汉字占 2 列）"—— 错误来源是把中文经管道喂进工具导致编码损坏 |
-| **「测试全绿」证明不了「断言有牙」** | 📎 5 次变异测试：改坏 `strip_whitespace` → 2 红；`limit + 1` → `limit` → 1 红；envelope 的 `code` 改名 → 4 红；`204` → `200` → 1 红；但**去掉 `errors.py` 的 `X-Request-ID` 头 → 全绿**（中间件也写这个头，行为没变 → **等价变异**，测试放行是对的）。⭐ 判据：**测行为不测实现** —— 实现换了但用户可见契约没变，测试不该红 |
+| **「测试全绿」证明不了「断言有牙」** | 判据：**测行为不测实现** —— 实现换了但用户可见契约没变，测试不该红。📎 最初的 5 次变异里就有 1 次是这种**等价变异**（去掉 `errors.py` 那份 `X-Request-ID` 头，中间件还在写）→ 测试放行是对的。⚠️ 更有杀伤力的是反面：**值域写错也全绿**（`PENDING = "pengding"`）—— 因为没有任何用例断言过那个值。📎 累计 24 次变异的完整记录（含 3 次抓不到的原因）在[质量门](#质量门) |
+| **`flush` 与 `commit` 差的是「事务结束不结束」** | 📎 记账只把 `await db.flush()` 改成 `await db.commit()`（**一个词**），四个数字同时变了：并发 4 条流总耗时 **2.60s → 0.71s**、连接池峰值 **6 → 2**、并发 6 条流里 **3 条 200 + 0 帧 → 0 条**、进程被强杀后账单 **0 行 → 1 行 `pending`**。⭐ 三个「毫不相干」的待办（并发串行化 / 连接被流独占 / 崩了不留账）**是同一个根因的三种症状** ——判据：**写事务不该活得比一次写入更久**。⚠️ 而且这类回归**测试抓不到**：改回去 61 个用例全绿，因为「最终状态」一样、只有「持有多久」变了（待办 #74） |
 | **`with` 不承诺「关闭」** | 📎 `with sqlite3.connect(...)` 退出后连接**仍可用**（`__exit__` 只 commit/rollback，没有 `close()`）；而 `with TestClient(app)` 会触发 lifespan —— 因为 `TestClient.__enter__` 里显式调了 `start_task_soon(self.lifespan)`。⭐ 判据：**判断一个 `with` 做了什么，只看 `__enter__`/`__exit__` 的源码** |
 
 > ⭐ 另有几条**流程类**教训（不是技术点，但更值钱）：密钥被自己的报错打印出来（规范 §10.1）；
@@ -445,10 +454,10 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 
 | 文件 | 只回答一个问题 | 变化频率 |
 |---|---|---|
-| [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（进度 + 待办 #1~#67 唯一台账） | 每步收口 |
-| [study_notes/project/decisions.md](study_notes/project/decisions.md) | **为什么这么设计 / 放弃了什么 / 何时该重审**（ADR 25 条） | 做决定时 |
+| [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（进度 + 待办 #1~#74 唯一台账） | 每步收口 |
+| [study_notes/project/decisions.md](study_notes/project/decisions.md) | **为什么这么设计 / 放弃了什么 / 何时该重审**（ADR 28 条） | 做决定时 |
 | [study_notes/project/production-readiness.md](study_notes/project/production-readiness.md) | **距离敢上线还差什么 / 怎么才算过门**（七道门 + `P0/P1/P2`） | 每次收口重推门的颜色 |
-| [study_notes/project/architecture-map.md](study_notes/project/architecture-map.md) | **各种关系与形状长什么样**（七层栈 / 模块依赖 / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / 配置 / 日志 / 测试 / 状态机） | 想弄清一个形状时 |
+| [study_notes/project/architecture-map.md](study_notes/project/architecture-map.md) | **各种关系与形状长什么样**（七层栈 / 模块依赖 / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / **§8.6 流式完整时序** / 配置 / 日志 / 测试 / 状态机） | 想弄清一个形状时 |
 | [study_notes/learning/stage1-fastapi.md](study_notes/learning/stage1-fastapi.md) | **FastAPI 与 SQLAlchemy 的机制**（原理 + 实测） | 学到新东西时 |
 | [study_notes/learning/logging.md](study_notes/learning/logging.md) | **日志原理与写法**（专题，换项目照样成立） | 同上 |
 | [study_notes/learning/learning-log.md](study_notes/learning/learning-log.md) | **那天为什么改成这样**（流水 / 踩坑 / 结论 / 12 个专题） | 每步收口 |
