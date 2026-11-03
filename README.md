@@ -47,7 +47,7 @@
 | 静态检查 | mypy（strict）/ ruff | 2.4.0 / 0.16.10 |
 | Web 框架 | FastAPI + uvicorn（ASGI） | 0.143.0 / 0.54.0 |
 | 数据库 | SQLAlchemy 2.1 async（2.0 风格 ORM）+ aiosqlite；SQLite → PostgreSQL | 2.1.6 / 0.22.1；Step 10 已完成（依赖 / 模型 / 引擎 / 请求级会话 / 对话 CRUD 四操作五接口 / 账单表 / 游标分页） |
-| 测试 | pytest + pytest-asyncio + pytest-cov + httpx2（Starlette 1.x 的测试客户端依赖） | 9.2.0 / 1.4.1 / 7.1.0 / 2.16.0；Step 12 已落地 **61 个用例**，分支覆盖 **84%** |
+| 测试 | pytest + pytest-asyncio + httpx2（Starlette 1.x 的测试客户端依赖）+（覆盖率 `pytest-cov`，12f 加） | 9.2.0 / 1.4.1 / 2.16.0；Step 12 已落地 **61 个用例** |
 | 交付 | Docker（多阶段构建 + 非 root 运行） | 阶段 1 引入 |
 
 依赖分工：**运行必需的**写在 `[project] dependencies`，**仅开发需要的**（mypy / ruff / pytest）写在
@@ -358,7 +358,7 @@ uv run pytest -q              # 4. 回归测试（61 个用例，不碰真上游
 | `ruff format --check .` | 30 files already formatted |
 | `mypy .` | Success: no issues found in 30 source files |
 | `pytest -q` | 61 passed |
-| `pytest --cov` | 服务代码**分支覆盖 84%**（`llm_client.py` 63% 是最大缺口 → 待办 #75） |
+| `pytest --cov` | 🟡 配置待手写（12f-1）；📎 参考值：服务代码分支覆盖 **84%**，`llm_client.py` 63% 是最大缺口 → 待办 #75 |
 
 > 三条静态检查命令的**范围一律用 `.`**（全项目，含 `playground/` 与 `tests/`）。`mypy` 的默认范围由
 > `[tool.mypy] files = ["."]` 保证，所以带不带参数结果一致。
