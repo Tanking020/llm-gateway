@@ -1,9 +1,11 @@
 """并发流的真实进程测试：TestClient 没有 TCP 背压，测不出连接被整条流占住（#59 / #73）"""
 
 import asyncio
+import sqlite3
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -16,17 +18,13 @@ from app.llm_client import LlmChatStream
 from fakes import FakeChatStream, FakeLlm
 
 REQ = {"messages": [{"role": "user", "content": "hi"}]}
-STREAM_SECONDS = 0.6
+STREAM_SECONDS = 1.0
 CHUNKS = 3
 USAGE = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
 
-# 【注意】：这两条断言钉的是待办 #73 —— SQLite 只允许一个写者，而记账的写事务横跨整条流，
-#   于是并发流被串行化（第 N 个用户的 TTFB = (N-1) x 单流时长）。修好后 XPASS 会变红，提醒删掉标记
-SERIALIZED = pytest.mark.xfail(strict=True, reason="待办 #73：记账事务横跨整条流，并发流被串行化")
-
 
 class _SlowStream(FakeChatStream):
-    """每 0.2s 吐一帧，总共约 0.6s —— 模拟真实的 LLM 流，让并发窗口足够宽"""
+    """每 ~0.33s 吐一帧，总共约 1s —— 模拟真实的 LLM 流，让并发窗口足够宽"""
 
     async def aiter_chunks(self) -> AsyncIterator[dict[str, Any]]:
         for i in range(CHUNKS):
@@ -102,15 +100,49 @@ def test_single_stream_has_all_frames(live_server: str) -> None:
     assert results[0][2] == 7  # thinking + 3 delta + finish + usage + [DONE]
 
 
-@SERIALIZED
 def test_two_concurrent_streams_do_not_serialize(live_server: str) -> None:
-    """两条流应该同时跑：总耗时约等于单流，而不是两倍"""
+    """两条流同时跑：总耗时约等于单流，而不是两倍
+
+    【注意】：断言的是「首字节耗时」而不是总耗时 —— 串行时第二个请求的 TTFB
+        约等于整条流的时长（1s），并发时只有几十毫秒，差一个数量级，阈值取中间才不会抖
+
+    """
     results = _concurrent(live_server, 2)
-    assert max(elapsed for elapsed, _, _ in results) < STREAM_SECONDS * 1.6
+    assert max(ttfb for _, ttfb, _ in results) < STREAM_SECONDS / 2
 
 
-@SERIALIZED
 def test_four_concurrent_streams_all_start_immediately(live_server: str) -> None:
     """四个用户同时进来，每个人都不该等前面的人说完才看到第一个字"""
     results = _concurrent(live_server, 4)
     assert max(ttfb for _, ttfb, _ in results) < STREAM_SECONDS / 2
+    assert all(frames == 7 for _, _, frames in results)
+
+
+def test_pending_row_is_visible_while_stream_is_running(live_server: str, db_path: Path) -> None:
+    """流跑到一半时，库里必须已经有这一行 pending —— 说明它被 commit 过，不是 flush
+
+    【注意】：这条只能在真 uvicorn 下测 —— TestClient 会先攒齐整个响应体再交给我们，
+        看到第一块时流早已结束，永远观察不到中间态
+    """
+
+    def latest() -> tuple[object, ...] | None:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            found = conn.execute(
+                "SELECT status, prompt_tokens FROM llm_calls ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return tuple(found) if found else None
+        finally:
+            conn.close()
+
+    async def probe() -> tuple[object, ...] | None:
+        async with httpx.AsyncClient(timeout=60) as client:
+            async with client.stream("POST", f"{live_server}/v1/chat/stream", json=REQ) as r:
+                pieces = r.aiter_text()
+                await pieces.__anext__()  # 推进到第一帧
+                snapshot = latest()  # 此刻流还在跑
+                async for _ in pieces:
+                    pass
+        return snapshot
+
+    assert asyncio.run(probe()) == ("pending", 0)

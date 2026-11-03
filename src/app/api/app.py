@@ -593,15 +593,16 @@ async def chat_stream(
 
         # 先落一行 pending 账单：断开 / 上游异常时它会被改成 aborted 后随请求事务落库
         # 【注意】：上游已产出的 token 照样收费 —— 不留这行，账面就看不到这次调用
-        #   但 flush 不是持久化：进程崩溃时这一行会被回滚掉（实测强杀后 0 行）
-        # 必须在 yield thinking 之前：yield 交出控制权，从那一刻起就可能被取消
+        # 【注意】：必须是 commit 不是 flush —— flush 只发 SQL 不结束事务，写锁会一直持有到
+        #   整条流结束，并发流会被 SQLite 串行化（见笔记 §12.7b、待办 #73）；而且 flush 不持久化，
+        #   进程一崩这行就没了
         call = LlmCall(
             conversation_id=request.conversation_id,
             model=actual_model,
             status=LlmCallStatus.PENDING,
         )
         db.add(call)
-        await db.flush()
+        await db.commit()
 
         recorded = False  # 两阶段记账：幂等守卫
 
@@ -621,7 +622,8 @@ async def chat_stream(
             call.completion_tokens = _as_int(usage.get("completion_tokens"))
             call.total_tokens = _as_int(usage.get("total_tokens"))
             call.status = LlmCallStatus.COMPLETED
-            await db.flush()
+            # 【注意】：commit 而不是 flush —— 同上，flush 会把写锁一直持有到请求结束
+            await db.commit()
 
         try:
             # aiter_chunks 已经帮我们做完了：切行、跳空行、剥 data: 前缀、
