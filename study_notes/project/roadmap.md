@@ -3,7 +3,7 @@
 > **用途**：本文档是长期学习的唯一上下文来源（single source of truth）。
 > 每次开启新对话时，请先让 AI 阅读本文档，再继续讨论。
 >
-> **最后更新**：2026-11-03（**阶段 1 · Step 12 做到 12e ✅**：12a~12e 全部完成、**61 个用例**；修掉 #73 / #59 / #42 三个 P0 —— 记账两次写入 `flush` → `commit`；新增决策 27 / 28、待办 #67~#74）
+> **最后更新**：2026-11-03（**阶段 1 · Step 12 做到 12e ✅**：12a~12e 全部完成、**61 个用例**；修掉 #73 / #59 / #42 三个 P0 —— 记账两次写入 `flush` → `commit`；新增决策 27 / 28、待办 #67~#74；**两张进度表合并成一张**）
 
 ---
 
@@ -77,7 +77,7 @@
   - 子进度与提交号见第六节；**Step 10 数据库已全部完成**：10.1 依赖取证 ✅ / 10.2 `Conversation` 模型 ✅ / 10.6b-2 `conversation_id` + pre-flight ✅ / 10.6b-3 usage 记账 ✅ / **10.6b-4 两阶段记账（`status` 三态）✅** / **10.6c N+1 + 列表账单统计 ✅** / **10.6d-1~4b 收尾专项全部完成 ✅**；⏭️ 10.8 自检（77 题）**推后到阶段一收口前统一做**
   - **Step 11 工程化（2026-10-29 ~ 11-01）✅ 全部完成**：11a ✅ 启动入口 / 11b ✅ `debug` 接线 + prod 保护 / **11c ✅ 日志 `dictConfig`（新增 `logging.md` 专题）** / **11d ✅ 统一错误形状（4 个处理器 + 单一出口 + 业务码）** / **11e ✅ 生产关交互式文档** / **11f ✅ 流式接口在 `/docs` 标 `text/event-stream`**
   - ✅ **Step 12 测试（2026-11-01 ~ 11-03，12a~12e 完成、12f 待做）**：依赖 `pytest==9.2.0` / `pytest-asyncio==1.4.1` / `httpx2==2.16.0`；**61 个用例**分四层 —— 冒烟 2 / 对话契约 9 / 上游接线 6 / 错误形状 7 / 流式帧 12 / 适配器协议 11 / 账单四态 10 / 真 uvicorn 并发 4。📎 变异测试累计 **24 次、21 次抓到**（3 次抓不到的都记了原因，见 #74）。⭐ 这一段最大的产出不是用例数，而是**用测试逼出了两个真缺陷并修掉**：坏帧吞掉 usage（#70）、并发流被串行化（#73 → 连带 #59 / #42）
-  - 🟡 **下一步 = 12f 收口**（覆盖率看分支不看数字 + 门 1 打勾）；12a~12f 拆步见下方「待办 → 步骤 对照」表
+  - 🟡 **下一步 = 12f 收口**（覆盖率看分支不看数字 + 门 1 打勾）；拆步见下方「阶段 1 子进度」表
   - 🟡 **Step 14 架构盘点进行中（2026-11-02 插入，优先于 12d）**：学习者决定先把「各种架构与形状」完全弄清楚，再回来做 12d；
     产物 = [architecture-map.md](architecture-map.md)。**12d ~ 12f 挂起**，不是取消
   - **Step 13 未开始**（部署）
@@ -195,71 +195,100 @@
 > - `1.1` ~ `1.4l`：**按发生顺序**编的流水号，**不等于 Step 号**。映射：`1.1`→Step 2、`1.2`→Step 1、`1.3`→Step 3、**`1.4`~`1.4l`→Step 5（依赖注入）**；`1.5`~`1.7` 是支线（改名 / 会话恢复 / copilot-instructions），不属于任何 Step
 > - `6.1` 起：改用**笔记小节号**（`6.1` = Step 6 的第 1 小步），与 [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) 的章节一一对应
 
-| 编号 | 内容 | 状态 |
-|---|---|---|
-| 1.1 | 装 `fastapi` + `uvicorn[standard]`，起第一个服务（`/health` + `/docs`）**← 对应笔记 Step 2** | ✅ 提交 `931698c` |
-| 1.1b | 补更新工具与依赖速查（§7 FastAPI / §8 uvicorn） | ✅ 提交 `3944d13` |
-| 1.1c | 讲解服务运行机制（框架 vs 服务器 / ASGI / `/docs` 生成 / `--reload`） | ✅ |
-| 1.2 | 系统讲解 HTTP 与 ASGI 地基（Step 1，配两组本仓库实测）**← 对应笔记 Step 1** | ✅ |
-| 1.3 | 三段参数：路径 / 查询 / 请求体（Step 3）**← 对应笔记 Step 3** | ✅ 提交 `19aa9cf` / `94fb0a2` |
-| 1.4a | 依赖注入第 1 步：`deps.py`（`get_settings` + `SettingsDep`），`/v1/chat` 改用 `config: SettingsDep` | ✅ 提交 `14bc45c` |
-| 1.4b | 用 `TestClient` + `dependency_overrides` 实测「配置可替换」 | ✅ 提交 `bcff4f2` |
-| 1.4c | `yield` 依赖：把 HTTP 客户端的生命周期交给框架（**Step 5 完成**） | ✅ 提交 `82db843`（实测复现反面写法 `is_closed=False`） |
-| 1.4d-1 | 抽共用模块：新增 `src/app/llm_client.py`（`create_llm_client()`），`deps.py` 与 `main.py` 改用它，删掉重复的三行构造 | ✅ 提交 `f53c6dc` |
-| 1.4d-2 | 把 client 真的接进 `/v1/chat`，发一次真实上游请求（验证 `Bearer` 拼写） | ✅ 提交 `af6cdbf`（实测 200 + 真实模型列表） |
-| 1.5 ~ 1.7 | 支线（不属于任何 Step）：项目改名 / 找回改名后消失的会话 / 固化 copilot-instructions | ✅ 见 [learning/learning-log.md](../learning/learning-log.md) |
-| 4a | `schemas.py` 新增 `ModelItem`（3 字段白名单）+ `ModelListResponse`（**Step 4 输出契约**） | ✅ 实测上游 10 键 → 3 字段 |
-| 4b | `/v1/upstream/models` 改用 `ModelListResponse` 返回注解，`fetch_upstream_models` 返回 `list[ModelItem]`（**Step 4 收口**） | ✅ 实测 200 结构化 / 502 回归 / OpenAPI 指向 `ModelListResponse` |
-| 6.1 | 未知模型返回 404（`HTTPException` + `status`，修待办 #1） | ✅ 提交 `600264b`；实测 200 / 404 |
-| 6.2a | 上游错误统一翻译成 **502**（`HTTPStatusError` / `RequestError` 两分支 + `raise ... from exc`） | ✅ 提交 `3785509`；实测 200 / 502×2 |
-| 6.2b | `/v1/chat` 最后一条必须是 `user`，否则 400（修待办 #2） | ✅ 提交 `e935d56`；实测 400 / 200 / 422(`too_short`) |
-| 6.3a | `AppError` + `register_exception_handlers`：业务码与 HTTP 状态码解耦，统一错误形状 | ✅ 提交 `1c06665`（注释补齐 `1660faf`） |
-| 6.3b | 500 兜底 + `request_id`（用户看 ID，日志看堆栈） | ✅ 提交 `abfc52c`；实测 500+request_id / 400 回归 |
-| 6.4 | `lifespan`：client 改为应用级共享（待办 #5 定案） | ✅ 提交 `2a479df`；实测共享 + 关闭 |
-| 7a | 请求 ID + 耗时中间件（`@app.middleware("http")`）；500 复用同一 ID 并补响应头 | ✅ 实测：沿用客户端 ID / 500 头体一致 / 日志覆盖 200·404·500 |
-| 7a-补 | 新建 `src/app/constants.py`（`HEADER_REQUEST_ID`），三处硬编码收敛到一处 | ✅ 实测 `X-Request-ID` 与 `X-Request_ID` 是两个不同的头（大小写则不敏感） |
-| 7b | CORS（预检、`allow_credentials` 的禁忌） | ✅ 实测：白名单返 ACAO / 非白名单仍 200 无 ACAO / 预检打不存在路径 200 / 非法方法 400 |
-| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | 🟡 Step 8 / 9 / 10 / 11 已完成；**Step 12 进行中（12a 起）**；Step 13（部署）未开始 |
-| 8 | Step 8 异步正确姿势（`blocking_demo.py`） | ✅ 实测 25 倍 / 排队 / GIL |
-| 9a | SSE 假数据流式：`/v1/chat/stream` + `StreamingResponse` | ✅ 实测 TTFB 0.014s / total 1.85s / chunked |
-| 9a-补 | 机制补讲四轮（学习者反馈"没看懂"）：§9.2b f-string 与 `\n\n`、§9.2c 帧 vs 时间、§9.2d 生成器与 `StreamingResponse` 分工（含调用栈铁证）、§9.3a 六层生成器讲解 | ✅ 提交 `ee8b4e2` / `696d7ae` / `98ec498` / 收尾提交；详见流水 1.24~1.29 |
-| 9b ~ | 接真实上游 `stream=true`（断开局 / 中途报错 / 计费） | ✅ **全部完成**（9b-1 取证 / 9b-2 真模型流式 / 9b-3 心跳帧 + `usage` 记账 / 9b-4a 封层 + pre-flight） |
-| 9b-4b-1 | 流协议加固（`data:` 无空格 / 空 data 行 / 非 dict chunk / `content` 非字符串 / 零内容保护） | ✅ 2026-10-22 完成；📎 7 种异常全部有 `[DONE]` 收尾，真上游 9 帧不变 |
-| 9b-4b-2 | 流内异常编码（P2 → P3：异常路径也发 `[DONE]`）+ `choices` / `choices[0]` 守卫 | ✅ 2026-10-22 完成；📎 7 种输入全部 `DONE=True`（改前 4 种没有） |
-| 9b-4b-2d | `_as_dict` 收窄 `usage` / `delta` / `finish_reason`（补齐「每次解引用都有守卫」） | ✅ 2026-10-22 完成；📎 12 用例全 `DONE=True`，`usage` 是字符串时内容不再被丢弃 |
-| 9b-4b-2e | `finish_reason` 非字符串时留痕（宽松字段三档里的 ② 档） | ✅ 2026-10-22 完成；📎 6 种取值行为正确，13 用例全 `DONE=True`，真上游零 WARNING |
-| 9b-4b-3 | 客户端断开：**无需写代码**，靠 `except Exception` 豁免 + `finally` 清理 | ✅ 2026-10-22 取证确认（📎 上游真的会停） |
-| 9b-复盘 | Step 9 全景复盘第 1 步：笔记 §9.9 三张全景图（时间轴 21 步 / 对象关系 / 12 个失败点）+ 三条易错规律 | ✅ 2026-10-23 完成；📎 实测中间件日志 42.7ms vs 流结束 1266.9ms |
-| 9b-补讲 | 后续三次深挖（学习者提问驱动）：**§9.2e 四个单位**（token / 帧 / 行 / 字节块）、**§9.10 接收流式 vs 返回流式**（2×2 矩阵）、`stream` 参数落点清点 | ✅ 2026-10-23 完成；📎 §9.2e：15 字节块 / 75 帧 / 6 片段；§9.10：靠 `stream` 默认值的只有 `list_models()` 一行 |
-| 10.1 | 依赖取证与版本边界：确认 `sqlalchemy[asyncio]` / `aiosqlite` 已装；在独立 venv 复现裸装 2.1 的 `ImportError`，再补 extra 修复、补驱动 | ✅ 2026-10-23 完成；📎 裸装 2.1.6 → `ModuleNotFoundError: No module named 'greenlet'`；补 `[asyncio]` 后立即可用；`import aiosqlite` 仍报缺失（证明驱动不在 extra 里） |
-| 10.2 | `Conversation` 模型（`Base` / `Mapped` / `mapped_column` / `default=lambda`） | ✅ 2026-10-23 完成；📎 建表+插入+读回成功；实测 `String(100)` 塞 200 字符不报错、`created_at` 读回 `tzinfo=None` |
-| 10.3a | 引擎与会话工厂：`config.database_url` + `database.py`（`engine` / `SessionMaker`）+ `.gitignore` 忽略 `*.db` | ✅ 2026-10-24 完成；📎 `Test-Path app.db` = False（engine 不连库）；`git check-ignore` 确认规则生效 |
-| 10.3b | `lifespan` 集成：启动段建表 + 关闭段 `dispose()`；连接池与 `async with` 补讲 | ✅ 2026-10-24 完成；📎 从零启动生成 `app.db` 并读出 `conversations` 表结构；重启幂等；📎 复用连接快 **6.28 倍**（20 次请求 1 条 TCP vs 20 条） |
-| 10.4b | `get_db` + `DbDep`：一次请求一个会话，正常提交 / 异常回滚后 `raise` | ✅ 2026-10-25 完成；📎 `/ok` 入库 1 行、`/boom` 回滚 0 行、500 证明 raise 生效；📎 订正旧结论「不 raise → 200」（实际是日志根因全丢） |
-| 10.5a | 两个契约（`ConversationIn` / `ConversationOut`）+ `POST /v1/conversations` | ✅ 2026-10-25 完成；📎 201×2（id=1/2）、422×2（too_short / too_long）、读库 2 行；⚠️ 首跑 500（`title=payload`），三道门没拦住（`**kwargs`） |
-| 10.5b | `GET /v1/conversations` 列表：`select()` + `order_by()` + `.scalars().all()` | ✅ 2026-10-25 完成；📎 空表 `[]`[200] / 两条升序[200]；📎 印证 `created_at` POST 带 Z、GET 不带 |
-| 10.5c | `GET /v1/conversations/{conv_id}` 详情：`await db.get()` + 判空 → 404 | ✅ 2026-10-25 完成；📎 五条 URL 全对（200/404/422/200/404）；📎 不判空 → `ResponseValidationError` → 500 |
-| 10.5d | `DELETE /v1/conversations/{conv_id}`：`await db.delete()` + 204 无内容 | ✅ 2026-10-25 完成；📎 生命周期五步全对（200/204/404/404/200），读库确认空表；📎 204 语义补测（改 200 → 客户端收 null，且"没做事"无法区分） |
-| 10.5e | `PATCH /v1/conversations/{conv_id}`：`ConversationPatch` + 部分更新 | ✅ 2026-10-25 完成（⚠️ 起因：学习者发现上一轮我误称「CRUD 四接口完成」，Update 未做）；📎 九种情况全对；必填字段作为 bug 探测器的判据入笔记 |
-| 10.5f | **抽出公共规则 `ConversationTitle`**：`StringConstraints(strip_whitespace=True)` 堵住「纯空格标题」 | ✅ 2026-10-25 完成（测试中发现缺口）；📎 修前 `"   "` / `"\t\n"` / 全角空格全部返回 200 并入库空白标题；📎 修后全部 422；📎 顺带修掉「空格+100字符+空格」被误判超长的旧行为；POST/PATCH 共用一处定义 |
-| 10.6a | `LlmCall` 表 + `Conversation.calls` 一对多（外键 / `cascade` / `conversation_id` 索引） | ✅ 2026-10-26 完成；📎 建表语句含 `ON DELETE CASCADE` + `ix_llm_calls_conversation_id`；📎 索引实测 25 倍（5 万行）+ 规模曲线证明 O(log n)；📎 五种删父子写法对比；⚠️ 批改订正一处理解错误（`ondelete=` 不能解决 ORM 置 NULL） |
-| 10.6b-1 | 打开 SQLite 外键强制（`engine.sync_engine` 的 `connect` 事件 + `PRAGMA foreign_keys=ON`） | ✅ 2026-10-26 完成；📎 池内 3 条连接全为 1；孤儿 `conversation_id=999` 被 `IntegrityError` 拒；📎 **订正 10.6a 的旧结论**：10 组矩阵证明 `ondelete` 依赖 `PRAGMA`，且「有 relationship 无 cascade」会抵消级联 |
-| 10.6b-2 | `ChatRequest` 加 `conversation_id` + pre-flight（不存在 → 404，流开始前拦） | ✅ 2026-10-27 完成；📎 六项验证 200 / 404 / 404 / 422 / 200 / 400×2；⭐ 顺带把「对话不存在」的 5 处重复抽成 `require_conversation`，并统一两条 chat 的校验顺序 |
-| 10.6b-3 | 生成器里写 `LlmCall`（第一版：`except BaseException` 回滚守卫） | ✅ 2026-10-27 完成，⚠️ **但方案在 1.63 被推翻**：守卫守的是「编造的帧序」，且业务上让断开的调用完全不留账（学习者指出「断了也花了 token」） |
-| 10.6b-4 | **两阶段记账**：流开始前落 `pending` 行 → 拿到 usage 改 `completed` → 断开/异常只做同步赋值 `aborted` | ✅ 2026-10-27；📎 真 app 中间件栈下 5 种「断开时补写」全失败，只有「提前写」可行；📎 四格验收 + 真实 DeepSeek 端到端；新增 `LlmCall.status`（`pending`/`completed`/`aborted`） |
-| 10.6b-4a | 流开始前 `add` + `flush` 一行 `pending`（`yield thinking` 必须挪到其后） | ✅ 学习者手写；📎 两次真实调用都是 `completed` 且 token 非 0 |
-| 10.6b-4b | 两个 `except` 去掉 `rollback`，改成同步赋值 `aborted` | ✅ 学习者手写；📎 端到端：断开 `aborted 0/0/0`、正常 `completed 33/49/82`；⚠️ 首次验收拿到 404 `对话不存在：1`（库被删过）导致测试空转 |
-| 10.6c | N+1 原理 + `selectinload` 实测 | ✅ 2026-10-28；📎 三种写法实测（N=5：6/2/1 条），规模曲线 N=100 时 **101 条 57.7ms vs 2 条 4.9ms**；📎 async 下惰性加载是 `MissingGreenlet` 报错不是变慢；落地成 `GET /v1/conversations` 加 `call_count` + `total_tokens`（`outerjoin` + `coalesce`） |
-| 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39 #30 #52） | ✅ 10.6d-1 `updated_at` / 10.6d-2 游标分页 / 10.6d-3 `/health` 拆 liveness + readiness / 10.6d-4a 时间格式统一 / **10.6d-4b 四接口形状统一** |
-| 11a | 启动入口 `src/app/__main__.py`（`uv run python -m app`）+ `.env.example` 补 `DATABASE_URL` | ✅ 2026-10-29 学习者手写；📎 `PORT=8131` 启动 → `Uvicorn running on http://127.0.0.1:8131`，curl `[200]`；📎 8000 端口 `[000]` 无人听（证明 settings 真的生效）；📎 `DEBUG=true` → `Started reloader process [...] using WatchFiles`；📎 `DEBUG=false` → 无 reloader。关闭待办 **#27** #29 |
-| 11b | `settings.debug` 接进 `FastAPI(debug=...)` + **prod 强制关保护**（`model_validator` 跨字段校验） | ✅ 2026-10-31 学习者手写一次通过；📎 `APP_ENV=prod`+`DEBUG=true` → `ValidationError` / `exit_code=1` / **uvicorn 未启动**（`python -m app` 与 `uvicorn app.api.app:app` 两条路径都拦）；📎 `dev`+`DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`；📎 复验 `debug=True` 响应 `text/plain` 含 traceback 与异常消息、`debug=False` 为 `application/json`。关闭待办 **#28** |
-| 11c | 日志换 `dictConfig(force=True)`：新增 `src/app/logging_setup.py`，`app.py` 模块级调用，`__main__.py` 提前调 + `log_config=None` | ✅ 2026-10-31 学习者手写；📎 改前两种格式并存（`INFO:     ` + 我们的）+ 每请求 2 行；📎 改后三条路径（`python -m app` / `DEBUG=true` reload / `uvicorn app.api.app:app`）统一 `2026-10-31 … INFO uvicorn.error \| …`，每请求 1 行；📎 去掉 `log_config=None` → reloader 父进程 3 行退回 uvicorn 格式；📎 `disable_existing_loggers=True` → `app.errors` / `httpx` 被禁用（`uvicorn.*` 因被命名反而不受影响）。关闭待办 **#7**，拆 #51 |
-| 11e | 生产关交互式文档：`_DOCS_ENABLED = app_env == "dev"` + `docs_url` / `redoc_url` / `openapi_url` 三个一起条件置 `None` | ✅ 2026-11-01 学习者手写；📎 dev：`/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` 全 **200**；📎 prod：四个全 **404**（body 是 11d 的统一形状），`/health` 仍 200；📎 另测「只关 `docs_url`」→ `/redoc` 与 `/openapi.json` **仍 200**（证明三个必须一起关） |
-| 11d | **统一错误形状（B 版：业务码）**：`errors.py` 抽 `_error_response` 单一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；`app.py` 两处 404 改抛 `AppError("MODEL_NOT_FOUND"/"CONVERSATION_NOT_FOUND")` | ✅ 2026-10-31 学习者手写；📎 8 组用例：`/nope`→`NOT_FOUND`、`/v1/models/xxx`→`MODEL_NOT_FOUND`、对话详情/删除→`CONVERSATION_NOT_FOUND`、422→`VALIDATION_ERROR`+`details`、405→`METHOD_NOT_ALLOWED`、500→`INTERNAL_ERROR`，**全部 `hdr==body` 且 body 无 traceback/密码**。关闭待办 **#6**，落地决策 **25** |
-| 11f | 流式接口在 `/docs` 标 `text/event-stream`：新增 `SseResponse(StreamingResponse)`（类属性 `media_type`）+ 装饰器 `response_class=SseResponse`，`return` 改用它 | ✅ 2026-11-01 学习者手写；📎 OpenAPI：`200.content = ['text/event-stream']`（**只有一种**）、422 仍在、`/v1/chat` 仍 `['application/json']`；📎 端到端（假上游）：`CONTENT_TYPE: text/event-stream; charset=utf-8`、`CACHE_CONTROL: no-cache`、`X_ACCEL: no`、6 帧完整（thinking / 2×delta / finish_reason / usage / [DONE]）。**关闭待办 #11** |
+> 📖 **怎么读这张表**：按**时间顺序**一行一个工作单元（编号规则见上）。**「关联待办」列**指向下面「阶段 1 已知待办」表的编号 —— **计划要关的**与**实际关掉的**（标「关闭」）都写在这里；**「状态」列**是历史原文（📎 = 有实测数据），不再重复待办编号。
+> 
+> ⚠️ 这张表原来断成两份（「阶段 1 子进度」到 `11f` + 「待办 → 步骤 对照」从 `10.6a` 起，13 行重复），2026-11-03 已合并成一张。
 
-> ✅ **Step 9 于 2026-10-23 正式收口**：代码（9a → 9b-4b-3）、文档（§9.1~§9.11）、自检题 1~61、待办 #1~#23 全部关闭。
-> **下一个动作 = Step 10 数据库**。开工前注意两条与本步相关的遗留：待办 **#8**（`/v1/chat` 仍是 echo）与 **#11**（`/docs` 把流式接口标成 `application/json`）。
+| 编号 | 内容 | 关联待办 | 状态 |
+|---|---|---|---|
+| 1.1 | 装 `fastapi` + `uvicorn[standard]`，起第一个服务（`/health` + `/docs`）**← 对应笔记 Step 2** | — | ✅ 提交 `931698c` |
+| 1.1b | 补更新工具与依赖速查（§7 FastAPI / §8 uvicorn） | — | ✅ 提交 `3944d13` |
+| 1.1c | 讲解服务运行机制（框架 vs 服务器 / ASGI / `/docs` 生成 / `--reload`） | — | ✅ |
+| 1.2 | 系统讲解 HTTP 与 ASGI 地基（Step 1，配两组本仓库实测）**← 对应笔记 Step 1** | — | ✅ |
+| 1.3 | 三段参数：路径 / 查询 / 请求体（Step 3）**← 对应笔记 Step 3** | — | ✅ 提交 `19aa9cf` / `94fb0a2` |
+| 1.4a | 依赖注入第 1 步：`deps.py`（`get_settings` + `SettingsDep`），`/v1/chat` 改用 `config: SettingsDep` | — | ✅ 提交 `14bc45c` |
+| 1.4b | 用 `TestClient` + `dependency_overrides` 实测「配置可替换」 | — | ✅ 提交 `bcff4f2` |
+| 1.4c | `yield` 依赖：把 HTTP 客户端的生命周期交给框架（**Step 5 完成**） | — | ✅ 提交 `82db843`（实测复现反面写法 `is_closed=False`） |
+| 1.4d-1 | 抽共用模块：新增 `src/app/llm_client.py`（`create_llm_client()`），`deps.py` 与 `main.py` 改用它，删掉重复的三行构造 | **#4**（关闭） | ✅ 提交 `f53c6dc` |
+| 1.4d-2 | 把 client 真的接进 `/v1/chat`，发一次真实上游请求（验证 `Bearer` 拼写） | — | ✅ 提交 `af6cdbf`（实测 200 + 真实模型列表） |
+| 1.5 ~ 1.7 | 支线（不属于任何 Step）：项目改名 / 找回改名后消失的会话 / 固化 copilot-instructions | — | ✅ 见 [learning/learning-log.md](../learning/learning-log.md) |
+| 4a | `schemas.py` 新增 `ModelItem`（3 字段白名单）+ `ModelListResponse`（**Step 4 输出契约**） | — | ✅ 实测上游 10 键 → 3 字段 |
+| 4b | `/v1/upstream/models` 改用 `ModelListResponse` 返回注解，`fetch_upstream_models` 返回 `list[ModelItem]`（**Step 4 收口**） | **#39**（拆出，11d 后仍未统一） | ✅ 实测 200 结构化 / 502 回归 / OpenAPI 指向 `ModelListResponse` |
+| 6.1 | 未知模型返回 404（`HTTPException` + `status`，修待办 #1） | **#1**（关闭） | ✅ 提交 `600264b`；实测 200 / 404 |
+| 6.2a | 上游错误统一翻译成 **502**（`HTTPStatusError` / `RequestError` 两分支 + `raise ... from exc`） | — | ✅ 提交 `3785509`；实测 200 / 502×2 |
+| 6.2b | `/v1/chat` 最后一条必须是 `user`，否则 400（修待办 #2） | **#2**（关闭） | ✅ 提交 `e935d56`；实测 400 / 200 / 422(`too_short`) |
+| 6.3a | `AppError` + `register_exception_handlers`：业务码与 HTTP 状态码解耦，统一错误形状 | — | ✅ 提交 `1c06665`（注释补齐 `1660faf`） |
+| 6.3b | 500 兜底 + `request_id`（用户看 ID，日志看堆栈） | — | ✅ 提交 `abfc52c`；实测 500+request_id / 400 回归 |
+| 6.4 | `lifespan`：client 改为应用级共享（待办 #5 定案） | **#5**（定案） | ✅ 提交 `2a479df`；实测共享 + 关闭 |
+| 7a | 请求 ID + 耗时中间件（`@app.middleware("http")`）；500 复用同一 ID 并补响应头 | — | ✅ 实测：沿用客户端 ID / 500 头体一致 / 日志覆盖 200·404·500 |
+| 7a-补 | 新建 `src/app/constants.py`（`HEADER_REQUEST_ID`），三处硬编码收敛到一处 | — | ✅ 实测 `X-Request-ID` 与 `X-Request_ID` 是两个不同的头（大小写则不敏感） |
+| 7b | CORS（预检、`allow_credentials` 的禁忌） | — | ✅ 实测：白名单返 ACAO / 非白名单仍 200 无 ACAO / 预检打不存在路径 200 / 非法方法 400 |
+| 8 ~ 13 | SSE 流式 → 数据库 → 工程化 → 测试 → 部署 | — | 🟡 Step 8 / 9 / 10 / 11 已完成；**Step 12 进行中（12a 起）**；Step 13（部署）未开始 |
+| 8 | Step 8 异步正确姿势（`blocking_demo.py`） | — | ✅ 实测 25 倍 / 排队 / GIL |
+| 9a | SSE 假数据流式：`/v1/chat/stream` + `StreamingResponse` | — | ✅ 实测 TTFB 0.014s / total 1.85s / chunked |
+| 9a-补 | 机制补讲四轮（学习者反馈"没看懂"）：§9.2b f-string 与 `\n\n`、§9.2c 帧 vs 时间、§9.2d 生成器与 `StreamingResponse` 分工（含调用栈铁证）、§9.3a 六层生成器讲解 | — | ✅ 提交 `ee8b4e2` / `696d7ae` / `98ec498` / 收尾提交；详见流水 1.24~1.29 |
+| 9b ~ | 接真实上游 `stream=true`（断开局 / 中途报错 / 计费） | — | ✅ **全部完成**（9b-1 取证 / 9b-2 真模型流式 / 9b-3 心跳帧 + `usage` 记账 / 9b-4a 封层 + pre-flight） |
+| 9b-4b-1 | 流协议加固（`data:` 无空格 / 空 data 行 / 非 dict chunk / `content` 非字符串 / 零内容保护） | — | ✅ 2026-10-22 完成；📎 7 种异常全部有 `[DONE]` 收尾，真上游 9 帧不变 |
+| 9b-4b-2 | 流内异常编码（P2 → P3：异常路径也发 `[DONE]`）+ `choices` / `choices[0]` 守卫 | — | ✅ 2026-10-22 完成；📎 7 种输入全部 `DONE=True`（改前 4 种没有） |
+| 9b-4b-2d | `_as_dict` 收窄 `usage` / `delta` / `finish_reason`（补齐「每次解引用都有守卫」） | — | ✅ 2026-10-22 完成；📎 12 用例全 `DONE=True`，`usage` 是字符串时内容不再被丢弃 |
+| 9b-4b-2e | `finish_reason` 非字符串时留痕（宽松字段三档里的 ② 档） | — | ✅ 2026-10-22 完成；📎 6 种取值行为正确，13 用例全 `DONE=True`，真上游零 WARNING |
+| 9b-4b-3 | 客户端断开：**无需写代码**，靠 `except Exception` 豁免 + `finally` 清理 | — | ✅ 2026-10-22 取证确认（📎 上游真的会停） |
+| 9b-复盘 | Step 9 全景复盘第 1 步：笔记 §9.9 三张全景图（时间轴 21 步 / 对象关系 / 12 个失败点）+ 三条易错规律 | — | ✅ 2026-10-23 完成；📎 实测中间件日志 42.7ms vs 流结束 1266.9ms |
+| 9b-补讲 | 后续三次深挖（学习者提问驱动）：**§9.2e 四个单位**（token / 帧 / 行 / 字节块）、**§9.10 接收流式 vs 返回流式**（2×2 矩阵）、`stream` 参数落点清点 | — | ✅ 2026-10-23 完成；📎 §9.2e：15 字节块 / 75 帧 / 6 片段；§9.10：靠 `stream` 默认值的只有 `list_models()` 一行 |
+| 10.1 | 依赖取证与版本边界：确认 `sqlalchemy[asyncio]` / `aiosqlite` 已装；在独立 venv 复现裸装 2.1 的 `ImportError`，再补 extra 修复、补驱动 | — | ✅ 2026-10-23 完成；📎 裸装 2.1.6 → `ModuleNotFoundError: No module named 'greenlet'`；补 `[asyncio]` 后立即可用；`import aiosqlite` 仍报缺失（证明驱动不在 extra 里） |
+| 10.2 | `Conversation` 模型（`Base` / `Mapped` / `mapped_column` / `default=lambda`） | — | ✅ 2026-10-23 完成；📎 建表+插入+读回成功；实测 `String(100)` 塞 200 字符不报错、`created_at` 读回 `tzinfo=None` |
+| 10.3a | 引擎与会话工厂：`config.database_url` + `database.py`（`engine` / `SessionMaker`）+ `.gitignore` 忽略 `*.db` | — | ✅ 2026-10-24 完成；📎 `Test-Path app.db` = False（engine 不连库）；`git check-ignore` 确认规则生效 |
+| 10.3b | `lifespan` 集成：启动段建表 + 关闭段 `dispose()`；连接池与 `async with` 补讲 | — | ✅ 2026-10-24 完成；📎 从零启动生成 `app.db` 并读出 `conversations` 表结构；重启幂等；📎 复用连接快 **6.28 倍**（20 次请求 1 条 TCP vs 20 条） |
+| 10.4b | `get_db` + `DbDep`：一次请求一个会话，正常提交 / 异常回滚后 `raise` | — | ✅ 2026-10-25 完成；📎 `/ok` 入库 1 行、`/boom` 回滚 0 行、500 证明 raise 生效；📎 订正旧结论「不 raise → 200」（实际是日志根因全丢） |
+| 10.5a | 两个契约（`ConversationIn` / `ConversationOut`）+ `POST /v1/conversations` | — | ✅ 2026-10-25 完成；📎 201×2（id=1/2）、422×2（too_short / too_long）、读库 2 行；⚠️ 首跑 500（`title=payload`），三道门没拦住（`**kwargs`） |
+| 10.5b | `GET /v1/conversations` 列表：`select()` + `order_by()` + `.scalars().all()` | — | ✅ 2026-10-25 完成；📎 空表 `[]`[200] / 两条升序[200]；📎 印证 `created_at` POST 带 Z、GET 不带 |
+| 10.5c | `GET /v1/conversations/{conv_id}` 详情：`await db.get()` + 判空 → 404 | — | ✅ 2026-10-25 完成；📎 五条 URL 全对（200/404/422/200/404）；📎 不判空 → `ResponseValidationError` → 500 |
+| 10.5d | `DELETE /v1/conversations/{conv_id}`：`await db.delete()` + 204 无内容 | — | ✅ 2026-10-25 完成；📎 生命周期五步全对（200/204/404/404/200），读库确认空表；📎 204 语义补测（改 200 → 客户端收 null，且"没做事"无法区分） |
+| 10.5e | `PATCH /v1/conversations/{conv_id}`：`ConversationPatch` + 部分更新 | — | ✅ 2026-10-25 完成（⚠️ 起因：学习者发现上一轮我误称「CRUD 四接口完成」，Update 未做）；📎 九种情况全对；必填字段作为 bug 探测器的判据入笔记 |
+| 10.5f | **抽出公共规则 `ConversationTitle`**：`StringConstraints(strip_whitespace=True)` 堵住「纯空格标题」 | — | ✅ 2026-10-25 完成（测试中发现缺口）；📎 修前 `"   "` / `"\t\n"` / 全角空格全部返回 200 并入库空白标题；📎 修后全部 422；📎 顺带修掉「空格+100字符+空格」被误判超长的旧行为；POST/PATCH 共用一处定义 |
+| 10.6a | `LlmCall` 表 + `Conversation.calls` 一对多（外键 / `cascade` / `conversation_id` 索引） | **#33**（关闭） | ✅ 2026-10-26 完成；📎 建表语句含 `ON DELETE CASCADE` + `ix_llm_calls_conversation_id`；📎 索引实测 25 倍（5 万行）+ 规模曲线证明 O(log n)；📎 五种删父子写法对比；⚠️ 批改订正一处理解错误（`ondelete=` 不能解决 ORM 置 NULL） |
+| 10.6b-1 | 打开 SQLite 外键强制（`engine.sync_engine` 的 `connect` 事件 + `PRAGMA foreign_keys=ON`） | — | ✅ 2026-10-26 完成；📎 池内 3 条连接全为 1；孤儿 `conversation_id=999` 被 `IntegrityError` 拒；📎 **订正 10.6a 的旧结论**：10 组矩阵证明 `ondelete` 依赖 `PRAGMA`，且「有 relationship 无 cascade」会抵消级联 |
+| 10.6b-2 | `ChatRequest` 加 `conversation_id` + pre-flight（不存在 → 404，流开始前拦） | **#41**（部分：schema 提前定形状） | ✅ 2026-10-27 完成；📎 六项验证 200 / 404 / 404 / 422 / 200 / 400×2；⭐ 顺带把「对话不存在」的 5 处重复抽成 `require_conversation`，并统一两条 chat 的校验顺序 |
+| 10.6b-3 | 生成器里写 `LlmCall`（第一版：`except BaseException` 回滚守卫） | —（方案被 10.6b-4 推翻） | ✅ 2026-10-27 完成，⚠️ **但方案在 1.63 被推翻**：守卫守的是「编造的帧序」，且业务上让断开的调用完全不留账（学习者指出「断了也花了 token」） |
+| 10.6b-4 | **两阶段记账**：流开始前落 `pending` 行 → 拿到 usage 改 `completed` → 断开/异常只做同步赋值 `aborted` | **#41**（部分：带 `status`） | ✅ 2026-10-27；📎 真 app 中间件栈下 5 种「断开时补写」全失败，只有「提前写」可行；📎 四格验收 + 真实 DeepSeek 端到端；新增 `LlmCall.status`（`pending`/`completed`/`aborted`） |
+| 10.6b-4a | 流开始前 `add` + `flush` 一行 `pending`（`yield thinking` 必须挪到其后） | — | ✅ 学习者手写；📎 两次真实调用都是 `completed` 且 token 非 0 |
+| 10.6b-4b | 两个 `except` 去掉 `rollback`，改成同步赋值 `aborted` | — | ✅ 学习者手写；📎 端到端：断开 `aborted 0/0/0`、正常 `completed 33/49/82`；⚠️ 首次验收拿到 404 `对话不存在：1`（库被删过）导致测试空转 |
+| 10.6c | N+1 原理 + `selectinload` 实测 | **#43**（第一步） | ✅ 2026-10-28；📎 三种写法实测（N=5：6/2/1 条），规模曲线 N=100 时 **101 条 57.7ms vs 2 条 4.9ms**；📎 async 下惰性加载是 `MissingGreenlet` 报错不是变慢；落地成 `GET /v1/conversations` 加 `call_count` + `total_tokens`（`outerjoin` + `coalesce`） |
+| 10.6d | Step 10 收尾专项（分页 #25 / `/health` #26 / `updated_at` #31 / 形状统一 #39 #30 #52） | **#25 #26 #30 #31 #39 #52 #54**（关闭） | ✅ 10.6d-1 `updated_at` / 10.6d-2 游标分页 / 10.6d-3 `/health` 拆 liveness + readiness / 10.6d-4a 时间格式统一 / **10.6d-4b 四接口形状统一** |
+| 11 | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** | ✅ 已完成（拆成 11a~11f，逐行见下） |
+| 11a | 启动入口 `src/app/__main__.py`（`uv run python -m app`）+ `.env.example` 补 `DATABASE_URL` | **#27 #29**（关闭） | ✅ 2026-10-29 学习者手写；📎 `PORT=8131` 启动 → `Uvicorn running on http://127.0.0.1:8131`，curl `[200]`；📎 8000 端口 `[000]` 无人听（证明 settings 真的生效）；📎 `DEBUG=true` → `Started reloader process [...] using WatchFiles`；📎 `DEBUG=false` → 无 reloader。关闭待办 **#27** #29 |
+| 11b | `settings.debug` 接进 `FastAPI(debug=...)` + **prod 强制关保护**（`model_validator` 跨字段校验） | **#28**（关闭） | ✅ 2026-10-31 学习者手写一次通过；📎 `APP_ENV=prod`+`DEBUG=true` → `ValidationError` / `exit_code=1` / **uvicorn 未启动**（`python -m app` 与 `uvicorn app.api.app:app` 两条路径都拦）；📎 `dev`+`DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`；📎 复验 `debug=True` 响应 `text/plain` 含 traceback 与异常消息、`debug=False` 为 `application/json`。关闭待办 **#28** |
+| 11c | 日志换 `dictConfig(force=True)`：新增 `src/app/logging_setup.py`，`app.py` 模块级调用，`__main__.py` 提前调 + `log_config=None` | **#7**（关闭）· #51 拆半 · 新增 #56 | ✅ 2026-10-31 学习者手写；📎 改前两种格式并存（`INFO:     ` + 我们的）+ 每请求 2 行；📎 改后三条路径（`python -m app` / `DEBUG=true` reload / `uvicorn app.api.app:app`）统一 `2026-10-31 … INFO uvicorn.error \ |
+| 11e | 生产关交互式文档：`_DOCS_ENABLED = app_env == "dev"` + `docs_url` / `redoc_url` / `openapi_url` 三个一起条件置 `None` | —（配合 11d 的生产保护） | ✅ 2026-11-01 学习者手写；📎 dev：`/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` 全 **200**；📎 prod：四个全 **404**（body 是 11d 的统一形状），`/health` 仍 200；📎 另测「只关 `docs_url`」→ `/redoc` 与 `/openapi.json` **仍 200**（证明三个必须一起关） |
+| 11d | **统一错误形状（B 版：业务码）**：`errors.py` 抽 `_error_response` 单一出口 + 4 个处理器（`AppError` / `StarletteHTTPException` / `RequestValidationError` / `Exception`）；`app.py` 两处 404 改抛 `AppError("MODEL_NOT_FOUND"/"CONVERSATION_NOT_FOUND")` | **#6**（关闭）· 落地决策 25 | ✅ 2026-10-31 学习者手写；📎 8 组用例：`/nope`→`NOT_FOUND`、`/v1/models/xxx`→`MODEL_NOT_FOUND`、对话详情/删除→`CONVERSATION_NOT_FOUND`、422→`VALIDATION_ERROR`+`details`、405→`METHOD_NOT_ALLOWED`、500→`INTERNAL_ERROR`，**全部 `hdr==body` 且 body 无 traceback/密码**。关闭待办 **#6**，落地决策 **25** |
+| 11f | 流式接口在 `/docs` 标 `text/event-stream`：新增 `SseResponse(StreamingResponse)`（类属性 `media_type`）+ 装饰器 `response_class=SseResponse`，`return` 改用它 | **#11**（关闭） | ✅ 2026-11-01 学习者手写；📎 OpenAPI：`200.content = ['text/event-stream']`（**只有一种**）、422 仍在、`/v1/chat` 仍 `['application/json']`；📎 端到端（假上游）：`CONTENT_TYPE: text/event-stream; charset=utf-8`、`CACHE_CONTROL: no-cache`、`X_ACCEL: no`、6 帧完整（thinking / 2×delta / finish_reason / usage / [DONE]）。**关闭待办 #11** |
+| 12 | 测试：目标判据 = **改坏一行代码 5 分钟内能知道**（门 1），拆 6 小步 | **#40** | ✅ 已完成（拆成 12a~12f，逐行见下） |
+| 12a | 地基：`tests/` + `conftest.py`（`import app` 前设 `DATABASE_URL` → 独立临时库）+ `with TestClient` fixture + 2 个冒烟用例 · 📎 已验：`app.db` 的 mtime 前后不变 | **#40** | ✅ 2026-11-01 完成 · 📎 四道门全绿（`ruff` / `format` / `mypy` 22 files / `pytest` 2 passed 0.34s）；📎 `app.db` 的 `LastWriteTimeUtc` 前后完全相同（测试落 `%TEMP%\llm-app-test.db`）；⚠️ 学习者代码 3 处格式问题由 `ruff check --fix` + `ruff format` 修掉（`import  tempfile` 双空格、3 处行内注释只留 1 个空格） |
+| 12b | **数据隔离**（每个测试之间清库）+ 把 10.x 的手工 curl 变成断言：CRUD 全生命周期 / 游标分页 / 422 校验 / 404 语义 | **#40** | ✅ 2026-11-01 完成 · 隔离用**清表 fixture**（`reversed(Base.metadata.sorted_tables)`，表清单从模型推导而非手抄）；📎 11 passed ×2、9 个用例**逐个单跑全绿**（无顺序依赖）；📎 **5 次变异测试**证明断言有牙（4 次抓到、1 次为等价变异） |
+| 12c | 假 LLM + **把 11d 的统一错误形状钉成断言**（拆 3 小步，按规范 §3.0「一次一个文件」） | **#40** · 关联 #57 | ✅ 已完成（拆成 12c-1~12c-3） |
+| 12c-1 | 建 `tests/fakes.py`：`FakeLlm` + `FakeChatStream`。📎 实测**继承真类**（`LlmClient` / `LlmChatStream`）后 mypy 会抓签名漂移：故意把 `list_models` 返回改 `list[str]` → `error: Return type ... incompatible with ... in supertype` | **#40** | ✅ 2026-11-01 完成 · 📎 三道门 `24 files` 全绿；已验「没覆盖的方法」→ `AttributeError: 'FakeLlm' object has no attribute '_http'`（**不花钱**，见 §12.6b） |
+| 12c-2 | 建 `tests/test_upstream.py`：假 LLM 接线（200 断言 `m1`/`m2`）+ 三类上游故障 → 502 + 流式 pre-flight 失败仍能改状态码 | **#40** | ✅ 2026-11-01 完成 · 📎 **17 passed**（11 + 6）、四道门 `25 files` 全绿；📎 变异 A（把 pre-flight 挪进生成器）→ `test_stream_preflight_failure_changes_status_code` **红**；📎 变异 C（`FakeLlm.list_models` 返回 `[]`）→ `test_upstream_models_uses_fake` **红**（`assert 0 == 2`） |
+| 12c-3 | 建 `tests/test_errors.py`：**错误形状契约**（envelope 三键 / 三种 404 靠业务码区分 / 422 的 `details` 只留三键 / 500 不泄漏内部信息） | **#40** | ✅ 2026-11-02 完成 · 📎 **24 passed**（17 + 7）、四道门 `26 files` 全绿；📎 **3 次变异**：envelope 的 `code` 改名 → **7 红** / `error` 里多塞 `extra` → **7 红** / 500 回 `f"…: {exc}"` → **仅 500 那条红**（精准）；📎 实测 405 与 404(路由) 的 `message` 是**英文**（框架 `detail` 原样透传，客户端只认 `code`）；📎 500 响应**没有任何 CORS 头**（#57 的又一份证据）；📎 pydantic 原始 `errors()[0]` 有 6 字段，我们只留 `loc`/`msg`/`type` |
+| 12d | 流式边界用例搬进 pytest（按「测哪一层」拆 3 小步：路由层 / 适配器层 / 账单层） | **#40** | ✅ 已完成（拆成 12d-1 / 12d-2 / 12d-3a / 12d-3b） |
+| 12d-1 | 🟡 **下一步** 建 `tests/test_stream_frames.py`：**路由层**字段守卫（用假 chunk，不经 SSE 文本）。📎 已实测：正常帧序 = `thinking → delta → finish_reason → usage → delta → [DONE]`（**usage 在最后一个 delta 之前**）；7 种怪 chunk（content 是数组 / choices 不是 list / choices[0] 不是 dict / index≠0 / delta 不是 dict / 只有思维链 / 完全没有帧）**全部**变成 `thinking + STREAM_NO_CONTENT + [DONE]`；`finish_reason` 是 dict 时**不发 finish 帧但 delta 照常** | **#40** | ✅ 2026-11-02 完成 · 📎 **35 passed**（24 + 11）、四道门 `27 files` 全绿；📎 4 次变异：去掉 content 守卫 → **1 红** / 去掉零内容保护 → **8 红** / 首帧 thinking 改名 → **2 红** / **转发 finish_reason 后加 `break` → 2 红**（`test_normal_stream_frame_order` + `test_frames_after_finish_reason_are_still_processed`）；📎 核实终止条件 = **上游 EOF**（`[DONE]` 只置 `seen_done` 后 `continue`；`finish_reason` 不影响循环），见 §12.5c |
+| 12d-2 | 🟡 **下一步** 建 `tests/test_stream_adapter.py`：**适配器层**（喂原始 SSE 字节给 `LlmChatStream`）。📎 已验证可行：`httpx.Response(200, content=b"…")` 能直接喂 `aiter_chunks()`；实测 `data:{…}` 无空格 ✅ / `data: ` 空行跳过 ✅ / `data: null` 丢弃+WARNING ✅ / `data: [1,2,3]` 丢弃+WARNING ✅ / 注释行 `: xxx` 与 `event: ping` 跳过 ✅ / `[DONE]` 之后的帧跳过 ✅ | **#40** | ✅ 2026-11-02 完成 · 📎 **47 passed**（36 + 11）、四道门 `28 files` 全绿；📎 **5 次变异全部被抓**：要求 `data: ` 带空格 → 1 红 / 不丢 `[DONE]` 后的帧 → 1 红 / 吞掉坏 JSON → 1 红 / 空 `data:` 也去 `loads` → 1 红 / 不校验 dict → **4 红**；📎 另测 **9 组解析边界**（CRLF / 裸 `\r` / 无结尾空行 / `id:retry:` / `data:[DONE]` / 尾随空格 全 ✅；**多行 `data:` 事件抛 `JSONDecodeError`**、**BOM 开头丢首帧** → 新增待办 #71）→ 见 §12.5e |
+| 12d-3a | ✅ **完成**（2026-11-02）修 **#70**（记账提到三个 `continue` 之前）+ 建 `tests/test_stream_accounting.py` 5 个用例 + `conftest.py` 加 `db_path` fixture | **#40** · #70（关闭） | ✅ 5 passed · 全量 **52 passed**、四道门 `29 files` 全绿；📎 **TDD 红→绿**：补丁前 3 红 / 补丁后 5 绿；📎 帧序未变 → 12d-1 的帧序断言照旧全绿 |
+| 12d-3b | ✅ **完成**（2026-11-02）定 #68 语义 + 补 4 个用例 + 收 StrEnum + **加枚举值守卫用例** | **#40** · #68（关闭） | ✅ 10 passed · 全量 **57 passed**、四道门 `29 files` 全绿；📎 7 次变异全抓；🔴 学习者的 `PENDING = "pengding"` **过了四道门** → 新增守卫用例（值必须靠断言钉住，mypy 管不到） |
+| 12e | ✅ **完成**（2026-11-03）建 `tests/test_concurrency.py`：真 `uvicorn`（随机端口）+ 真 TCP 客户端，4 个用例（单流基线 / 2 条并发 / 4 条并发 / 流跑到一半 `pending` 已落库）→ **并据此修掉 #73 / #59 / #42** | **#40** · #73 #59 #42（关闭，决策 28） | ✅ 4 passed · 全量 **61 passed**、四道门 `30 files` 全绿<br>📎 用 `xfail(strict=True)` 先钉住缺陷，修好后它们如预期变 **XPASS → 2 红**，删标记后转绿（这就是 strict 的用途）；📎 变异：⑥ 改回 `flush` → 并发测试红；usage 那处改回 `flush` → **61 个全绿**（登记 #74）<br>📎 已验证可行：`uvicorn.Server(uvicorn.Config(app, port=0))` + 线程 + `server.servers[0].sockets[0].getsockname()` 能拿到端口；📎 候选文件已跑通 `1 passed, 2 xfailed in 5.68s`；📎 并已验证 `xfail(strict=True)` 真的会响（把阈值放大 → `FAILED ... [XPASS(strict)]`）<br>🔴 **前提（2026-11-02 实测）**：#59 **在 `TestClient` 里复现不出来** —— 📎 客户端一帧不读时 `get_db` 也已收尾（`checkedout=0`），因为 TestClient 两端是无界内存流、没有 TCP 背压。**必须起真 uvicorn + 真 HTTP 客户端** |
+| 12f | 收口：覆盖率**看分支不看数字** + 台账 + 门 1 打勾；CI（#62）留 `P1` | **#40** · 关联 #62 | ⬜ 待做 |
+| 14 | **架构盘点（Architecture Review，2026-11-02 学习者插入）**：把「各种关系 + 各种形状」集中一处、能对得上代码。判据 = **能凭图回答「这个请求经过哪几层 / 出错时前端拿到什么 / 这个字段从哪来」** | — | ✅ 已完成（拆成 14a / 14b） |
+| 14a | 建 `study_notes/project/architecture-map.md`：13 节（七层栈 / 模块依赖 / lifespan / ER+DDL / 端点总表 / 成功形状 / 错误形状 / SSE 帧 / 配置 / 日志 / 测试 / 状态机 / 速查） | — | ✅ 2026-11-02 建立 · 📎 全部由探针取真实数据（`build_middleware_stack` 逐层、`app.routes`、`model_fields`、`sqlite_master` DDL、逐端点实跑响应） |
+| 14b | 学习者逐个提「XX 的形状 / 关系」→ 补图、订正错误图 | — | 🟡 进行中 · 本节随提问增长 |
+| 13 | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** | ⬜ 未开始 |
+| 台账合并 | 把「阶段 1 子进度」与「待办 → 步骤 对照」**两张表合并成一张 4 列表**（原 13 行在两张表里各写一遍，措辞还不一致；且表 1 停在 `11f`、`12a~12e` 全落在表 2） | — | ✅ 2026-11-03；📎 合并后 **79 行、编号无重复**；📎 表头加「怎么读」；📎 3 个非工作单元项（`10.8` / `阶段 2` / `随时`）移到表外小表 |
+
+**不属于「工作单元」的排期项**（原第二张表里的三行，合并时移到这里 —— 它们不是「某一步做了什么」，而是「某项待办归哪一段」）：
+
+| 项 | 内容 | 关联待办 | 状态 |
+|---|---|---|---|
+| `10.8` | ~~Step 10 自检（77 题）~~ | — | ⏭️ **推后**：2026-10-29 学习者决定「进度优先，自检统一放到阶段一收尾前一次过」→ 见下方「自检统一安排」 |
+| `阶段 2` | 消息落库 / 软删除 / 并发控制 / `KNOWN_MODELS` 改真实数据 | **#3 #32 #34 #35** | ⬜ 未开始 |
+| `随时` | ~~`DATABASE_URL` 补进 `.env.example`~~ | **#27** | ✅ 11a 已完成 |
 
 **阶段 1 已知待办（体检发现，归属到对应 Step 时再修）**：
 
@@ -354,45 +383,6 @@
 > ✅ **#28 已关闭**（11b，2026-10-31）：`app = FastAPI(..., debug=settings.debug, ...)`；📎 实测 `DEBUG=true` → `app.debug=True`、`DEBUG=false` → `False`。⚠️ 前置保护同时落地：`config.py` 用 `@model_validator(mode="after")` 拦住 `APP_ENV=prod` + `DEBUG=true`（启动 `exit_code=1`，uvicorn 一行都没起）。另：**生产关 `/docs` 仍待做**（11e）。
 
 
-**待办 → 步骤 对照（2026-10-25 审计后新增）**：
-
-| 步骤 | 这一步要解决的待办 | 关联编号 |
-|---|---|---|
-| **10.6a** | `LlmCall` 表 + `Conversation.calls` 一对多（外键 + `cascade` + `conversation_id` 索引） | #33（索引） |
-| **10.6b-1** | 打开 SQLite 外键强制（`connect` 事件 + `PRAGMA foreign_keys=ON`） | — |
-| **10.6b-2** | `ChatRequest` 加 `conversation_id` + pre-flight 校验（`require_conversation` 一处实现） | #41（`LlmCall` 出参 schema 要提前定形状） |
-| **10.6b-3** | 生成器里写 `LlmCall` + 第一版回滚守卫（⚠️ 方案已被 10.6b-4 推翻） | — |
-| **10.6b-4** | **两阶段记账**：`status` 三态（`pending` / `completed` / `aborted`） | #41（`LlmCall` 出参 schema 也要带 `status`） |
-| **10.6c** | N+1 原理 + `selectinload` 实测 + 列表加账单统计 | #43（账单统计的第一步） |
-| **10.6d** | **Step 10 收尾专项**（分页 / `updated_at` / `/health` 探活 / 形状统一） | **#25 #26 #31 #30 #39 #52 #54** |
-| **10.8** | ~~Step 10 自检（77 题）~~ | ⏭️ **推后**：2026-10-29 学习者决定「进度优先，自检题统一放到阶段一结束后一次过」。10.8 不再单独执行，改为**阶段一收口前置项**（见下方「自检统一安排」） |
-| **11** | 工程化：`dictConfig` / 统一错误形状 / `settings.debug` / 生产关 `/docs` | **#6 #7 #28** |
-| **11a** | 启动入口 `python -m app`（`settings.host/port` 生效）+ `.env.example` 补 `DATABASE_URL` | ✅ 已完成 · **#27 #29** |
-| **11b** | `settings.debug` → `FastAPI(debug=…)` + prod 强制关保护 | ✅ 已完成 · **#28** |
-| **11c** | 日志 `dictConfig(force=True)`（+ 新增 `learning/logging.md` 专题） | ✅ 已完成 · **#7**（#51 拆半 · 新增 **#56**） |
-| **11d** | 统一错误形状（`_error_response` 单一出口 + 4 个处理器 + 业务码） | ✅ 已完成 · **#6** · 关联决策 5 |
-| **11e** | 生产关 `/docs` `/redoc` `/openapi.json` | ✅ 已完成 · 📎 dev 全 200 / prod 全 404（含 `/docs/oauth2-redirect`），`/health` 不受影响；prod 的 404 已是 11d 统一形状 |
-| **11f** | 流式接口在 `/docs` 标 `text/event-stream` | ✅ 已完成 · **#11**（关闭） |
-| **12** | 测试：目标判据 = **改坏一行代码 5 分钟内能知道**（门 1），拆 6 小步 | **#40** |
-| **12a** | 地基：`tests/` + `conftest.py`（`import app` 前设 `DATABASE_URL` → 独立临时库）+ `with TestClient` fixture + 2 个冒烟用例 · 📎 已验：`app.db` 的 mtime 前后不变 | ✅ 2026-11-01 完成 · #40 · 📎 四道门全绿（`ruff` / `format` / `mypy` 22 files / `pytest` 2 passed 0.34s）；📎 `app.db` 的 `LastWriteTimeUtc` 前后完全相同（测试落 `%TEMP%\llm-app-test.db`）；⚠️ 学习者代码 3 处格式问题由 `ruff check --fix` + `ruff format` 修掉（`import  tempfile` 双空格、3 处行内注释只留 1 个空格） |
-| **12b** | **数据隔离**（每个测试之间清库）+ 把 10.x 的手工 curl 变成断言：CRUD 全生命周期 / 游标分页 / 422 校验 / 404 语义 | ✅ 2026-11-01 完成 · #40 · 隔离用**清表 fixture**（`reversed(Base.metadata.sorted_tables)`，表清单从模型推导而非手抄）；📎 11 passed ×2、9 个用例**逐个单跑全绿**（无顺序依赖）；📎 **5 次变异测试**证明断言有牙（4 次抓到、1 次为等价变异）|
-| **12c** | 假 LLM + **把 11d 的统一错误形状钉成断言**（拆 3 小步，按规范 §3.0「一次一个文件」） | **#40**（关联 #57） |
-| **12c-1** | 建 `tests/fakes.py`：`FakeLlm` + `FakeChatStream`。📎 实测**继承真类**（`LlmClient` / `LlmChatStream`）后 mypy 会抓签名漂移：故意把 `list_models` 返回改 `list[str]` → `error: Return type ... incompatible with ... in supertype` | ✅ 2026-11-01 完成 · #40 · 📎 三道门 `24 files` 全绿；已验「没覆盖的方法」→ `AttributeError: 'FakeLlm' object has no attribute '_http'`（**不花钱**，见 §12.6b） |
-| **12c-2** | 建 `tests/test_upstream.py`：假 LLM 接线（200 断言 `m1`/`m2`）+ 三类上游故障 → 502 + 流式 pre-flight 失败仍能改状态码 | ✅ 2026-11-01 完成 · #40 · 📎 **17 passed**（11 + 6）、四道门 `25 files` 全绿；📎 变异 A（把 pre-flight 挪进生成器）→ `test_stream_preflight_failure_changes_status_code` **红**；📎 变异 C（`FakeLlm.list_models` 返回 `[]`）→ `test_upstream_models_uses_fake` **红**（`assert 0 == 2`） |
-| **12c-3** | 建 `tests/test_errors.py`：**错误形状契约**（envelope 三键 / 三种 404 靠业务码区分 / 422 的 `details` 只留三键 / 500 不泄漏内部信息） | ✅ 2026-11-02 完成 · #40 · 📎 **24 passed**（17 + 7）、四道门 `26 files` 全绿；📎 **3 次变异**：envelope 的 `code` 改名 → **7 红** / `error` 里多塞 `extra` → **7 红** / 500 回 `f"…: {exc}"` → **仅 500 那条红**（精准）；📎 实测 405 与 404(路由) 的 `message` 是**英文**（框架 `detail` 原样透传，客户端只认 `code`）；📎 500 响应**没有任何 CORS 头**（#57 的又一份证据）；📎 pydantic 原始 `errors()[0]` 有 6 字段，我们只留 `loc`/`msg`/`type` |
-| **12d** | 流式边界用例搬进 pytest（按「测哪一层」拆 3 小步：路由层 / 适配器层 / 账单层） | **#40** |
-| **12d-1** | 🟡 **下一步** 建 `tests/test_stream_frames.py`：**路由层**字段守卫（用假 chunk，不经 SSE 文本）。📎 已实测：正常帧序 = `thinking → delta → finish_reason → usage → delta → [DONE]`（**usage 在最后一个 delta 之前**）；7 种怪 chunk（content 是数组 / choices 不是 list / choices[0] 不是 dict / index≠0 / delta 不是 dict / 只有思维链 / 完全没有帧）**全部**变成 `thinking + STREAM_NO_CONTENT + [DONE]`；`finish_reason` 是 dict 时**不发 finish 帧但 delta 照常** | ✅ 2026-11-02 完成 · #40 · 📎 **35 passed**（24 + 11）、四道门 `27 files` 全绿；📎 4 次变异：去掉 content 守卫 → **1 红** / 去掉零内容保护 → **8 红** / 首帧 thinking 改名 → **2 红** / **转发 finish_reason 后加 `break` → 2 红**（`test_normal_stream_frame_order` + `test_frames_after_finish_reason_are_still_processed`）；📎 核实终止条件 = **上游 EOF**（`[DONE]` 只置 `seen_done` 后 `continue`；`finish_reason` 不影响循环），见 §12.5c |
-| **12d-2** | 🟡 **下一步** 建 `tests/test_stream_adapter.py`：**适配器层**（喂原始 SSE 字节给 `LlmChatStream`）。📎 已验证可行：`httpx.Response(200, content=b"…")` 能直接喂 `aiter_chunks()`；实测 `data:{…}` 无空格 ✅ / `data: ` 空行跳过 ✅ / `data: null` 丢弃+WARNING ✅ / `data: [1,2,3]` 丢弃+WARNING ✅ / 注释行 `: xxx` 与 `event: ping` 跳过 ✅ / `[DONE]` 之后的帧跳过 ✅ | ✅ 2026-11-02 完成 · #40 · 📎 **47 passed**（36 + 11）、四道门 `28 files` 全绿；📎 **5 次变异全部被抓**：要求 `data: ` 带空格 → 1 红 / 不丢 `[DONE]` 后的帧 → 1 红 / 吞掉坏 JSON → 1 红 / 空 `data:` 也去 `loads` → 1 红 / 不校验 dict → **4 红**；📎 另测 **9 组解析边界**（CRLF / 裸 `\r` / 无结尾空行 / `id:retry:` / `data:[DONE]` / 尾随空格 全 ✅；**多行 `data:` 事件抛 `JSONDecodeError`**、**BOM 开头丢首帧** → 新增待办 #71）→ 见 §12.5e |
-| **12d-3a** | ✅ **完成**（2026-11-02）修 **#70**（记账提到三个 `continue` 之前）+ 建 `tests/test_stream_accounting.py` 5 个用例 + `conftest.py` 加 `db_path` fixture | ✅ 5 passed · 全量 **52 passed**、四道门 `29 files` 全绿；📎 **TDD 红→绿**：补丁前 3 红 / 补丁后 5 绿；📎 帧序未变 → 12d-1 的帧序断言照旧全绿 |
-| **12d-3b** | ✅ **完成**（2026-11-02）定 #68 语义 + 补 4 个用例 + 收 StrEnum + **加枚举值守卫用例** | ✅ 10 passed · 全量 **57 passed**、四道门 `29 files` 全绿；📎 7 次变异全抓；🔴 学习者的 `PENDING = "pengding"` **过了四道门** → 新增守卫用例（值必须靠断言钉住，mypy 管不到） |
-| **12e** | ✅ **完成**（2026-11-03）建 `tests/test_concurrency.py`：真 `uvicorn`（随机端口）+ 真 TCP 客户端，4 个用例（单流基线 / 2 条并发 / 4 条并发 / 流跑到一半 `pending` 已落库）→ **并据此修掉 #73 / #59 / #42** | ✅ 4 passed · 全量 **61 passed**、四道门 `30 files` 全绿<br>📎 用 `xfail(strict=True)` 先钉住缺陷，修好后它们如预期变 **XPASS → 2 红**，删标记后转绿（这就是 strict 的用途）；📎 变异：⑥ 改回 `flush` → 并发测试红；usage 那处改回 `flush` → **61 个全绿**（登记 #74）<br>📎 已验证可行：`uvicorn.Server(uvicorn.Config(app, port=0))` + 线程 + `server.servers[0].sockets[0].getsockname()` 能拿到端口；📎 候选文件已跑通 `1 passed, 2 xfailed in 5.68s`；📎 并已验证 `xfail(strict=True)` 真的会响（把阈值放大 → `FAILED ... [XPASS(strict)]`）<br>🔴 **前提（2026-11-02 实测）**：#59 **在 `TestClient` 里复现不出来** —— 📎 客户端一帧不读时 `get_db` 也已收尾（`checkedout=0`），因为 TestClient 两端是无界内存流、没有 TCP 背压。**必须起真 uvicorn + 真 HTTP 客户端** |
-| **12f** | 收口：覆盖率**看分支不看数字** + 台账 + 门 1 打勾；CI（#62）留 `P1` | ⬜ 待做 · #40 ↔ 关联 #62 |
-| **14** | **架构盘点（Architecture Review，2026-11-02 学习者插入）**：把「各种关系 + 各种形状」集中一处、能对得上代码。判据 = **能凭图回答「这个请求经过哪几层 / 出错时前端拿到什么 / 这个字段从哪来」** | — （复盘步骤，不关任何待办） |
-| **14a** | 建 `study_notes/project/architecture-map.md`：13 节（七层栈 / 模块依赖 / lifespan / ER+DDL / 端点总表 / 成功形状 / 错误形状 / SSE 帧 / 配置 / 日志 / 测试 / 状态机 / 速查） | ✅ 2026-11-02 建立 · 📎 全部由探针取真实数据（`build_middleware_stack` 逐层、`app.routes`、`model_fields`、`sqlite_master` DDL、逐端点实跑响应） |
-| **14b** | 学习者逐个提「XX 的形状 / 关系」→ 补图、订正错误图 | 🟡 进行中 · 本节随提问增长 |
-| **13** | 部署：`settings.host/port` 接线 / body 大小 / 限流 / 鉴权 | **#29 #36 #37 #38** |
-| **阶段 2** | 消息落库 / 软删除 / 并发控制 / KNOWN_MODELS 改真实数据 | **#3 #32 #34 #35** |
-| **随时** | ~~`DATABASE_URL` 补进 `.env.example`~~ | ✅ **11a 已完成**（#27） |
 
 ---
 
