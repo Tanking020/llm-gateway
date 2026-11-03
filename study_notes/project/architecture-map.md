@@ -639,16 +639,16 @@ await client.open_chat_stream(body)     ← 只等响应头
           │                       │                                 │◀────────────────────────┤ 只等响应头
   ════════╪═══════════════════════╪═════════════════════════════════╪══ 200 + chunked ════════╪══ 状态码锁死
   ⑤       │◀══════════════════════════════════════════════════════════│ return SseResponse       │
-  ⑥       │                       │                                 ├─── db.flush() ─────────▶ 数据库 INSERT pending
-          │                       │                                 │   🔴 写锁从这里开始        │
+  ⑥       │                       │                                 ├─── db.commit() ────────▶ 数据库 INSERT + 提交
+          │                       │                                 │   ✅ 写锁在这里就释放      │
   ⑦       │◀──── data: thinking ──┼─────────────────────────────────┤ yield                    │
   ⑧       │◀──── data: delta ─────┼─────────────────────────────────┤ async for chunk ────────▶│ 逐帧
           │                       │                                 │ 每帧：usage → finish → content
   ⑨       │◀──── error 帧 ────────┼─────────────────────────────────┤ 仅零内容时               │
   ⑩       │◀──── data: [DONE] ────┼─────────────────────────────────┤ yield                    │
   ⑪       │                       │◀────────────────────────────────┤ 生成器结束                │
-          │                       │  get_db commit ────────────────▶ 数据库 UPDATE + COMMIT    │
-          │                       │                                 │   🔴 写锁到这里才释放      │
+          │                       │  get_db commit ────────────────▶ 数据库 最终状态 UPDATE    │
+          │                       │                                 │   （aborted / no_content）│
   ⑫       │◀════ 连接关闭（或客户端早已断开 → GeneratorExit）═════════│                          │
 ```
 
@@ -669,7 +669,7 @@ await client.open_chat_stream(body)     ← 只等响应头
 | ③ | `conversation_id` 不存在 | **404** `CONVERSATION_NOT_FOUND` | **没有行** | ✅ | — |
 | ④ | 上游连不上 / 超时 | **502** `UPSTREAM_UNREACHABLE` | **没有行** | ✅ | #60 |
 | ④ | 上游回 4xx / 5xx | **502** `UPSTREAM_BAD_STATUS` | **没有行** | ✅ | #60 |
-| ⑤ 之后 · ⑥ | `INSERT` 失败（`database is locked`） | **200 + 空 body**（0 帧） | **没有行**（事务回滚） | ❌ | **#73** |
+| ⑤ 之后 · ⑥ | `INSERT` 失败（`database is locked`） | **200 + 空 body**（0 帧） | **没有行**（事务回滚） | ❌ | #73 已修 |
 | ⑥~⑧ | 客户端提前断开（📎 读到 0 / 1 / 3 段就退出，三种都实测过） | 连接断，后续帧收不到 | **`aborted`**（同步赋值） | ❌ | — |
 | ⑧ | 坏 JSON（协议不可信） | 已拿到的内容 + `STREAM_FAILED` + `[DONE]` | 未拿到 usage → **`aborted`** | ❌ | — |
 | ⑧ | 结构坏帧（`content` 是数组等） | **少了那一段字**，流里无任何提示 | 拿过 usage → `completed`；否则看 ⑨ | ❌ | **#69** |
@@ -678,7 +678,9 @@ await client.open_chat_stream(body)     ← 只等响应头
 | ⑨ | 上游 200 但一帧内容都没有，且没 usage | `STREAM_NO_CONTENT` + `[DONE]` | **`no_content`** | ❌ | #68 已修 |
 | ⑨ | 零内容但**拿到了** usage | `STREAM_NO_CONTENT` + `[DONE]` | **`completed`**（钱准了） | ❌ | 决策 27 |
 | ⑩~⑪ | `get_db` 的 commit 失败 | **已经收完完整响应**，无从告知 | **丢失**（只在日志里） | ❌ | — |
-| 任意 | 进程被强杀 | 连接断 | **没有行**（`flush` 未提交 → 回滚） | ❌ | #42 |
+| 任意 | 进程被强杀 | 连接断 | **`pending`**（⑥ 已 commit，📎 实测 exit code 9 后仍有一行） | ❌ | #42 已修 |
+
+⭐ **⑥ 为什么必须是 `commit` 而不是 `flush`**（2026-11-03 修 #73）：`flush` 只把 SQL 发出去、**不结束事务** → 写锁会一直持有到 ⑪。SQLite 只允许一个写者，于是并发流被完全串行化。改成 `commit` 之后写锁在 ⑥ 就释放（📎 实测并发 6 条流的连接池峰值从 6 降到 2）。
 
 📎 断开那三行是实测的：即使客户端**一段 body 都没读**就断开，账单也会落成 `aborted`（因为 Starlette 一旦开始发响应就会启动生成器，`aclose()` 时 `GeneratorExit` 会走进 `except BaseException`）。
 
