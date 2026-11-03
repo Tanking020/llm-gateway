@@ -349,6 +349,7 @@
 | **方案对比** | R1 完全不记账<br>R2 `except BaseException: await db.rollback()`（**第一版方案，已否决**）<br>R3 `rollback` + 断开时 `add` 新行<br>R4/R5 `rollback` + `add` + `commit()`（含 `shield` 版本）<br>**P 流开始前 `add` + `flush` 一行 `pending`，结束时改状态** |
 | **决定** | **P（两阶段记账）** |
 | **代价** ⚠️ 1 | 每次流式请求多一次 INSERT（即使失败） |
+| **代价** ⚠️ 3（2026-11-03 实测，比预想严重得多） | 🔴 **这次 INSERT 的写事务会横跨整条流** —— 它对其他请求的效果是「**并发流被完全串行化**」：📎 真实 uvicorn 实测 N=1/2/4 总耗时 0.66 / 1.32 / 2.60s（= N × 单流时长），TTFB 按排队位置线性增长；N=6、单流 1.0s 时最大 TTFB 5.48s（贴近 SQLite `busy_timeout`），单流 2.0s 时 **6 条里 3 条拿到 200 + 0 帧**（`database is locked`）。→ 待办 **#73**（P0）；PostgreSQL 下的变体是连接池耗尽（待办 **#59**） |
 | **代价** ⚠️ 2 | 账单不再和业务数据共用一个事务边界，与 [9](#9-请求级数据库会话由依赖统一提交) 有张力 —— 但**账单本来就该「即使业务回滚也留下」**，所以这是修正而不是违背 |
 | **重审条件** | 若引入独立的事务/审计通道（如消息队列），可改为异步落账 |
 | 📎 **为什么 R2/R3/R4/R5 都不行** | 断开时处于**已被取消的 cancel scope**，任何 `await` 都会被二次取消：`commit()` 抛 `CancelledError` 并搞出 `ResourceClosedError: This transaction is closed`；`asyncio.shield` 也挡不住。⚠️ **而 `get_db` 的 commit 跑在中间件退出栈里，不在被取消的 task 里** —— 所以我们只「登记」，提交交给它 |
