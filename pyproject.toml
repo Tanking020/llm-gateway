@@ -129,5 +129,8 @@ select = ["E", "F", "I", "UP", "B", "TID"]
 #   才能把原始 SSE 字节喂给 LlmChatStream。这是 TID251 的例外 —— 它不绕过适配器调上游，
 #   而是往适配器里喂数据（判据：文件里没有 client.get / client.post 这类调用）
 "tests/test_stream_adapter.py" = ["TID251"]
+# test_concurrency.py 要【真的做 TCP 客户端】才能产生并发与背压 —— TestClient 直连 ASGI，
+#   一帧不读也不会占住连接。判据：它必须用网络客户端，而 llm_client 之外只有这里允许
+"tests/test_concurrency.py" = ["TID251"]
 # playground/ 是学习实验脚本，刻意直接写 httpx（不经过适配器），不是业务代码
 "playground/*.py" = ["TID251"]
