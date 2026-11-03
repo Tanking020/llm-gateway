@@ -1231,6 +1231,21 @@
    > 📌 判据：**「记账」和「转发」必须能分开走** —— 记账在「这帧还有没有用」的判断之前，转发在「这帧内容好不好」的判断之后。
    > 混在一起写，坏帧就同时杀掉两者。见 §12.5d「✅ 已修」、待办 #70（已关闭）。
 
+16. 📎 你把 `PENDING = "pending"` 写成了 `PENDING = "pengding"`。
+    **`ruff` / `format` / `mypy` / `pytest` 四道门全绿 —— 为什么一个都没拦住？**
+    要机器守住这类错，你应该加什么？
+    > **因为四道门分别只看四种东西，都不看「字符串常量的内容」**：
+    > `mypy` 只检查**成员名**是否存在（`LlmCallStatus.PENDINGT` 会报 `[attr-defined]`），
+    > 而 `"pengding"` 是一个**合法的 `str`**；`ruff` 只管格式 / 导入顺序；
+    > `pytest` 当时**没有任何用例断言过 `pending` 这个值**。
+    > 📎 实测后果：`LlmCallStatus.PENDING == "pending"` → **`False`**，写进库的是 `'pengding'` ——
+    > 将来 `WHERE status = 'pending'` 的对账查询永远查不到那一行。
+    > ⭐ **要机器守住，就加一条钉住所有值的断言**：
+    > `assert {m.value for m in LlmCallStatus} == {"pending", "completed", "aborted", "no_content"}`
+    > 📎 变异验证：改 `pending` → 1 红；改 `no_content` → 3 红；把 `aborted` 截短 → 2 红。
+    > 📌 判据：**「类型对」和「值对」是两件事** —— `StrEnum` 把成员名交给类型系统，但值只是常量，只有断言管得住。
+    > 同一类问题：待办 #58 的错误码裸字符串。配套笔记 §12.5f。
+
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
@@ -1325,6 +1340,7 @@
 | 2026-11-01 | 阶段 1 · **Step 11** 补 1 题（第 23 题，11f）：`responses=` 为何是追加而不是替换（📎 三种写法对比：只 `responses` → 两种 content-type）。配套笔记 §11f、待办 #11（原修法已订正） |
 | 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
 | 2026-11-01 | 阶段 1 · **Step 12** 开工前修订第 1~2 题（📎 `httpx2` 实测 2.16.0；且 `starlette.testclient` 里那个叫 `httpx` 的名字实际是 `httpx2`；📎 不用 `with` 时 `/health`·`/v1/models`·`/health/ready` 全 200、只有 `POST /v1/conversations` 炸 `no such table`）+ 补 2 题（第 6 题 `raise_server_exceptions` 默认 `True` / 第 7 题 `settings` 单例与 `import app` 顺序）。配套笔记 stage1 §12.0 §12.2 |
+| 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 16 题，12d-3b）：`StrEnum` 只防成员名、**不防值** —— 学习者写 `PENDING = "pengding"` 时**四道门全绿**，只有断言能守住值。配套笔记 §12.5f |
 | 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 15 题，12d-3a）：修 #70 为什么选「只提前记账」而不是「整块上移」（A 会把 `usage` 帧排到 `finish_reason` 之前 → 改掉已实测的帧序）/ `recorded` 守卫让提前调用幂等。配套笔记 §12.5d「✅ 已修」 |
 | 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 14 题，12d-2）：`usage` 与坏结构同帧时被三个 `continue` 连坐 → 记账 `pending 0/0/0`（📎 实测；`finish_reason` 那条因**没有 `continue`** 而安全）。配套笔记 §12.5d、待办 #70 |
 | 2026-10-31 | 新增独立章节 [logging.md](logging.md)：四道闸 / Logger 树与 `propagate` / 级别语义 / Handler 与轮转 / Formatter 字段 / `dictConfig` 参数与幂等 / 14 条注意事项 / 踩坑表。同时把 `stage1-fastapi.md §11.2` 收缩成指针（避免同一份事实两处维护） |

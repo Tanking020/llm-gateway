@@ -9860,6 +9860,82 @@ thinking → delta 大 → delta 好 → [DONE]        ← 客户端拿到的
 
 ⚠️ **多行那条后果更重**：它抛异常 → 按 §12.5d 的规则**中止整条流**（客户端看到 `STREAM_FAILED`），**不是**静默跳过。
 
+## 12.5f 账单四态与 `StrEnum`：为什么「四道门全绿」仍可能写错值（2026-11-02，12d-3b）
+
+### 先给结论：`status` 只回答一个问题是「这笔钱准不准」
+
+| 值 | 谁写它 | 什么时候 | 对账的人要做什么 |
+|---|---|---|---|
+| `pending` | 开流前 `db.add` | 还没收尾 | 🔴 查：可能有钱没记上 |
+| `completed` | `record_usage()` | 拿到完整 usage | 不用 |
+| `aborted` | `except` / `except BaseException` | 客户端断开 / 上游异常 | 不用（正常事件） |
+| **`no_content`** | 零内容保护段（`if not recorded`） | 上游 200 但一帧内容都没有 | 🔴 查：我们对上游的理解错了 |
+
+⭐ **关键取舍**：零内容但**拿到**了 usage → 仍是 `completed`。因为钱是准的。
+「内容空不空」是产品指标，归日志 / 指标（待办 #66）管 —— **一个字段只回答一个问题**。
+
+📎 实测四种零内容场景（补丁前 → 补丁后）：
+
+| 场景 | 补丁前 | 补丁后 |
+|---|---|---|
+| 完全没帧（空 body / HTML） | `pending 0/0/0` | **`no_content`** |
+| 只有思维链、无 usage | `pending 0/0/0` | **`no_content`** |
+| 只有思维链 **+ 有 usage** | `completed 31/0/31` | `completed`（不变） |
+| 只有 role 首帧 **+ 有 usage** | `completed 31/0/31` | `completed`（不变） |
+
+### 🔴 这一轮真踩到的坑：`StrEnum` 防成员名，**不防值**
+
+学习者把 `PENDING = "pending"` 写成了 **`PENDING = "pengding"`**（少一个 `n`、换成 `g`），然后：
+
+```text
+uv run ruff check .        → All checks passed!
+uv run ruff format --check → 29 files already formatted
+uv run mypy .              → Success: no issues found in 29 source files
+uv run pytest -q           → 57 passed
+```
+
+**四道门全绿。** 因为：
+
+| 手段 | 能抓什么 | 抓不到什么 |
+|---|---|---|
+| `mypy` | 成员名拼错（`LlmCallStatus.PENDINGT` → `[attr-defined]`） | **值**是普通字符串，`"pengding"` 是合法 `str` |
+| `ruff` | 格式 / 导入顺序 / 未用变量 | 字符串内容 |
+| `pytest`（当时） | 已断言的行为 | **没有任何用例断言过 `pending` 这个值** |
+
+📎 实测后果：`LlmCallStatus.PENDING == "pending"` → **`False`**；写进库的是 `'pengding'`；
+将来任何 `WHERE status = 'pending'` 的对账查询**永远查不到那一行**。
+
+### 修法：给「值」单独一条断言
+
+```python
+def test_status_enum_values_are_pinned() -> None:
+    assert {member.value for member in LlmCallStatus} == {
+        "pending", "completed", "aborted", "no_content",
+    }
+```
+
+📎 变异验证（每次只改 `models.py` 里一个字符串）：
+
+| 变异 | 结果 |
+|---|---|
+| `PENDING = "pengding"` | **1 红** |
+| `NO_CONTENT = "nocontent"` | **3 红** |
+| `ABORTED = "abort"` | **2 红** |
+
+⭐ 判据：**「类型对」和「值对」是两件事。** `StrEnum` 把成员名交给类型系统，
+但**值只是常量**，只有断言能守住。同一类问题还有待办 #58（错误码裸字符串）。
+
+### 为什么用 `StrEnum` 而不是普通 `Enum`，以及为什么不需要迁移
+
+| 实测项 | 结果 |
+|---|---|
+| 写 `LlmCall(status=LlmCallStatus.NO_CONTENT)` | ✅ 成功 |
+| 表里实际存的原始值 | ✅ 字符串 `'no_content'`（**不是**成员名 `NO_CONTENT`） |
+| 列类型 | ✅ 仍是 `String(20)`，**不需要迁移**、不需要 `CHECK` 约束 |
+| 读回来是什么类型 | 普通 `str` → `row.status == "completed"` 照常工作 |
+
+⚠️ 但正因为它存的是字符串，数据库**也不做值域约束** —— 绕过 ORM 直接写 SQL 仍能写垃圾值。
+
 ## 12.6 依赖覆盖：绕过认证和数据库
 
 ```python

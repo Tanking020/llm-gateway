@@ -801,7 +801,7 @@ tests/
 
 ## 12. 状态机
 
-### 12.1 账单（`llm_calls.status`）三态
+### 12.1 账单（`llm_calls.status`）四态
 
 ```text
                      开流前（yield 之前）
@@ -809,21 +809,34 @@ tests/
                             ▼
                      ┌─────────────┐
                      │   pending   │   db.add + flush（还没持久化）
-                     └──┬───────┬──┘
-        拿到 usage 且完成   │       │  客户端断开 / 上游异常
-                        ▼       ▼
-             ┌──────────────┐  ┌──────────────┐
-             │  completed   │  │   aborted    │
-             └──────────────┘  └──────────────┘
-                   │                  │
-                   └────── 由 get_db 在请求结束时统一 commit ──────┘
+                     └──┬──────┬───┘
+          拿到 usage ───┘      └──── 客户端断开 / 上游异常
+                │                          │
+                │                          ▼
+                ▼                   ┌──────────────┐
+        ┌──────────────┐            │   aborted    │
+        │  completed   │            └──────────────┘
+        └──────────────┘
+        上游 200 但一帧内容都没有（且没拿到 usage）
+                      │
+                      ▼
+              ┌──────────────┐
+              │  no_content  │   金额不确定：上游可能已扣费
+              └──────────────┘
+
+        四个值最终都由 get_db 在请求结束时统一 commit
 ```
+
+> ⚠️ `completed` 与 `no_content` 互斥：**拿到 usage 就一定是 `completed`**，
+> 只有「零内容 **且** 没拿到 usage」才是 `no_content`（`if not recorded` 守卫）。
+> 四个值定义在 `models.py` 的 `LlmCallStatus(StrEnum)`，值字面量由测试钉住。
 
 | 状态 | 含义 | 谁写它 |
 |---|---|---|
 | `pending` | 流已经开始，还没结束 | 生成器一开始 |
-| `completed` | 拿到完整 `usage` | `record_usage()`（**在三个结构守卫之前调用**，见 §8.4b / 待办 #70） |
-| `aborted` | 客户端断开 / 上游报错 | `except` 分支（**同步赋值**，不能 `await`） |
+| `completed` | 拿到完整 `usage`（金额可信） | `record_usage()`（**在三个结构守卫之前调用**，见 §8.4b / 待办 #70） |
+| `aborted` | 客户端断开 / 上游报错 | `except` / `except BaseException` 分支（**同步赋值**，不能 `await`） |
+| `no_content` | 上游 200 但一帧内容都没有，且没拿到 usage | 零内容保护段（`if not recorded`） |
 
 > ⚠️ `aborted` 必须是**同步赋值**：被取消后继续 `await` 会抛 `RuntimeError`。
 > 📎 上游**已经产出的 token 照样收费**，所以这行不能删。
