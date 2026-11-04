@@ -6,6 +6,7 @@ FastAPI 应用对象：本项目对外的 HTTP 服务入口
     本文件是【常驻服务】的应用对象，两者生命周期与职责都不同
 """
 
+import asyncio
 import json
 
 # logging：标准库日志模块，用来记"每个请求做了什么、花了多久"
@@ -34,7 +35,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DbDep, LlmClientDep, SettingsDep
+from app.api.deps import DbDep, LlmClientDep, SettingsDep, UpstreamSlotDep
 from app.config import settings
 from app.constants import HEADER_REQUEST_ID
 from app.database import engine
@@ -74,7 +75,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # 启动段[2]：整个进程共享一个上游适配器
+    # 启动段[2]：上游并发闸门（进程级）。放在 state 上，deps 里按请求取
+    # 【注意】：必须每次启动都新建 —— 复用一个被上一轮测试耗尽的 Semaphore 会永远挡住请求
+    app.state.upstream_semaphore = asyncio.Semaphore(settings.max_concurrent_upstream_calls)
+
+    # 启动段[3]：整个进程共享一个上游适配器
     async with create_llm_client() as client:
         # 把 client 挂到 app.state 的 llm_client 属性上
         app.state.llm_client = client
@@ -542,6 +547,9 @@ async def chat_stream(
     # 客户端请求体：与 /v1/chat 复用同一份契约
     # （messages / model / temperature / max_tokens 四个字段都已在那里校验过）
     request: ChatRequest,
+    # 【注意】：放在最前面 —— 依赖按参数顺序解析、按【反序】收尾，
+    #   所以闸门是最后一个释放的：它覆盖到下面 db 的 commit 也做完
+    _slot: UpstreamSlotDep,
     client: LlmClientDep,
     config: SettingsDep,
     db: DbDep,

@@ -59,6 +59,9 @@ _STATUS_BY_CODE: dict[str, int] = {
     "UPSTREAM_MALFORMED": status.HTTP_502_BAD_GATEWAY,
     # 503 = 我暂时不能服务（不是我的错误，依赖挂了）—— 负载均衡看到它会摘掉本实例
     "DB_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+    # 我方容量：并发闸门顶穿 —— 既不是上游的错，也不是客户端的错
+    # 【注意】：必须 503，不能 429 —— 429 的意思是"你请求太多了"，现在是"我们暂时满了"
+    "SERVER_BUSY": status.HTTP_503_SERVICE_UNAVAILABLE,
     # 404 有两种来源、两种含义：客户端据此能区分"模型名打错"和"对话 id 不存在"
     "MODEL_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "CONVERSATION_NOT_FOUND": status.HTTP_404_NOT_FOUND,
