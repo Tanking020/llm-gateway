@@ -36,7 +36,7 @@ from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep, UpstreamSlotDep
-from app.config import settings
+from app.config import Settings, settings
 from app.constants import HEADER_REQUEST_ID
 from app.database import engine
 from app.errors import AppError, register_exception_handlers
@@ -288,6 +288,22 @@ def ensure_last_message_is_user(request: ChatRequest) -> None:
         )
 
 
+def ensure_max_tokens_within_ceiling(request: ChatRequest, config: Settings) -> None:
+    """
+    成本护栏：客户端要的 max_tokens 不能超过服务端上限
+
+    与 ensure_last_message_is_user 同一个位置、同一个理由（两条路由共用一份实现）。
+
+    【注意】：这里【只拒绝、不改写】。把 8000 悄悄改成 4096 会让回答中途被截断，
+        而客户端只会看到 finish_reason=length，根本不知道是被我们改的 —— 静默失效
+    """
+    if request.max_tokens is not None and request.max_tokens > config.max_tokens_ceiling:
+        raise AppError(
+            code="INVALID_MAX_TOKENS",
+            message=f"max_tokens 超过服务端上限 {config.max_tokens_ceiling}",
+        )
+
+
 def _conversation_not_found(conv_id: int) -> AppError:
     """
     404 的唯一来源：改文案或者状态码只改这里
@@ -391,6 +407,7 @@ async def chat(request: ChatRequest, config: SettingsDep, db: DbDep) -> ChatResp
     config 是【依赖】—— FastAPI 调 get_settings() 后注入
     """
     ensure_last_message_is_user(request)  # 便宜的语义检查在前，与 chat_stream 保持同一顺序
+    ensure_max_tokens_within_ceiling(request, config)
 
     if request.conversation_id is not None:
         await require_conversation(db, request.conversation_id)
@@ -559,6 +576,7 @@ async def chat_stream(
     # 与 /v1/chat 完全同一条业务规则，所以调同一个函数
     # 【注意】：必须放在 pre-flight 之前：否则会白花一次上游调用（真金白银）
     ensure_last_message_is_user(request)
+    ensure_max_tokens_within_ceiling(request, config)
 
     # pre-flight：对话存在性必须在【打开上游流之前】查。放后面的话
     #   会白花一次上游调用，而且响应头已经发出，改不了 404
@@ -567,12 +585,17 @@ async def chat_stream(
 
     actual_model = request.model or config.llm_model
 
+    # 客户端没指定 max_tokens 时用服务端上限兜底
+    # 【注意】：不能"不传" = "不限制" —— 那样成本上限形同虚设（客户端只要不写这个字段就绕过去了）
+    max_tokens = request.max_tokens if request.max_tokens is not None else config.max_tokens_ceiling
+
     # 上游请求体的字段名由 OpenAI 兼容协议规定
     body: dict[str, object] = {
         "model": actual_model,
         # Message 是 pydantic 模型，必须先 model_dump() 转成纯 dict 才能序列化
         "messages": [m.model_dump() for m in request.messages],
         "temperature": request.temperature,
+        "max_tokens": max_tokens,
         # 这个开关是"逐块发"的开关：不开就是等全部生成完一次性返回
         "stream": True,
     }

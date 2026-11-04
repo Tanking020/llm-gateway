@@ -62,6 +62,9 @@ _STATUS_BY_CODE: dict[str, int] = {
     # 我方容量：并发闸门顶穿 —— 既不是上游的错，也不是客户端的错
     # 【注意】：必须 503，不能 429 —— 429 的意思是"你请求太多了"，现在是"我们暂时满了"
     "SERVER_BUSY": status.HTTP_503_SERVICE_UNAVAILABLE,
+    # 客户端的错，且它自己修得好（把要求生成的输出的 token 调小再发）：400 而不是 5xx
+    # 【注意】：不登记也会落到 400 兜底 —— 但那是"漏登记"的兜底，不是"这个码治 400"
+    "INVALID_MAX_TOKENS": status.HTTP_400_BAD_REQUEST,
     # 404 有两种来源、两种含义：客户端据此能区分"模型名打错"和"对话 id 不存在"
     "MODEL_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "CONVERSATION_NOT_FOUND": status.HTTP_404_NOT_FOUND,
