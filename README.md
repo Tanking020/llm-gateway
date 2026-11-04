@@ -7,7 +7,7 @@
 > 判据与「可以让步 vs 绝不能让步」的清单见[工程规范 §7.0c](工程规范与协作约定.md)。
 
 **当前状态**：阶段 0 · 工程基础已完成；
-阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 11 已完成；Step 12 测试做到 12e（61 个用例全绿，含真 uvicorn 并发测试）**
+阶段 1 · FastAPI 服务开发中 —— **Step 1 ~ 12 已完成；71 个用例全绿（含真 uvicorn 并发与穿过适配器的真实 HTTP 路径），服务代码分支覆盖 90%**
 （HTTP/ASGI 地基 → 三段参数 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式响应 → 上游防御 → 数据库与账单 → 工程化 → 自动化测试）。
 已具备：请求追踪中间件、**一个把「上游调用 + 错误翻译」封在一起的适配器**（路由层不出现 `httpx`，且由 lint 强制）、
 一个**真调上游 DeepSeek 的 SSE 流式接口**（状态帧 + 正文逐字 + `finish_reason` + token 用量，
@@ -17,11 +17,11 @@
 **单一出口的日志配置**（`dictConfig`，三条启动路径同一格式）、
 **prod 环境的多重保护**（`DEBUG=true` 启动即崩、`/docs` `/redoc` `/openapi.json` 一并关闭）、
 **说真话的 `/docs`**（流式接口标 `text/event-stream`），
-以及**自动化回归测试**：`tests/` + `TestClient` + 假上游，`uv run pytest` 一条命令跑完 **61 个用例**（含**真 uvicorn 并发测试**；**24 次变异测试**证明断言真的有牙）。⭐ 这套测试已经逼出并修掉了两个真缺陷：坏帧吞掉 token 用量、并发流被完全串行化。
+以及**自动化回归测试**：`tests/` + `TestClient` + 假上游 + `MockTransport`，`uv run pytest` 一条命令跑完 **71 个用例**（含**真 uvicorn 并发测试**与**穿过适配器的真实 HTTP 路径**；**24 次变异测试**证明断言真的有牙）。⭐ 这套测试已经逼出并修掉了两个真缺陷：坏帧吞掉 token 用量、并发流被完全串行化。
 详见[路线图](#路线图)。
 
 > ⚠️ **离「能上线」还差什么**：无鉴权 / 无限流 / 无 CI / 无 `Dockerfile` / 无指标，
-> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#75，**35 已关闭 / 40 未关闭**）。
+> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#75，**36 已关闭 / 39 未关闭**）。
 
 ---
 
@@ -47,7 +47,7 @@
 | 静态检查 | mypy（strict）/ ruff | 2.4.0 / 0.16.10 |
 | Web 框架 | FastAPI + uvicorn（ASGI） | 0.143.0 / 0.54.0 |
 | 数据库 | SQLAlchemy 2.1 async（2.0 风格 ORM）+ aiosqlite；SQLite → PostgreSQL | 2.1.6 / 0.22.1；Step 10 已完成（依赖 / 模型 / 引擎 / 请求级会话 / 对话 CRUD 四操作五接口 / 账单表 / 游标分页） |
-| 测试 | pytest + pytest-asyncio + httpx2（Starlette 1.x 的测试客户端依赖）+（覆盖率 `pytest-cov`，12f 加） | 9.2.0 / 1.4.1 / 2.16.0；Step 12 已落地 **61 个用例** |
+| 测试 | pytest + pytest-asyncio + httpx2（Starlette 1.x 的测试客户端依赖）+ pytest-cov（分支覆盖） | 9.2.0 / 1.4.1 / 2.16.0 / 7.1.0；Step 12 已落地 **71 个用例**，服务代码分支覆盖 **90%** |
 | 交付 | Docker（多阶段构建 + 非 root 运行） | 阶段 1 引入 |
 
 依赖分工：**运行必需的**写在 `[project] dependencies`，**仅开发需要的**（mypy / ruff / pytest）写在
@@ -347,7 +347,7 @@ curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: applicati
 uv run ruff format .          # 1. 格式化
 uv run ruff check . --fix     # 2. lint（规则集 E/F/I/UP/B/TID）
 uv run mypy .                 # 3. 类型检查（strict + warn_unreachable，全项目含 tests/ 与 playground/）
-uv run pytest -q              # 4. 回归测试（61 个用例，不碰真上游、不碰开发库；约 7s，含真 uvicorn）
+uv run pytest -q              # 4. 回归测试（71 个用例，不碰真上游、不碰开发库；约 10s，含真 uvicorn）
 ```
 
 当前状态：
@@ -355,10 +355,10 @@ uv run pytest -q              # 4. 回归测试（61 个用例，不碰真上游
 | 检查 | 结果 |
 |---|---|
 | `ruff check .` | All checks passed! |
-| `ruff format --check .` | 30 files already formatted |
-| `mypy .` | Success: no issues found in 30 source files |
-| `pytest -q` | 61 passed |
-| `pytest --cov` | 🟡 配置待手写（12f-1）；📎 参考值：服务代码分支覆盖 **84%**，`llm_client.py` 63% 是最大缺口 → 待办 #75 |
+| `ruff format --check .` | 31 files already formatted |
+| `mypy .` | Success: no issues found in 31 source files |
+| `pytest -q` | 71 passed |
+| `pytest --cov` | ✅ 服务代码**分支**覆盖 **90%**（`branch = true`；`llm_client.py` 已 **100%**，最大缺口是 `app.py` 84%）。⚠️ **不设 `--cov-fail-under`**：数字会抖，且覆盖率只用来找缺口，守行为靠断言 |
 
 > 三条静态检查命令的**范围一律用 `.`**（全项目，含 `playground/` 与 `tests/`）。`mypy` 的默认范围由
 > `[tool.mypy] files = ["."]` 保证，所以带不带参数结果一致。
@@ -455,7 +455,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 
 | 文件 | 只回答一个问题 | 变化频率 |
 |---|---|---|
-| [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（一张 80 行进度表 + 待办 #1~#75 唯一台账，35 已关闭 / 40 未关闭） | 每步收口 |
+| [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（一张 80 行进度表 + 待办 #1~#75 唯一台账，36 已关闭 / 39 未关闭） | 每步收口 |
 | [study_notes/project/decisions.md](study_notes/project/decisions.md) | **为什么这么设计 / 放弃了什么 / 何时该重审**（ADR 28 条） | 做决定时 |
 | [study_notes/project/production-readiness.md](study_notes/project/production-readiness.md) | **距离敢上线还差什么 / 怎么才算过门**（七道门 + `P0/P1/P2`） | 每次收口重推门的颜色 |
 | [study_notes/project/architecture-map.md](study_notes/project/architecture-map.md) | **各种关系与形状长什么样**（七层栈 / 模块依赖 / **§2.4 依赖解析与资源生命周期** / **§2.5 `app.py` 调用链** / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / **§8.6 流式完整时序** / 配置 / 日志 / 测试 / 状态机 / **§13 运行形态** / **§14 决策↔代码↔测试**） | 想弄清一个形状时 |

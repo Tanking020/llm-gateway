@@ -47,15 +47,15 @@
 > 勾选规则：**一道门只有在「关联待办全部关闭」时才能打 ✅，不要手改。**
 > 每次收口重新推导一遍。档位 `P0/P1/P2` 的定义与触发条件见 [§三](#三排期什么时候做什么)。
 
-### 门 1 · 正确性与可回归 🟡 **过半偏上**（2026-11-03：61 个用例 + 真 uvicorn 并发测试；**12f 收口进行中 —— 覆盖率配置待学习者手写**；剩 CI 与「穿过适配器」那一层）
+### 门 1 · 正确性与可回归 🟡 **过半偏上**（2026-11-04：**71 个用例**、服务代码**分支覆盖 90%**、**适配器 100%**（#75 关闭）；**只剩 CI（#62）与「上游超时」那一条用例**）
 
-判据：**改坏一行代码，5 分钟内你能不能知道？** 现在大部分能 —— `uv run pytest -q` 一条命令 **61 个用例**，
+判据：**改坏一行代码，5 分钟内你能不能知道？** 现在大部分能 —— `uv run pytest -q` 一条命令 **71 个用例**，
 且已用**变异测试**验证过断言真的会失败（12a ~ 12e 共 **24 次变异，21 次抓到**，3 次抓不到的都记了原因）。
 ⚠️ 但**反例已经出现两次**：「去掉 `X-Request-ID` 头」（等价变异）与「`PENDING = "pengding"`」（本可以抓但当时没断言）
 —— 说明**测试数量不等于覆盖**，值域这类「常量内容」必须专门钉。
 
 - [x] `tests/` 存在，`pytest` 一条命令跑完全部 · `P0` · 关联 **#40**（12a）
-  - 📎 2026-11-03：`uv run pytest -q` → **61 passed / 约 7s**（含真 uvicorn）；`app.db` 的 mtime 前后不变（测试落 `%TEMP%`）
+  - 📎 2026-11-04：`uv run pytest -q` → **71 passed / 约 9~12s**（含真 uvicorn）；`app.db` 的 mtime 前后不变（测试落 `%TEMP%`）
 - [~] 流式的边界用例搬进 pytest · `P0` · 关联 **#40**（→ **12d**）
   - ✅ 已搬：帧契约 12 个（12d-1）· 适配器协议 11 个（12d-2）· 账单记账 5 个（12d-3a）
   - ✅ 已搬：账单四态（12d-3b：completed / aborted / no_content / 枚举值守卫）
@@ -63,13 +63,13 @@
   - ⬜ 未搬：**上游超时**（需真 uvicorn + 让假上游卡住）
 - [x] 依赖覆盖测试能绕过真实 LLM 与真实数据库（`dependency_overrides` 已验证可用） · `P0` · 关联 **#40**（12c-1 / 12c-2）
   - 📎 `tests/fakes.py` 的假对象继承真类，签名漂移会被 mypy 抓成 `[override]` 错误
-  - ⚠️ **但代价是适配器整层被绕过** —— 见下面覆盖率那条里 `llm_client.py` 63%
-- [~] **覆盖率能跑，且看分支不看数字** · `P0` · 关联 **#40**（12f）—— **12f-1 配置待学习者手写**
-  - 📎 `uv run pytest --cov` → **服务代码分支覆盖 84%**（`branch = true`；omit 掉阶段 0 的 `main.py` 与 uvicorn 入口 `__main__.py`）
-  - 📎 **最大缺口 = `llm_client.py` 63%**：适配器真实 HTTP 路径（`list_models` / `open_chat_stream` / `_request` 三档错误翻译 / `_read_error_body`）**一个都没覆盖** → 已登记 **#75（P1）**
-  - 📎 `app.py` 84%：缺分页 `has_more`/`next_cursor`、`max_tokens` 分支、`except BaseException` 取消分支、`/v1/chat` pre-flight
+  - ✅ **它的代价已补上**：`dependency_overrides` 会绕过整个适配器 → 2026-11-04 补 `tests/test_adapter_http.py`（10 例，用 `MockTransport` 从传输层【下面】喂数据），**#75 关闭**
+- [x] **覆盖率能跑，且看分支不看数字** · `P0` · 关联 **#40**（12f）
+  - 📎 配置在 `pyproject.toml` 的 `[tool.coverage.run]`：`branch = true`，`omit` 掉阶段 0 的 `main.py` 与 uvicorn 入口 `__main__.py`
+  - 📎 2026-11-04：`uv run pytest --cov --cov-report=term-missing` → **服务代码分支覆盖 90%**；`llm_client.py` / `errors.py` / `models.py` / `logging_setup.py` / `constants.py` **100%** · `schemas` 96% · `deps` 91% · `config` 91% · `database` 83% · **`app.py` 84%（现在最大缺口）**
+  - 📎 `app.py` 缺的那几处：分页 `has_more`/`next_cursor`、`max_tokens` 分支、`except BaseException` 取消分支、`/v1/chat` pre-flight
   - ⚠️ **工具坑**：`465`（`await db.delete`）与 `485`（`conv.title = ...`）报「未覆盖」，但 📎 实测 DELETE 后库里 `1 → 0` 行 —— 是 **coverage 少报**（与 SQLAlchemy 的 greenlet 切换有关），不是真缺口。**判据：覆盖率要和行为断言交叉验证**
-  - ⚠️ **而且数字会抖**：📎 同一命令连跑 4 次，`TOTAL Miss` 在 **66/67** 之间跳（`Cover` 84%/85%）。→ **不设 `--cov-fail-under`**；覆盖率只用于找缺口，守行为靠断言。详见 [tests/README.md](../../tests/README.md) §3.5
+  - ⚠️ **而且数字会抖**：📎 2026-11-03 同一命令连跑 4 次，`TOTAL Miss` 在 **66/67** 之间跳（`Cover` 84%/85%）。→ **不设 `--cov-fail-under`**；覆盖率只用于找缺口，守行为靠断言。详见 [tests/README.md](../../tests/README.md) §3.5
 - [ ] 推送即跑 `ruff + mypy + pytest`（无 CI，质量门全靠人记得手敲） · `P1` · 关联 **#62**
 
 ### 门 2 · 安全与租户隔离 🔴 **零**
