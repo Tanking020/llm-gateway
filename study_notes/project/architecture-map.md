@@ -593,13 +593,34 @@ content-type: application/json
 
 ### 7.4 业务码 → 状态码（唯一映射表）
 
-| `code` | HTTP |
-|---|---|
-| `LAST_MESSAGE_NOT_USER` | 400 |
-| `MODEL_NOT_FOUND` / `CONVERSATION_NOT_FOUND` | 404 |
-| `UPSTREAM_UNREACHABLE` / `UPSTREAM_BAD_STATUS` / `UPSTREAM_MALFORMED` | 502 |
-| `DB_UNAVAILABLE` | 503 |
-| （未登记的码） | **400**（兜底防"漏登记"，不是"猜对"） |
+| `code` | HTTP | 客户端该做什么 |
+|---|---|---|
+| `LAST_MESSAGE_NOT_USER` | 400 | 改请求 |
+| `MODEL_NOT_FOUND` / `CONVERSATION_NOT_FOUND` | 404 | 改请求 |
+| `UPSTREAM_UNREACHABLE` | 502 | 稍后重试（可能有用） |
+| **`UPSTREAM_RATE_LIMITED`** | **429** + `Retry-After` | **按秒数退避重试** |
+| **`UPSTREAM_PAYLOAD_TOO_LARGE`** | **413** | **缩短消息后重试** |
+| **`UPSTREAM_AUTH_FAILED`** | 502 | 报错给运维（我们的密钥坏了） |
+| **`UPSTREAM_REJECTED`** | 502 | 报错给运维（我们发的 body 上游不收） |
+| `UPSTREAM_BAD_STATUS` | 502 | 稍后重试（5xx）/ 不要重试（3xx 接口搬家） |
+| `UPSTREAM_MALFORMED` | 502 | 报错给运维（上游改了结构） |
+| `DB_UNAVAILABLE` | 503 | 稍后重试 |
+| （未登记的码） | **400**（兜底防"漏登记"，不是"猜对"） | —— |
+
+#### 7.4b 上游状态码 → 我们的业务码（📎 2026-11-04 实测）
+
+| 上游返回 | 我们的 code | 我们的 HTTP | 为什么 |
+|---|---|---|---|
+| 429 | `UPSTREAM_RATE_LIMITED` | **429** + 透传 `Retry-After` | 客户端**等一等**就能好 |
+| 413 | `UPSTREAM_PAYLOAD_TOO_LARGE` | **413** | 客户端**缩短**就能好 |
+| 400 / 422（body 含 `context_length_exceeded` 或 `maximum context length`） | `UPSTREAM_PAYLOAD_TOO_LARGE` | **413** | 上游用 400 表达，但语义是「你太大了」 |
+| 400 / 404 / 其它 4xx | `UPSTREAM_REJECTED` | 502 | body 是**我们**造的，客户端改请求没用 |
+| 401 / 403 | `UPSTREAM_AUTH_FAILED` | 502 | **我们的密钥**坏了，客户端无从修复 |
+| 5xx | `UPSTREAM_BAD_STATUS` | 502 | 上游故障，重试可能有用 |
+| 3xx | `UPSTREAM_BAD_STATUS` | 502 | 接口搬家了，重试没用 |
+
+⭐⭐ 判据：**「客户端能不能靠自己修好？」能 → 透传那个 4xx；不能 → 502 + 细分 code。**
+📌 认不出的 400（没有超长标记）**退回 `UPSTREAM_REJECTED`（502）** —— 不会比「一律 502」更糟。
 
 ### 7.5 `details` 是被**过滤过**的（这条最容易被忽略）
 
