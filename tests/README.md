@@ -18,10 +18,10 @@
 
 ---
 
-## 1. 八个文件各测什么
-
-61 个用例，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
-
+## 1. 九个文件各测什么
+
+71 个用例，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
 | `test_smoke.py` | 2 | 地基：应用能起、lifespan 跑过、独立临时库生效 | 不涉及 | ❌ |
@@ -31,7 +31,8 @@
 | `test_stream_frames.py` | 12 | **路由层**字段守卫：7 种怪 chunk + 帧序 + 终止条件（用假 chunk，不经 SSE 文本） | `FakeLlm` | ❌ |
 | `test_stream_adapter.py` | 11 | **适配器协议层**：原始 SSE 字节 → `aiter_chunks()`，`data:{` 无空格 / 空 data / 非 dict / `[DONE]` 之后 | **直接喂 `httpx.Response`** | ❌ |
 | `test_stream_accounting.py` | 10 | **账单四态**：completed / aborted / no_content / pending + 枚举值守卫 | `FakeLlm` | ❌ |
-| `test_concurrency.py` | 4 | **并发与连接池**：串行化、首字节延迟、流跑到一半时 `pending` 已落库 | `FakeLlm`（慢速版） | ✅ **真 uvicorn** |
+| `test_adapter_http.py` | 10 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
+| `test_concurrency.py` | 4 | **并发与连接池**：串行化、首字节延迟、流跑到一半时 `pending` 已落库 | `FakeLlm`（慢速版） | ✅ **真 uvicorn** |
 
 > ⚠️ **`fakes.py` 不是测试文件**，是共用的假对象：
 > `FakeChatStream(LlmChatStream)` / `FakeLlm(LlmClient)` —— **继承真类**，
@@ -219,7 +220,7 @@ Pool size: 5  Connections in pool: 0  Current Overflow: -5  Current Checked out 
 | 4 | **`xfail(strict=True)` 在修好后会主动变红** | 修 #73 后 2 个 `[XPASS(strict)]` → `2 failed` | 这是**已知缺陷的正式登记方式**：缺陷在时不挡开发，修好了逼你删标记 |
 | 5 | **`coverage annotate` 生成物不在 `.gitignore`** | 生成 12 个 `src/app/**/*.py,cover`，`git status` 全是 `??` | **引入任何生成物之前先确认 `.gitignore` 挡得住** |
 | 6 | **`omit` 掉无关文件，覆盖率才有意义** | 不 omit 阶段 0 的 `main.py` / 入口 `__main__.py`：**84% → 78%** | 分母里不该有「跟服务无关」或「要真起进程才能测」的文件，否则缺口被稀释 |
-| 7 | **`dependency_overrides` 把整层适配器绕过了** | `llm_client.py` 只覆盖 **63%**，真实 HTTP 路径 0%；把 `_request` 的 `except` 改坏 → **61 个全绿** | **假对象越彻底，被测的真代码越少** —— 要另建一层「穿过适配器」的测试（待办 #75） |
+| 7 | **`dependency_overrides` 把整层适配器绕过了** | `llm_client.py` 只覆盖 **63%**，真实 HTTP 路径 0%；把 `_request` 的 `except` 改坏 → **61 个全绿**（当时的用例数） | **假对象越彻底，被测的真代码越少** —— 要另建一层「穿过适配器」的测试。✅ 2026-11-04 已补 `test_adapter_http.py`（10 个用例 + `MockTransport`），`llm_client.py` 现已 **100%** |
 | 8 | **`with sqlite3.connect(...)` 不关连接** | 退出 `with` 后连接**仍可用**（`__exit__` 只 commit/rollback） | 「`with` 不承诺关闭」——**判断一个 `with` 做了什么，只看 `__enter__`/`__exit__` 源码** |
 | 9 | **不写 `with TestClient(app)` → 表不存在** | `/health`·`/v1/models`·`/health/ready` 全 200，`POST /v1/conversations` 炸 `no such table` | **「某个接口 200」完全不能证明 lifespan 跑过** —— 只有用到 lifespan 那份资源的接口才验得出来 |
 | 10 | **`lambda f=fake: f` 当依赖覆盖会炸** | FastAPI 把参数当查询参数 → `TypeError: AppError.__init__() missing 1 required positional argument` | 覆盖值必须是**不接收参数**的可调用对象 |

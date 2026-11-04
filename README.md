@@ -458,12 +458,12 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 | [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（一张 80 行进度表 + 待办 #1~#75 唯一台账，35 已关闭 / 40 未关闭） | 每步收口 |
 | [study_notes/project/decisions.md](study_notes/project/decisions.md) | **为什么这么设计 / 放弃了什么 / 何时该重审**（ADR 28 条） | 做决定时 |
 | [study_notes/project/production-readiness.md](study_notes/project/production-readiness.md) | **距离敢上线还差什么 / 怎么才算过门**（七道门 + `P0/P1/P2`） | 每次收口重推门的颜色 |
-| [study_notes/project/architecture-map.md](study_notes/project/architecture-map.md) | **各种关系与形状长什么样**（七层栈 / 模块依赖 / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / **§8.6 流式完整时序** / 配置 / 日志 / 测试 / 状态机） | 想弄清一个形状时 |
+| [study_notes/project/architecture-map.md](study_notes/project/architecture-map.md) | **各种关系与形状长什么样**（七层栈 / 模块依赖 / **§2.4 依赖解析与资源生命周期** / **§2.5 `app.py` 调用链** / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / **§8.6 流式完整时序** / 配置 / 日志 / 测试 / 状态机 / **§13 运行形态** / **§14 决策↔代码↔测试**） | 想弄清一个形状时 |
 | [study_notes/learning/stage1-fastapi.md](study_notes/learning/stage1-fastapi.md) | **FastAPI 与 SQLAlchemy 的机制**（原理 + 实测） | 学到新东西时 |
 | [study_notes/learning/logging.md](study_notes/learning/logging.md) | **日志原理与写法**（专题，换项目照样成立） | 同上 |
 | [study_notes/learning/learning-log.md](study_notes/learning/learning-log.md) | **那天为什么改成这样**（流水 / 踩坑 / 结论 / 12 个专题） | 每步收口 |
 | [study_notes/learning/self-check-questions.md](study_notes/learning/self-check-questions.md) | **我到底懂没懂**（全部自检题 + 答案，唯一出处） | 每步补题 |
-| [tests/README.md](tests/README.md) | **怎么测**（8 个文件各测哪层 / 怎么跑 / 怎么读 pytest 与覆盖率输出 / **两个连接池谁占谁** / 并发要问的 5 个问题） | 改测试或排查并发时 |
+| [tests/README.md](tests/README.md) | **怎么测**（9 个文件各测哪层 / 怎么跑 / 怎么读 pytest 与覆盖率输出 / **两个连接池谁占谁** / 并发要问的 5 个问题） | 改测试或排查并发时 |
 | [study_notes/learning/tools-reference.md](study_notes/learning/tools-reference.md) | **这个工具/包怎么用**（速查卡片） | 用错一次就补一条 |
 | [工程规范与协作约定.md](工程规范与协作约定.md) | **我们怎么协作**（步骤卡格式 / 质量门 / 安全约定 / 硬约束） | 约定变化时 |
 | [.github/copilot-instructions.md](.github/copilot-instructions.md) | **AI 进来先读什么**（新会话自动加载的协作指令） | 少改 |
