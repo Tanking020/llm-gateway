@@ -1331,6 +1331,21 @@
     > 📌 硬规则：**主动闸门必须小于它下游的被动池。**
     > 见 [architecture-map §13.3](../project/architecture-map.md)、决策 30、待办 #44。
 
+21. 📎 `config.py` 里的 `_forbid_debug_in_prod` 写成 `@model_validator(mode="after")` + 普通方法（第一个参数 `self`），
+    而 `schemas.py` 里的 `_assume_utc` 写成 `@field_validator(...)` + `@classmethod`（第一个参数 `cls`）。
+    **① 为什么一个要 `@classmethod` 一个不要？② 如果给 `model_validator(mode="after")` 硬加上 `@classmethod` 会怎样？**
+    > **① 因为第一个参数拿的东西不一样**：`model_validator(mode="after")` 在**实例建好之后**跑，
+    > 拿到的是 `self`（能读 `self.app_env` / `self.messages`）；`field_validator` 在**单个字段**上跑，
+    > 拿到的是**类** + 字段值，所以第一个参数是 `cls`。
+    > **② 📎 实测（pydantic 2.13.5）会直接报错**：
+    > `PydanticUserError: Unrecognized model validator function signature ... () -> Self`
+    > —— 因为被包成 classmethod 之后，pydantic 眼里它变成「零参数」的函数，跟 `mode="after"` 要求的
+    > `(self) -> Self` 对不上。而且从 **2.12 起** pydantic 还会先给一条弃用警告，
+    > 说明这个写法在 V3 会被彻底移除。
+    > ⭐ 顺带一个反直觉的事实：`@field_validator` 的 `@classmethod` **可写可不写**
+    > （📎 实测两种都正常工作，pydantic 会自动包），项目里统一写上是为了**显式**。
+    > 📌 判据：**看第一个参数是 `cls` 还是 `self`** —— 是 `cls` 才需要（或可以）写 `@classmethod`。
+
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
@@ -1429,6 +1444,7 @@
 | 2026-11-03 | 阶段 1 · **Step 12** 补 1 题（第 17 题，修 #73）：`flush` 与 `commit` 差一个「事务结束不结束」，同时决定了写锁、连接归还、崩溃后是否留痕三件事。配套笔记 §12.7b |
 | 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 16 题，12d-3b）：`StrEnum` 只防成员名、**不防值** —— 学习者写 `PENDING = "pengding"` 时**四道门全绿**，只有断言能守住值。配套笔记 §12.5f |
 | 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 15 题，12d-3a）：修 #70 为什么选「只提前记账」而不是「整块上移」（A 会把 `usage` 帧排到 `finish_reason` 之前 → 改掉已实测的帧序）/ `recorded` 守卫让提前调用幂等。配套笔记 §12.5d「✅ 已修」 |
+| 2026-11-04 | 阶段 1 · **Step 12** 补 1 题（第 21 题）：`@field_validator` 要 `@classmethod`、`@model_validator(mode="after")` 不要，为什么（📎 硬加会 `PydanticUserError`） |
 | 2026-11-04 | 阶段 1 · **Step 12** 补 1 题（第 20 题）：四层上限谁先顶穿、为什么调宽闸门反而更糟（决策 30 / #44） |
 | 2026-11-04 | 阶段 1 · **Step 12** 补 1 题（第 19 题）：上游 4xx/429 为什么按「客户端能不能自己修好」分流、为什么 401 不透传（#60 / 决策 29） |
 | 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 14 题，12d-2）：`usage` 与坏结构同帧时被三个 `continue` 连坐 → 记账 `pending 0/0/0`（📎 实测；`finish_reason` 那条因**没有 `continue`** 而安全）。配套笔记 §12.5d、待办 #70 |

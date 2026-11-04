@@ -94,7 +94,11 @@ class Settings(BaseSettings):
     #   客户端要得比这个多 -> 拒绝（400），不是悄悄改成这个数
     #   客户端没指定     -> 发这个数当默认值（否则"不传"就等于"不限制"）
     # 【注意】：不要改成"夹紧到上限" —— 静默改客户端的参数会让回答被莫名截断
-    max_tokens_ceiling: int = Field(default=4096, ge=1)
+    # 上界不是"防手抖"（那是副产品），而是【成本预算】：
+    #   📎 deepseek-flash 输出 $1.20/1M tokens -> 32768 输出 ≈ $0.039/请求
+    #   模型支持到 384K=393216（≈ $0.47/请求），我们故意远低于它
+    # 【注意】：一旦允许 >= 40960，"4096 多打一个 0" 就再也拦不住了 —— 两者不可兼得
+    max_tokens_ceiling: int = Field(default=4096, ge=1, le=32768)
 
     @model_validator(mode="after")
     def _forbid_debug_in_prod(self) -> Self:

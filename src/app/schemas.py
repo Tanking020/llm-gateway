@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 # Annotated：给一个类型【附加约束】而不新建类型，写法 Annotated[原类型, 约束1, 约束2]
 # Literal：标准库 typing 里的类型，表示"只能是这几个值之一"
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 # BaseModel：pydantic 的【普通】数据模型
 #   对比用过的 BaseSettings —— 后者是它的子类，
@@ -20,7 +20,21 @@ from typing import Annotated, Literal
 # Field：给【单个字段】加约束（范围、长度、默认值…）
 # StringConstraints：给【字符串类型本身】加约束（去空白、长度…）
 # field_validator = 字段校验器，在字段进入模型前执行自定义逻辑，用于 Field 做不了的复杂校验
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+# 输入侧护栏：单条上限 + 条数上限 + 【合计】上限
+# 【注意】：只有"合计"这一条真正管住成本 —— 单条 × 条数 的乘积可能远超上游上下文
+#   按 deepseek-flash 峰时输入价 $0.30/1M tokens 估算：6 万字符（中文）≈ 4 万 tokens ≈ $0.012
+MAX_CONTENT_CHARS = 20_000
+MAX_MESSAGES = 100
+MAX_TOTAL_CHARS = 60_000
 
 
 class Message(BaseModel):
@@ -32,7 +46,8 @@ class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
 
     # 消息正文。str 类型；没有默认值 = 必填
-    content: str
+    # max_length 是【成本护栏】：没有它，一个请求就能塞进上游 1M context（≈ $0.30）
+    content: str = Field(max_length=MAX_CONTENT_CHARS)
 
 
 class ChatRequest(BaseModel):
@@ -41,7 +56,7 @@ class ChatRequest(BaseModel):
     # 消息列表:
     # Flied(min_length=1) = 至少一条
     # 传空列表会被拦截（"一条消息都没有"的请求是无意义的）
-    messages: list[Message] = Field(min_length=1)
+    messages: list[Message] = Field(min_length=1, max_length=MAX_MESSAGES)
 
     # 用哪个模型。None = "客户端不指定"，由服务端用配置里的默认模型兜底
     # 为什么不在契约里写死模型名：契约层只描述【形状】，不该直到【哪家供应商的哪个模型】
@@ -62,6 +77,14 @@ class ChatRequest(BaseModel):
     # 【注意】：这里只声明字段，不校验它是否存在 —— 存在性要查库
     #   只能在路由里做（形状归 pydantic，存在性归业务代码）
     conversation_id: int | None = Field(default=None, gt=0, description="所属对话的 id")
+
+    @model_validator(mode="after")
+    def _ensure_total_content_within_budget(self) -> Self:
+        # 【注意】：单条上限只管内存；真正管成本的是"合计" —— 100 条 × 2 万字符 = 200 万字符
+        total = sum(len(m.content) for m in self.messages)
+        if total > MAX_TOTAL_CHARS:
+            raise ValueError(f"所有消息正文合计不得超过 {MAX_TOTAL_CHARS} 字符")
+        return self
 
 
 class ChatResponse(BaseModel):
