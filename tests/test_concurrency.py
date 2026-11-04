@@ -61,6 +61,10 @@ def live_server() -> Iterator[str]:
     else:
         raise RuntimeError("uvicorn 10 秒内没起来")
     port = server.servers[0].sockets[0].getsockname()[1]
+    # 【注意】：把闸门放大 —— 本文件测的是"流会不会串行"，不是闸门容量。
+    #   不放大的话：把 MAX_CONCURRENT_UPSTREAM_CALLS 调小（比如 2），4 并发用例会收到 503
+    #   而变红，报错方向完全跑偏
+    app.state.upstream_semaphore = asyncio.Semaphore(32)
     try:
         yield f"http://127.0.0.1:{port}"
     finally:
