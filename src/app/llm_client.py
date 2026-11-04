@@ -42,6 +42,51 @@ logger = logging.getLogger(__name__)
 # 上游错误正文最多记这么多字符，防止上游返回一整页 HTML 把日志刷爆
 MAX_ERROR_BODY_CHARS = 500
 
+# 【上下文超长】在上游 400 里的两种常见表达：
+#   OpenAI 兼容实现通常在 error.code 里给 context_length_exceeded，有的只写在 message 里
+# 【注意】：这只是尽量认出；认不出来就退回 UPSTREAM_REJECTED（502），不会比现在更糟
+_CONTEXT_TOO_LONG_MARKERS = ("context_length_exceeded", "maximum context length")
+
+
+def _looks_like_context_too_long(detail: str) -> bool:
+    """上游 400 里是不是「上下文超长」—— 认不出来一律当 False（退回 502，不会更糟）"""
+    low = detail.lower()
+    return any(marker in low for marker in _CONTEXT_TOO_LONG_MARKERS)
+
+
+def _code_for_status(http_status: int, detail: str) -> str:
+    """
+    把上游的 4xx/5xx 翻成【客户端能据此行动】的业务码
+
+    判据：客户端能不能靠自己修好？
+        能（等一等 / 缩短）-> 业务码直接对应 4xx，客户端知道该干什么
+        不能（我们的密钥 / 我们发的 body）-> 502，客户端改请求也没用
+    """
+    if http_status == 429:
+        return "UPSTREAM_RATE_LIMITED"
+    if http_status == 413:
+        return "UPSTREAM_PAYLOAD_TOO_LARGE"
+    if http_status in (401, 403):
+        return "UPSTREAM_AUTH_FAILED"
+    if 400 <= http_status < 500:
+        if _looks_like_context_too_long(detail):
+            return "UPSTREAM_PAYLOAD_TOO_LARGE"
+        return "UPSTREAM_REJECTED"
+    return "UPSTREAM_BAD_STATUS"
+
+
+def _message_for_status(code: str, http_status: int) -> str:
+    """回给客户端的一句话：说清【能做什么】，绝不回显上游原文（可能含内部信息）"""
+    if code == "UPSTREAM_RATE_LIMITED":
+        return "上游限流，请稍后重试"
+    if code == "UPSTREAM_PAYLOAD_TOO_LARGE":
+        return "请求内容过长，请缩短后重试"
+    if code == "UPSTREAM_AUTH_FAILED":
+        return "上游鉴权失败，请联系服务提供方"
+    if code == "UPSTREAM_REJECTED":
+        return f"上游拒绝了本次请求（HTTP {http_status}）"
+    return f"上游返回状态码 {http_status}"
+
 
 class LlmChatStream:
     """
@@ -176,11 +221,19 @@ class LlmClient:
         #   实测 raise_for_status 对 1xx/3xx 也抛，而 302 说明接口地址搬家了，
         #   这是"状态码不对"，不是"结构不对"，两者混起来会误导排查
         if not response.is_success:
+            # 先读 Retry-After（头在拿到响应时就有了：_read_error_body 之后响应会被关掉）
+            retry_after = response.headers.get("retry-after")
             detail = await self._read_error_body(response)
             logger.error("上游返回 %s %s: %s", response.status_code, path, detail)
+            code = _code_for_status(response.status_code, detail)
             raise AppError(
-                code="UPSTREAM_BAD_STATUS",
-                message=f"上游返回状态码 {response.status_code}",
+                code=code,
+                message=_message_for_status(code, response.status_code),
+                headers=(
+                    {"Retry-After": retry_after}
+                    if code == "UPSTREAM_RATE_LIMITED" and retry_after
+                    else None
+                ),
             )
         return response
 

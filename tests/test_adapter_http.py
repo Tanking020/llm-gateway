@@ -68,6 +68,71 @@ def test_redirect_is_also_bad_status() -> None:
     assert _raise_from(handler).code == "UPSTREAM_BAD_STATUS"
 
 
+@pytest.mark.parametrize(
+    ("http_status", "body", "want"),
+    [
+        pytest.param(429, b'{"error":"slow down"}', "UPSTREAM_RATE_LIMITED", id="429"),
+        pytest.param(413, b'{"error":"too big"}', "UPSTREAM_PAYLOAD_TOO_LARGE", id="413"),
+        pytest.param(401, b'{"error":"bad key"}', "UPSTREAM_AUTH_FAILED", id="401"),
+        pytest.param(403, b'{"error":"forbidden"}', "UPSTREAM_AUTH_FAILED", id="403"),
+        pytest.param(400, b'{"error":"bad model"}', "UPSTREAM_REJECTED", id="400"),
+        pytest.param(404, b'{"error":"no route"}', "UPSTREAM_REJECTED", id="404"),
+    ],
+)
+def test_status_code_is_translated_for_the_client(http_status: int, body: bytes, want: str) -> None:
+    """L2 细分：按「客户端能不能靠自己修好」分档
+
+    能修（429 等一等 / 413 缩短）-> 业务码直接对应 4xx
+    修不了（我们的密钥 / 我们发的 body）-> 502 + 细分码
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(http_status, content=body)
+
+    assert _raise_from(handler).code == want
+
+
+def test_rate_limited_keeps_retry_after_header() -> None:
+    """上游给了 Retry-After 就必须带给客户端 —— 否则它不知道该等几秒"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, content=b"{}", headers={"retry-after": "7"})
+
+    assert _raise_from(handler).headers == {"Retry-After": "7"}
+
+
+def test_non_429_does_not_carry_retry_after() -> None:
+    """只有 429 才带 —— 别的错误带这个头会让客户端误以为「等一会儿就好」"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"{}", headers={"retry-after": "7"})
+
+    assert _raise_from(handler).headers == {}
+
+
+@pytest.mark.parametrize(
+    ("body", "why"),
+    [
+        pytest.param(
+            b'{"error":{"code":"context_length_exceeded"}}', "写在 error.code 里", id="code"
+        ),
+        pytest.param(
+            b'{"error":{"message":"maximum context length is 65536 tokens"}}',
+            "只写在 message 里",
+            id="message",
+        ),
+    ],
+)
+def test_context_too_long_is_told_as_413(body: bytes, why: str) -> None:
+    """上游 400 里「上下文超长」这一档其实是客户端能修的（缩短消息）-> 翻成 413"""
+    assert why
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, content=body)
+
+    assert _raise_from(handler).code == "UPSTREAM_PAYLOAD_TOO_LARGE"
+
+
 def test_malformed_json_raises_upstream_malformed() -> None:
     """L3 之一：200 但 body 不是 JSON（网关 HTML 错误页）-> UPSTREAM_MALFORMED"""
 
