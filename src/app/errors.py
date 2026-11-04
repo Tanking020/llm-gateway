@@ -32,10 +32,12 @@ class AppError(Exception):
     因此上游错误统一用业务错误 AppError 来管理。
     """
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, headers: dict[str, str] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        # 【注意】：只有极少数错误需要往响应里带额外的头（目前只有 429 的 Retry-After）
+        self.headers = headers or {}
 
 
 # 错误码 -> HTTP 状态码。没登记的码默认 400（"你的请求有问题"这一类）
@@ -44,7 +46,14 @@ _STATUS_BY_CODE: dict[str, int] = {
     # 以下三个都属于【上游的错】，必须与 500（我方的错）区分开
     # L1: 上游根本没回应（DNS / TCP / TLS 失败 / 超时）
     "UPSTREAM_UNREACHABLE": status.HTTP_502_BAD_GATEWAY,
-    # L2: 上游有回应，但状态码是 4xx / 5xx
+    # L2：按【客户端能不能靠自己修好】细分 —— 能修的透传 4xx，修不了的给 502 + 细分码
+    #   能修：限流（等一等）/ 内容过长（缩短）-> 客户端知道该做什么
+    "UPSTREAM_RATE_LIMITED": status.HTTP_429_TOO_MANY_REQUESTS,
+    "UPSTREAM_PAYLOAD_TOO_LARGE": status.HTTP_413_CONTENT_TOO_LARGE,
+    #   修不了：我们的密钥坏了 / 我们发的 body 上游不收 -> 502（客户端改请求也没用）
+    "UPSTREAM_AUTH_FAILED": status.HTTP_502_BAD_GATEWAY,
+    "UPSTREAM_REJECTED": status.HTTP_502_BAD_GATEWAY,
+    #   L2 的兜底：5xx（上游故障，重试可能有用）与 3xx（接口搬家，重试没用）
     "UPSTREAM_BAD_STATUS": status.HTTP_502_BAD_GATEWAY,
     # L3: 上游回了 200，但 body 不是我们约定的结构（HTML / 空 / 字段改名 / null）
     "UPSTREAM_MALFORMED": status.HTTP_502_BAD_GATEWAY,
@@ -88,6 +97,7 @@ def _error_response(
     code: str,
     message: str,
     details: list[dict[str, object]] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     """所有错误响应的唯一出口：形状只在这里定义一次"""
     error: dict[str, object] = {
@@ -97,10 +107,14 @@ def _error_response(
     }
     if details is not None:
         error["details"] = details
+    # 【注意】：合并而不是覆盖 —— X-Request-ID 那一份任何错误响应都必须有
+    merged = {HEADER_REQUEST_ID: str(error["request_id"])}
+    if headers:
+        merged.update(headers)
     return JSONResponse(
         status_code=http_status,
         content={"error": error},
-        headers={HEADER_REQUEST_ID: str(error["request_id"])},
+        headers=merged,
     )
 
 
@@ -115,7 +129,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         """把业务异常 AppError 翻译成统一形状的错误响应（HTTP 状态码由 _STATUS_BY_CODE 决定）"""
         # 用业务码去查表；查不到就用默认 400 —— 兜底防的是"漏登记"，不是"猜对"
         http_status = _STATUS_BY_CODE.get(exc.code, status.HTTP_400_BAD_REQUEST)
-        return _error_response(request, http_status, exc.code, exc.message)
+        return _error_response(
+            request, http_status, exc.code, exc.message, headers=exc.headers or None
+        )
 
     # 挂在 Starlette 的 HTTPException 上：FastAPI 那个是它的子类，
     #   而且"路径不存在"是 Starlette 自己抛的 —— 只挂 FastAPI 的会漏

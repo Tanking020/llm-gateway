@@ -51,6 +51,29 @@ def test_upstream_failure_becomes_502(client: TestClient, code: str) -> None:
     assert response.json()["error"]["code"] == code
 
 
+def test_rate_limited_reaches_client_with_retry_after(client: TestClient) -> None:
+    """路由层端到端：429 的状态码 + Retry-After + X-Request-ID 三者同时正确
+
+    【注意】：最后那条断言防的是「合并写成覆盖」—— 加了 Retry-After 之后
+        X-Request-ID 不能丢，且必须和 body 里的 request_id 一致
+    """
+    fake = FakeLlm(
+        models_error=AppError(
+            code="UPSTREAM_RATE_LIMITED",
+            message="上游限流，请稍后重试",
+            headers={"Retry-After": "7"},
+        )
+    )
+    app.dependency_overrides[get_llm_client] = lambda: fake
+
+    response = client.get("/v1/upstream/models")
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "7"
+    assert response.json()["error"]["code"] == "UPSTREAM_RATE_LIMITED"
+    assert response.headers["x-request-id"] == response.json()["error"]["request_id"]
+
+
 def test_stream_preflight_failure_changes_status_code(client: TestClient) -> None:
     fake = FakeLlm(stream_error=AppError(code="UPSTREAM_UNREACHABLE", message="上游连不上"))
     app.dependency_overrides[get_llm_client] = lambda: fake
