@@ -12,7 +12,7 @@ from typing import Literal, Self
 # BaseSettings: pydantic 普通模型（BaseModel）的子类
 # 额外具备 "从环境变量 / .env 文件自动读取并填充字段" 的能力
 # SettingsConfigDict：专门描述"去哪里读、怎么读"的配置字典类型
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -77,6 +77,24 @@ class Settings(BaseSettings):
     # 单次上游请求的超时时间（秒）
     # httpx 默认只有 5 秒，LLM 生成动辄十几秒
     request_timeout: float = 30.0
+
+    # ===== 容量与成本护栏（不是调优参数，是防止一个用户拖垮所有人）=====
+
+    # 同一时刻最多允许多少个上游调用在飞
+    # 【注意】：这是【进程级】上限。用 --workers 4 启动时真实上限 = 这个数 × 4
+    #   （每个 worker 是独立进程，各有一把自己的锁）
+    # le=100 只是防手抖写成 10000，不是"最优值"
+    max_concurrent_upstream_calls: int = Field(default=4, ge=1, le=100)
+
+    # 抢不到槽位时最多等多久（秒）；等不到就回 503 + Retry-After
+    # 设得太大 -> 被挡的请求一直占着 socket 和内存
+    upstream_queue_timeout: float = Field(default=1.0, gt=0.0, le=30.0)
+
+    # 服务端允许的 max_tokens 上限
+    #   客户端要得比这个多 -> 拒绝（400），不是悄悄改成这个数
+    #   客户端没指定     -> 发这个数当默认值（否则"不传"就等于"不限制"）
+    # 【注意】：不要改成"夹紧到上限" —— 静默改客户端的参数会让回答被莫名截断
+    max_tokens_ceiling: int = Field(default=4096, ge=1)
 
     @model_validator(mode="after")
     def _forbid_debug_in_prod(self) -> Self:

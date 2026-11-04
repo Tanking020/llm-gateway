@@ -962,6 +962,9 @@ recorded = True; call.status = "completed"
 | `llm_base_url` | str | `https://api.deepseek.com` | 末尾不带斜杠 |
 | `llm_model` | str | `deepseek-flash` | 客户端没指定时兜底 |
 | `request_timeout` | float | `30.0` | httpx 默认只有 5 秒，LLM 不够 |
+| `max_concurrent_upstream_calls` | int | `4` | `ge=1, le=100`。**进程级**闸门，`--workers N` 就是 N 倍 |
+| `upstream_queue_timeout` | float | `1.0` | `gt=0, le=30`。抢不到槽位最多等这么久，超时 503 + `Retry-After` |
+| `max_tokens_ceiling` | int | `4096` | `ge=1`。客户端要更多 → **400 拒绝**；没指定 → 用它当默认值 |
 
 ### 9.4 启动即崩的保护
 
@@ -986,6 +989,8 @@ APP_ENV=prod + DEBUG=true
 | `llm_base_url` / `request_timeout` / `llm_api_key` | [llm_client.py](../../src/app/llm_client.py)（`create_llm_client`） | 直读 | lifespan 启动段造 client |
 | `llm_model` | `chat` / `chat_stream` | ⭐ **经 `SettingsDep` 注入**（`config.llm_model`） | 每请求，且**可被 `dependency_overrides` 换掉** |
 | `app_name` | 只有 [main.py](../../src/app/main.py) 打印 | 直读 | ⚠️ 服务自己的 `FastAPI(title=…)` 是**硬编码**，不读这个字段 |
+| `max_concurrent_upstream_calls` / `upstream_queue_timeout` | 🟡 [api/deps.py](../../src/app/api/deps.py)（`get_upstream_slot`，**12g-2 才落地**） | 直读 | 每请求 |
+| `max_tokens_ceiling` | 🟡 `chat` / `chat_stream` 路由层（**12g-3 才落地**） | 待定（倾向于经 `SettingsDep`，这样测试能换） | 每请求 |
 
 ⭐ 判据：**只有 `llm_model` 走依赖注入**，所以测试能换的也只有它；
 其余全是模块级单例直读 → **改环境变量必须重启**（import 之后改 `os.environ` 无效，见 §9.1）。
@@ -1211,8 +1216,9 @@ POST /v1/conversations
 | SQLite 忙等 | `busy_timeout = 5000ms` | SQLite/`sqlite3` 默认 |
 | 部署产物 | **没有** Dockerfile / nginx / CI | 待办 #49 / #62 |
 
-⭐ 一句话：**瓶颈永远是「15 条数据库连接」和「SQLite 只能有一个写者」，
-不是上游 HTTP 池（100）；也不存在"多副本"这回事。**
+⭐ 一句话：**第一道顶不住的是我们自己设的闸门（`max_concurrent_upstream_calls`，默认 4）**；
+闸门之后才是「15 条数据库连接」和「SQLite 只能有一个写者」；上游 HTTP 池（100）永远排最后。
+"多副本"仍然不存在 → 所有进程内计数都是单进程的账。逐层推导见 [§13.3](#133-五层上限谁在限谁2026-11-04)。
 
 ### 13.2 上线前这张图会变的三处（都还没做）
 
@@ -1224,6 +1230,74 @@ POST /v1/conversations
 
 > ⚠️ 这三处**改的是图，不是代码风格** ——
 > 任何「现在单机能跑 / 能扛 N 个」的结论，换形态之后都要重测。
+
+---
+
+### 13.3 五层上限：谁在限谁（2026-11-04）
+
+> 要回答 **「第 1001 个并发请求会发生什么？」**，不能只看一个数字，
+> 而要看**哪一层先顶不住**。所以把所有层排成一队，从外到内看。
+
+#### 13.3a 📎 五层，五个数字
+
+| 层 | 数字 | 谁定的 | 我们能不能改 | 位置 |
+|---|---|---|---|---|
+| **L0 上游配额** | 未知（DeepSeek 账号的 RPM / TPM / 余额） | 供应商 | ❌ 只能被动挨 429 | 外部 |
+| **L1 我们的闸门** | **4** 条流 / 进程 | 我们自己 | ✅ 改 `.env` | `settings.max_concurrent_upstream_calls` |
+| **L2 上游 HTTP 连接池** | **100**（keepalive 20） | httpx 默认 | ✅ 但没必要 | `create_llm_client()` |
+| **L3 数据库连接池** | **15**（`size=5` + `max_overflow=10`），等连接 `pool_timeout=30s` | SQLAlchemy 默认 | ✅ | [database.py](../../src/app/database.py)（**没写参数 = 用默认值**） |
+| **L4 SQLite 写者** | **1**（全库同时只能有一个写事务），忙等 `busy_timeout=5000ms` | SQLite 的锁模型 | ❌ 换 PG 才行（决策 13） | `app.db` |
+
+#### 13.3b ⭐⭐ 判据：不看"上限是多少"，看"顶住时客户端看到什么"
+
+| 层被顶穿 | 我们回什么 | 客户端能自救吗 | 评价 |
+|---|---|---|---|
+| L0 上游配额 | **429 + `Retry-After`**（#60 翻译出来的） | ✅ 等一等 | 🟢 好 |
+| L1 我们的闸门 | **503 + `Retry-After`**（12g-2 要做的） | ✅ 稍后重试 | 🟢 好 |
+| L2 HTTP 池满 | 排队等（100 条几乎不会满） | ❌ 什么都看不见 | ⚪ 无感 |
+| L3 DB 池满 | **卡 30 秒，然后 500** | ❌ | 🔴 最差 |
+| L4 写锁冲突 | 500（或 200 + 0 帧，见 #73） | ❌ | 🔴 最差 |
+
+⭐⭐ 一句话判据：**好的限流在最外层拒绝、给一个能读懂的码；坏的限流在内层排队，等出一个 500。**
+
+#### 13.3c 由此得到一条硬规则
+
+> **闸门（L1）必须小于它下游的池（L3）。**
+
+反例：假如把 `MAX_CONCURRENT_UPSTREAM_CALLS` 调成 **20**（> 15）：
+
+1. 第 16 条流顺利拿到上游额度，但**借不到**数据库连接；
+2. `await` 卡在 `pool_timeout=30s` 上；
+3. 30 秒后抛 `sqlalchemy.exc.TimeoutError` → **500**；
+4. 而客户端在这 30 秒里**一个字节都没收到**，早就自己超时走了。
+
+也就是说：**把闸门设得太宽，等于把「明确的 503」换成「30 秒后的 500」** ——
+这不是"更宽松"，是**更差**。
+
+📎 能直接背下来的数字关系：
+
+```text
+4（闸门）  ≤  15（DB 池）  «  100（HTTP 池）
+```
+
+#### 13.3d 为什么闸门默认是 4，不是 15
+
+三个约束同时压着：
+
+1. **上游配额**：4 条流同时生成已经够把常见 RPM 打满（具体数字要对账号页看，**尚未实测**）；
+2. **成本 = 并发 × 时长 × 输出上限**：`4 × 4096 tokens` 就是"一次洪峰最多烧多少"的上界；
+3. **要给非 chat 路由留余量**：对话 CRUD / 分页**不经过**这道闸门，它们还要用那 15 条连接。
+
+⚠️ **4 是"保守的起点"，不是"压测出来的最优值"。** 门 3 最后一项（压测）做完之前，
+任何"4 够不够"的说法都是猜。
+
+#### 13.3e 多副本会怎么变
+
+| 形态 | L1 闸门真实上限 | L3 DB 池 | 备注 |
+|---|---|---|---|
+| 现在：1 进程 | **4** | 15 | 每进程 4 ≤ 15，安全 |
+| `--workers 4` | **16**（4 × 4） | 每进程各 15 | 单进程仍安全；但**上游配额按账号算**，16 条同时生成很可能直接打爆 → 429 |
+| 多机 | 16 × 机器数 | 每机独立 | 进程内计数 = 假上限，必须放 Redis / 网关层才作数（#44 的重审条件） |
 
 ---
 
