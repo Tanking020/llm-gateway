@@ -11,6 +11,7 @@
     放 api/ 里，services/ 就永远不会反向 import 到它
 """
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Annotated
 
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, settings
 from app.database import SessionMaker
+from app.errors import AppError
 from app.llm_client import LlmClient
 
 
@@ -73,3 +75,29 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
+
+
+async def get_upstream_slot(request: Request, config: SettingsDep) -> AsyncIterator[None]:
+    """
+    上游并发闸门：抢到一个槽位才允许打上游，抢不到就回 503
+
+    【注意】：必须是 yield 依赖 —— 槽位要持有到【整条流结束】才还。
+        这正是"同时在生成的上游调用数"该算的范围；与 get_db 相反（那边要尽早还）。
+        机制上靠的就是 #59 实测到的"yield 依赖收尾发生在响应彻底结束之后"。
+    """
+    semaphore: asyncio.Semaphore = request.app.state.upstream_semaphore
+    try:
+        # 有限等待而不是无限排队：排队期间客户端什么都收不到，还占着 socket
+        await asyncio.wait_for(semaphore.acquire(), timeout=config.upstream_queue_timeout)
+    except TimeoutError:
+        # from None：上面那个 TimeoutError 是预期内的控制流，不该出现在 traceback 里
+        raise AppError(
+            "SERVER_BUSY", "服务繁忙，请稍后重试", headers={"Retry-After": "1"}
+        ) from None
+    try:
+        yield
+    finally:
+        semaphore.release()
+
+
+UpstreamSlotDep = Annotated[None, Depends(get_upstream_slot)]
