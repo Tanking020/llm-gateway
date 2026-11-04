@@ -21,7 +21,7 @@
 详见[路线图](#路线图)。
 
 > ⚠️ **离「能上线」还差什么**：无鉴权 / 无限流 / 无 CI / 无 `Dockerfile` / 无指标，
-> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#77，**38 已关闭 / 39 未关闭**）。
+> 且 `/v1/chat`（非流式）仍是 `echo` 占位实现。完整清单见[路线图待办](study_notes/project/roadmap.md)（#1~#77，**39 已关闭 / 38 未关闭**）。
 
 ---
 
@@ -455,7 +455,7 @@ mypy 采用 `strict = true`（要求函数写类型注解、禁止隐式 `Any` �
 
 | 文件 | 只回答一个问题 | 变化频率 |
 |---|---|---|
-| [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（一张 80 行进度表 + 待办 #1~#77 唯一台账，38 已关闭 / 39 未关闭） | 每步收口 |
+| [study_notes/project/roadmap.md](study_notes/project/roadmap.md) | **做到哪了 / 还剩几步**（一张 80 行进度表 + 待办 #1~#77 唯一台账，39 已关闭 / 38 未关闭） | 每步收口 |
 | [study_notes/project/decisions.md](study_notes/project/decisions.md) | **为什么这么设计 / 放弃了什么 / 何时该重审**（ADR 28 条） | 做决定时 |
 | [study_notes/project/production-readiness.md](study_notes/project/production-readiness.md) | **距离敢上线还差什么 / 怎么才算过门**（七道门 + `P0/P1/P2`） | 每次收口重推门的颜色 |
 | [study_notes/project/architecture-map.md](study_notes/project/architecture-map.md) | **各种关系与形状长什么样**（七层栈 / 模块依赖 / **§2.4 依赖解析与资源生命周期** / **§2.5 `app.py` 调用链** / ER+DDL / 端点总表 / 成功·错误·SSE 的完整形状 / **§8.6 流式完整时序** / 配置 / 日志 / 测试 / 状态机 / **§13 运行形态** / **§14 决策↔代码↔测试**） | 想弄清一个形状时 |

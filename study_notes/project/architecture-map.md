@@ -229,6 +229,7 @@ POST /v1/chat/stream
 | `SettingsDep` | `get_settings()` 直接 `return settings` | **import 那一刻**（模块级单例） | 进程退出 | ✅ `dependency_overrides[get_settings]` |
 | `LlmClientDep` | `get_llm_client(request)` 读 `app.state.llm_client` | **lifespan 启动段** | lifespan 关闭段 `aclose()` | ✅ `dependency_overrides[get_llm_client]` |
 | `DbDep` | `get_db()` **yield** 一个会话 | 依赖被解析时（`SessionMaker()`） | 生成器收尾时（`commit` / `rollback` 之后） | ✅ 也能换，但换了就测不到真事务 |
+| `UpstreamSlotDep` | `get_upstream_slot()` **yield** 一个名额 | 参数最靠前 → **最先解析** | **最后收尾**（依赖按反序退场）→ 覆盖到 `db.commit` 之后 | ✅ 测试里直接替换 `app.state.upstream_semaphore` |
 
 > 📌 会话对象 ≠ 连接：会话在解析时就造好，**连接**要到第一条 SQL 才向池里借，
 > `commit()` / `rollback()` 一结束就把连接还回池 —— 所以"会话活得比连接久"。
@@ -237,8 +238,10 @@ POST /v1/chat/stream
 `settings` 与 `llm_client` 都是进程级，`Depends` 只负责**把已有对象递进来**，
 顺带提供"可被替换的接缝"（这正是测试能绕过真库与真上游的原因，见 §11.2）。
 
-⚠️ 三样资源各自**占用多久**（DB 连接 / 上游 HTTP 连接）不写在这里 —— 唯一出处是
-[tests/README.md](../../tests/README.md) §4.2。
+⚠️ 四样资源各自**占用多久**不写在这里 —— 连接池那一半的唯一出处是
+[tests/README.md](../../tests/README.md) §4.2，闸门见 §4.7。
+📌 闸门这一行有个反直觉点：**槽位持有到「整条流结束」**，比 `DbDep` 还长一截 ——
+而这一点是**要的**（"同时在生成的上游调用数"本来就该按整条流算）；同一个 `yield` 机制在 `get_db` 那里却是缺陷（#59）。
 
 ### 2.5 `app.py` 内部调用链（829 行怎么读）
 
@@ -1068,7 +1071,8 @@ tests/
       ├─ HTTP 契约 ─────────── conversations / errors
       ├─ 路由层接线与守卫 ──── upstream / stream_frames / stream_accounting
       ├─ 适配器协议层 ──────── stream_adapter / adapter_http ← 唯一允许 import httpx 的测试
-      └─ 并发与连接池 ──────── concurrency ← 唯一真起 uvicorn 的测试
+      ├─ 并发与连接池 ──────── concurrency ← 唯一真起 uvicorn 的测试
+      └─ 护栏上限 ──────────── limits（闸门 503 / 槽位归还 / max_tokens / 输入长度）
 ```
 
 📌 **用例数 / 每个文件测什么 / 要不要真服务** —— 唯一出处是 [tests/README.md](../../tests/README.md) §1。
