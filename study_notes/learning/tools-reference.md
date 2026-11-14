@@ -38,10 +38,11 @@
 | 库 | **aiosqlite** | 让 SQLite 操作可以 `await`（SQLAlchemy 的异步 SQLite 驱动） | `uv add aiosqlite` | 阶段 1 · Step 10 | [§10](#10-sqlalchemy-21-异步-orm-与-aiosqlite) |
 | 概念 | **健康探针** | 编排平台定期打一个 HTTP 路径来判断「进程活着 / 能接流量」；**配置在 YAML 里，不在代码里** | 无需安装（k8s / Docker 能力） | 阶段 1 · 10.6d-3（端点）/ Step 13（配置） | [§11](#11-健康探针k8s--docker-配置层不是代码层) |
 | 标准库 | **time**（时钟） | `time` / `monotonic` / `perf_counter` 三个时钟**不能互换**：一个会被改表，两个不会 | Python 自带，无需安装 | 阶段 1 · Step 7（请求计时） | [§12](#12-时钟time--monotonic--perf_counter) |
+| 工具 | **GitHub Actions** | 仓库自带的 CI：`push` / PR 时在 GitHub 的机器上跑我们那四条质量门 | 无需安装，写 `.github/workflows/*.yml` 即可 | 阶段 1 · 12h（#62） | [§13](#13-github-actionsci) |
 
-**本机版本基线（实测）**：`uv 0.12.23` / `pydantic 2.13.5` / `pydantic-settings 2.15.0` / `mypy 2.4.0` / `ruff 0.16.10` / `httpx 0.28.1` / `fastapi 0.143.0` / `uvicorn 0.54.0` / `starlette 1.8.0` / `sqlalchemy 2.1.6` / `greenlet 3.5.6` / `aiosqlite 0.22.1`
+**本机版本基线（实测，2026-11-14 复核）**：`uv 0.12.23` / `pydantic 2.13.5` / `pydantic-settings 2.15.0` / `mypy 2.4.0` / `ruff 0.16.10` / `httpx 0.28.1` / `httpx2 2.16.0` / `fastapi 0.143.0` / `uvicorn 0.54.0` / `starlette 1.8.0` / `sqlalchemy 2.1.6` / `aiosqlite 0.22.1` / `pytest 9.2.0` / `pytest-asyncio 1.4.1` / `pytest-cov 7.1.0` / `coverage 7.17.1`
 
-**还没装（用到再补节，不提前写空节）**：`httpx2`（Starlette 已开始推荐，见 §6 的换代警告；**暂不装**）、`pytest`（阶段 1 后半）。
+**还没装（用到再补节，不提前写空节）**：目前没有 —— 测试四件套与 `httpx2` 都已落地见 [tests/README.md](../../tests/README.md)。
 
 ---
 
@@ -1531,7 +1532,74 @@ read timeout 是 1 秒，但请求跑了 4.95 秒 —— 没有超时
 
 ---
 
-## 13. 本文件更新日志
+## 13. GitHub Actions（CI）
+
+**解决什么问题**：**质量门靠人记得手敲 = 漏一次就等于这道门不存在。** CI 把「跑不跑」交给事件（push / PR），
+把「绿不绿」交给 GitHub，于是"我跑过了"变成"仓库上有一行绿"。
+
+**三条心智模型**（比记 YAML 字段重要）：
+
+1. **workflow 放在 `.github/workflows/<任意名>.yml`** —— 位置就是注册方式，没有其它注册步骤。
+2. **`on:` 决定"什么时候跑"，`jobs` 决定"跑什么"，`steps` 是"按顺序执行的命令列表"**。
+3. **CI 机器是干净的**（每次全新 checkout）→ **任何"先本地改好"的动作在 CI 里都没有意义**，必须写成断言。
+
+### 简写版（够用的最小骨架）
+
+```yaml
+name: CI
+on: {push: {branches: [main]}, pull_request: {}}
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - run: uv sync --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run mypy .
+      - run: uv run pytest -q
+```
+
+> 本项目实际文件见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)，比上面多 `permissions: contents: read`
+> 和一个 `name:` —— 其余一字不差。
+
+### 五个必须自己判断的点（📎 2026-11-14 逐条取证）
+
+| 点 | 结论 | 📎 依据 |
+|---|---|---|
+| 装依赖用哪个 flag | **`uv sync --locked`** | 三者只差"允不允许 `uv.lock` 与 `pyproject.toml` 不一致"：裸 `uv sync` 会**自己改 lock**（CI 里改完即丢 → 绿灯但别人装不到）、`--frozen` **不看 `pyproject.toml`**（lock 过期也绿）、`--locked` **直接断言"无需改动"**（会红）。📎 本机 `uv lock --check` → `exitcode=0`、`uv sync --locked --dry-run` → `Would make no changes` |
+| 格式化用哪个 | **`ruff format --check .`** | CI 里不能改文件：`ruff format .` 会把文件改掉但不提交，**检查永远绿**而本地仍是脏的（同一条判据见 §5） |
+| action 版本怎么钉 | 官方 action 用大版本号（`checkout@v7`）；**第三方钉完整 SHA** | 📎 `astral-sh/setup-uv` **不发浮动大版本 tag**：`refs/tags/v10` → **404**，只发精确的 `v10.3.3`，所以必须钉 SHA 并在后面用注释写清版本 |
+| Python 版本写在哪 | **不写**（交给 `.python-version`） | 📎 setup-uv 的 `python-version:` 输入会**覆盖** `pyproject.toml` / `.python-version` —— 写了就等于同一事实两处 |
+| 缓存要不要手动开 | **不写**（默认已开） | 📎 `enable-cache:` 默认值是 `auto`，GitHub 托管 runner 上本来就开；手动写 `true` 只是假装在管 |
+
+### 易错点
+
+| 坑 | 事实 |
+|---|---|
+| 用通用 YAML 库解析时 `on:` 变成 `True` | YAML 1.1 把裸 `on/off/yes/no` 当布尔。**GitHub 自己的解析器不受影响**，📎 `pyyaml` 解析出来是 `True` 键、但 7 个 step 全在，workflow 正常跑 |
+| 不给 `timeout-minutes` | 默认要等**6 小时**才判死；本项目测试会起真 uvicorn 线程，挂死一次就白占额度 |
+| 不加 `permissions` | 默认 token 权限偏大；这个 job 只需要读代码 → `contents: read` |
+| 只写 `push:` 不写 `branches:` | **每个分支每次 push 都跑**，同一份代码 PR 上再跑一遍，白烧额度 |
+| 连续快速 push | 没有 `concurrency:` 组会**排队跑**（每个 run 都跑完）；加 `concurrency: {group: ${{ github.workflow }}-${{ github.ref }}, cancel-in-progress: true}` 可取消旧的（本项目**还没加**，不影响正确性） |
+| 把覆盖率也塞进 CI | 本项目**故意不上**：数字会抖（见 [production-readiness](../project/production-readiness.md) 门 1）且不设阈值 —— **覆盖率是找缺口的探照灯，不是分数线** |
+| 以为"本地绿 ⇒ CI 绿" | 环境不同：Linux / 全新 venv / 无 `.env`。📎 本项目首次 run **7 个 step 全绿、30 秒**（run #43556231470），说明 `test_concurrency.py` 起真 uvicorn 在 `ubuntu-latest` 上没问题 |
+
+### 本项目落点
+
+| 项 | 值 |
+|---|---|
+| 文件 | [.github/workflows/ci.yml](../../.github/workflows/ci.yml)（2026-11-14 学习者手写） |
+| 触发 | `push` 到 `main`、以及任何 `pull_request` |
+| 时长 | 📎 首次 **30 秒**（装依赖 8s + 测试 8s） |
+| 待办 | **#62 已关闭**；未做：`concurrency` 组、Docker 构建 job（并入 #49） |
+
+---
+
+## 14. 本文件更新日志
 
 | 日期 | 变更 |
 |---|---|
@@ -1551,4 +1619,5 @@ read timeout 是 1 秒，但请求跑了 4.95 秒 —— 没有超时
 | 2026-10-28 | 新增 **§11 健康探针（k8s / Docker）**（原更新日志顺延为 §12）：区分「端点（代码里的路由）」与「探针（YAML 里的配置）」两个层；三种探针（liveness 重启 / readiness 摘流量 / startup 等启动完）；⭐ HTTP 探针判定规则 **200~399 算成功**，拼错路径 → 404 → 无限重启；⭐⭐ **把数据库放进 liveness = 雪崩**（重启治不好数据库）；⚠️ FastAPI 一个健康端点都不自带（只自带 4 个文档路由）；📎 实测本项目 `/health` 200 / `/health/ready` 200 / `/healthz` 404 / `/health/live` 404 |
 | 2026-10-28 | §2 新增「`field_validator` 的 `mode="before"` vs `"after"`」（10.6d-4a 实测）：📎 「补 UTC」场景下 before 遇到**字符串**输入时 `isinstance` 失败 → **静默不补**；after 唯一缺点 **返回值不重校验**（📎 返回字符串竟建对象成功）；⭐⭐ 判据「转换类型用 before，修正已校验的值用 after」；⚠️ `@classmethod` 与 mode **无关**，两种都要求 |
 | 2026-10-28 | §10 新增「SQLite 下 `datetime` 的时区必然丢失」（10.6d-4a 实测）：📎 丢失点在 `sqlite.DATETIME()._storage_format` —— **格式串里没有时区占位符**；📎 `DateTime(timezone=True)` 在 SQLite 下展开，DDL 与 plain完全相同，PostgreSQL 才变 `TIMESTAMP WITH TIME ZONE`；⭐ 判据「SQLite 阶段在出口补 UTC，换 PG 时列才加 `timezone=True`」 |
+| 2026-11-14 | 新增 **§13 GitHub Actions（CI）**（原更新日志顺延为 §14）：简写版 workflow（10 行）+ **五个必须自己判断的点**（`--locked` vs `--frozen` vs 裸 `sync` / `ruff format --check` / 官方 action 用大版本号而第三方钉 SHA / Python 版本不写第二处 / 缓存默认已开）+ 7 条易错点（`on:` 被当布尔、`timeout` 默认 6 小时、`permissions`、`branches:` 防重复跑、`concurrency` 未加、覆盖率故意不上 CI、本地绿≠CI 绿）。📎 首次 run **7 step 全绿 / 30 秒**。同时订正 §0：删掉「`httpx2` 与 `pytest` 还没装」这句过期说明（都已落地），版本基线补 `httpx2 2.16.0` / `pytest 9.2.0` / `pytest-asyncio 1.4.1` / `pytest-cov 7.1.0` / `coverage 7.17.1` |
 | 2026-10-28 | 新增 **§12 时钟**（原更新日志顺延为 §13）：📎 本机 `get_clock_info` 实测只有 `time.time()` 是 `adjustable=True`；📎 模拟 NTP 前跳 60s → 墙钟方案在真实过去 3 秒时误触发 30 秒超时，单调钟正常；⭐⭐ 判据「**「多久」用单调钟，「何时」用墙钟**」；⭐⭐ 订正「为避免休眠不计时改用系统时钟」这个反向做法（用高频故障换低频故障）；📎 实测 `loop.time()` == `time.monotonic()`；🔴 顺带实测 **`read timeout` 是「每次读取的间隔」不是「总时长」**（read=1s 而请求跑满 4.95s 不超时）→ 新增待办 #55 |
