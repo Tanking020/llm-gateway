@@ -1346,6 +1346,18 @@
     > （📎 实测两种都正常工作，pydantic 会自动包），项目里统一写上是为了**显式**。
     > 📌 判据：**看第一个参数是 `cls` 还是 `self`** —— 是 `cls` 才需要（或可以）写 `@classmethod`。
 
+22. 📎 CI 里装依赖写的是 `uv sync --locked`，既不是裸 `uv sync`，也不是 `--frozen`。
+    **① 这三种写法分别会在哪一步"放你过去"？② 为什么 CI 必须选「会红」的那一个？**
+    > **①** 三者只差一件事：**允不允许 `uv.lock` 与 `pyproject.toml` 不一致**。
+    > - 裸 `uv sync`：不一致就**自己改 `uv.lock`** 再装 —— CI 里改了但不提交，跑完就丢 → **绿灯，但别人本地装的是另一套依赖**
+    > - `--frozen`：**根本不看 `pyproject.toml`**，照着现有 `uv.lock` 装 → lock 过期也照样绿
+    > - `--locked`：**断言 `uv.lock` 无需改动**，要改就直接失败（📎 本机 `uv lock --check` → `exitcode=0`；`uv sync --locked --dry-run` → `Would make no changes`）
+    > **②** CI 的职责是**替团队发现漂移**，不是"尽量跑通"。加了依赖却忘了 `uv lock` 时，
+    > 只有 `--locked` 会把这件事变成红叉；另外两种都会把它变成「本地能跑、别人装不上」。
+    > ⭐ 判据：**CI 里凡是能"自动修正"的动作，一律换成"断言"** —— 装依赖 `--locked`、
+    > 格式化 `ruff format --check`（不是 `ruff format`），同一个道理。
+    > 见 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)、待办 #62（已关闭）。
+
 ### Step 13 · 部署
 
 1. `--reload` 为什么不能进生产？
@@ -1440,6 +1452,7 @@
 | 2026-11-01 | 阶段 1 · **Step 11** 补 1 题（第 23 题，11f）：`responses=` 为何是追加而不是替换（📎 三种写法对比：只 `responses` → 两种 content-type）。配套笔记 §11f、待办 #11（原修法已订正） |
 | 2026-10-31 | 补 2 题（第 12~13 题，**日志专题**）：`%s` 惰性 vs f-string 立即求值（📎 级别不够时参数不展开）/ 什么情况下同一条日志打两行。配套 [logging.md](logging.md) §1 §3 §4 |
 | 2026-11-01 | 阶段 1 · **Step 12** 开工前修订第 1~2 题（📎 `httpx2` 实测 2.16.0；且 `starlette.testclient` 里那个叫 `httpx` 的名字实际是 `httpx2`；📎 不用 `with` 时 `/health`·`/v1/models`·`/health/ready` 全 200、只有 `POST /v1/conversations` 炸 `no such table`）+ 补 2 题（第 6 题 `raise_server_exceptions` 默认 `True` / 第 7 题 `settings` 单例与 `import app` 顺序）。配套笔记 stage1 §12.0 §12.2 |
+| 2026-11-14 | 阶段 1 · **Step 12** 补 1 题（第 22 题，CI 上线）：`uv sync --locked` / `--frozen` / 裸 `uv sync` 三者的差别只在「允不允许 lock 与 `pyproject.toml` 不一致」；CI 必须选会红的那一个（断言，不是自动修正）。配套 [.github/workflows/ci.yml](../../.github/workflows/ci.yml)、待办 #62 |
 | 2026-11-04 | 阶段 1 · **Step 12** 补 1 题（第 18 题，架构盘点）：`yield` 依赖的收尾为什么排在**整条流之后**（📎 `dep db exit` 在 `gen end` + `upstream aclose` 之后）；「路由返回了」≠「资源还了」，能提前结束的只有**事务**不是**依赖**。配套 [架构图](../project/architecture-map.md) §2.4 §8.6 |
 | 2026-11-03 | 阶段 1 · **Step 12** 补 1 题（第 17 题，修 #73）：`flush` 与 `commit` 差一个「事务结束不结束」，同时决定了写锁、连接归还、崩溃后是否留痕三件事。配套笔记 §12.7b |
 | 2026-11-02 | 阶段 1 · **Step 12** 补 1 题（第 16 题，12d-3b）：`StrEnum` 只防成员名、**不防值** —— 学习者写 `PENDING = "pengding"` 时**四道门全绿**，只有断言能守住值。配套笔记 §12.5f |

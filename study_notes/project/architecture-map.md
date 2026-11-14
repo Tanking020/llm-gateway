@@ -1218,7 +1218,7 @@ POST /v1/conversations
 | 数据库池 | `AsyncAdaptedQueuePool`：`size=5` + `max_overflow=10` = **15**，等连接 `pool_timeout=30s` | [database.py](../../src/app/database.py) |
 | 上游 HTTP 池 | `max_connections=100`（httpx 默认 `Limits`） | [llm_client.py](../../src/app/llm_client.py) |
 | SQLite 忙等 | `busy_timeout = 5000ms` | SQLite/`sqlite3` 默认 |
-| 部署产物 | **没有** Dockerfile / nginx / CI | 待办 #49 / #62 |
+| 部署产物 | **CI 已有**（`.github/workflows/ci.yml`，push/PR 跑四道门）；**没有** Dockerfile / nginx | 待办 #49 |
 
 ⭐ 一句话：**第一道顶不住的是我们自己设的闸门（`max_concurrent_upstream_calls`，默认 4）**；
 闸门之后才是「15 条数据库连接」和「SQLite 只能有一个写者」；上游 HTTP 池（100）永远排最后。
