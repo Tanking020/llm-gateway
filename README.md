@@ -6,6 +6,7 @@
 ![Tests](https://img.shields.io/badge/tests-93%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-92%25-success)
 ![Ruff](https://img.shields.io/badge/lint-ruff-000000?logo=ruff&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 > **English** — A production-minded LLM backend service built from an empty directory:
 > async FastAPI + SSE streaming + upstream adapter + SQLite accounting + a 93-case
@@ -139,6 +140,7 @@ uv run pytest -q              # 4. 回归（93 个用例，约 12s，不碰真�
 .
 ├── README.md                    # 本文件：面向访客
 ├── CONTRIBUTING.md              # 开发约定：改代码前后必须满足什么
+├── LICENSE                      # MIT
 ├── pyproject.toml / uv.lock     # 依赖与工具配置的唯一事实来源
 ├── .env.example                 # 配置模板（真值放 .env，不提交）
 ├── .github/
