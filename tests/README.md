@@ -32,12 +32,12 @@
 |---|---|---|---|---|
 | `test_smoke.py` | 2 | 地基：应用能起、lifespan 跑过、独立临时库生效 | 不涉及 | ❌ |
 | `test_conversations.py` | 9 | 对话 CRUD 契约：全生命周期 / 游标分页 / 422 校验 / 404 语义 | 不涉及 | ❌ |
-| `test_upstream.py` | 6 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、pre-flight 能改状态码 | `FakeLlm` | ❌ |
+| `test_upstream.py` | 7 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、**上游 429 → 429 + `Retry-After`**、pre-flight 能改状态码 | `FakeLlm` | ❌ |
 | `test_errors.py` | 7 | **错误形状契约**：envelope 三键 / 三种 404 靠业务码分 / 422 的 `details` 只留三键 / 500 不泄漏 | `FakeLlm` | ❌ |
 | `test_stream_frames.py` | 12 | **路由层**字段守卫：7 种怪 chunk + 帧序 + 终止条件（用假 chunk，不经 SSE 文本） | `FakeLlm` | ❌ |
 | `test_stream_adapter.py` | 11 | **适配器协议层**：原始 SSE 字节 → `aiter_chunks()`，`data:{` 无空格 / 空 data / 非 dict / `[DONE]` 之后 | **直接喂 `httpx.Response`** | ❌ |
 | `test_stream_accounting.py` | 10 | **账单四态**：completed / aborted / no_content / pending + 枚举值守卫 | `FakeLlm` | ❌ |
-| `test_adapter_http.py` | 10 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
+| `test_adapter_http.py` | 20 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
 | `test_concurrency.py` | 4 | **并发与连接池**：串行化、首字节延迟、流跑到一半时 `pending` 已落库 | `FakeLlm`（慢速版） | ✅ **真 uvicorn** |
 | `test_limits.py` | 11 | **护栏上限**：并发闸门 503 / 槽位归还（正常+异常）/ `max_tokens` 三分支 / 输入三条上限 | `FakeLlm` | ❌ |
 
