@@ -146,3 +146,8 @@ config.py   ←任何层可读（只读，不写状态）
 - 提交前自查：四道质量门全绿、`git status` 无多余文件、文档已按 §6 更新。
 - CI（`.github/workflows/ci.yml`）会在 push 与 PR 上跑：`uv sync --locked` → `ruff format --check` → `ruff check` → `mypy` → `pytest`。
   **`--locked` 是刻意的**：它断言 `uv.lock` 与 `pyproject.toml` 同步 —— 改了依赖却忘了 `uv lock`，CI 立刻红。
+
+## 9. 许可证
+
+本项目以 [MIT](LICENSE) 分发。提交贡献即表示你同意以同一许可证（MIT）授权该贡献
+（inbound = outbound：进来和出去用同一套条款，否则使用时会出现「有一部分代码不能用」的版权空洞）。
