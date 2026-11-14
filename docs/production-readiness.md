@@ -49,13 +49,13 @@
 
 ### 门 1 · 正确性与可回归 🟢 **基本过门**（2026-11-14：**93 个用例**、分支覆盖 **92%**、适配器 100%（#75）、上游 4xx/429 端到端（#60）、**CI 推送即跑**（#62 关闭）；⚠️ 仅剩「上游超时」一条用例没搬）
 
-判据：**改坏一行代码，5 分钟内你能不能知道？** 现在大部分能 —— `uv run pytest -q` 一条命令 **71 个用例**，
-且已用**变异测试**验证过断言真的会失败（12a ~ 12e 共 **24 次变异，21 次抓到**，3 次抓不到的都记了原因）。
+判据：**改坏一行代码，5 分钟内你能不能知道？** 现在大部分能 —— `uv run pytest -q` 一条命令 **93 个用例**，
+且已用**变异测试**验证过断言真的会失败（12a ~ 12g 累计 **47 次变异，42 次抓到**，5 次抓不到的全部记了原因）。
 ⚠️ 但**反例已经出现两次**：「去掉 `X-Request-ID` 头」（等价变异）与「`PENDING = "pengding"`」（本可以抓但当时没断言）
 —— 说明**测试数量不等于覆盖**，值域这类「常量内容」必须专门钉。
 
 - [x] `tests/` 存在，`pytest` 一条命令跑完全部 · `P0` · 关联 **#40**（12a）
-  - 📎 2026-11-04：`uv run pytest -q` → **71 passed / 约 9~12s**（含真 uvicorn）；`app.db` 的 mtime 前后不变（测试落 `%TEMP%`）
+  - 📎 2026-11-04（当时）：`uv run pytest -q` → **71 passed / 约 9~12s**（含真 uvicorn）；`app.db` 的 mtime 前后不变（测试落 `%TEMP%`）
 - [~] 流式的边界用例搬进 pytest · `P0` · 关联 **#40**（→ **12d**）
   - ✅ 已搬：帧契约 12 个（12d-1）· 适配器协议 11 个（12d-2）· 账单记账 5 个（12d-3a）
   - ✅ 已搬：账单四态（12d-3b：completed / aborted / no_content / 枚举值守卫）
@@ -69,7 +69,7 @@
   - 📎 2026-11-04：`uv run pytest --cov --cov-report=term-missing` → **服务代码分支覆盖 90%**；`llm_client.py` / `errors.py` / `models.py` / `logging_setup.py` / `constants.py` **100%** · `schemas` 96% · `deps` 91% · `config` 91% · `database` 83% · **`app.py` 84%（现在最大缺口）**
   - 📎 `app.py` 缺的那几处：分页 `has_more`/`next_cursor`、`max_tokens` 分支、`except BaseException` 取消分支、`/v1/chat` pre-flight
   - ⚠️ **工具坑**：`465`（`await db.delete`）与 `485`（`conv.title = ...`）报「未覆盖」，但 📎 实测 DELETE 后库里 `1 → 0` 行 —— 是 **coverage 少报**（与 SQLAlchemy 的 greenlet 切换有关），不是真缺口。**判据：覆盖率要和行为断言交叉验证**
-  - ⚠️ **而且数字会抖**：📎 2026-11-03 同一命令连跑 4 次，`TOTAL Miss` 在 **66/67** 之间跳（`Cover` 84%/85%）。→ **不设 `--cov-fail-under`**；覆盖率只用于找缺口，守行为靠断言。详见 [tests/README.md](../../tests/README.md) §3.5
+  - ⚠️ **而且数字会抖**：📎 2026-11-03 同一命令连跑 4 次，`TOTAL Miss` 在 **66/67** 之间跳（`Cover` 84%/85%）。→ **不设 `--cov-fail-under`**；覆盖率只用于找缺口，守行为靠断言。详见 [tests/README.md](../tests/README.md) §3.5
 - [x] 推送即跑 `ruff + mypy + pytest` · `P1` · 关联 **#62**（✅ 2026-11-14 关闭）
   - 📎 `.github/workflows/ci.yml`：`push`(main) + `pull_request`；`uv sync --locked` → format `--check` → ruff → mypy → pytest；`permissions: contents: read`、`timeout-minutes: 10`
   - ⚠️ 覆盖率**故意不上 CI**：数字会抖（本文件上一条）且不设阈值 —— 覆盖率是找缺口的探照灯，守行为靠断言
@@ -175,7 +175,7 @@
 | **#60** | ~~上游 **4xx/429 一律映射成 502**~~ ✅ **已关闭**（2026-11-04：按「客户端能不能自己修好」分五档，见决策 29） | 客户端会认为「服务器故障」→ 重试 → 更 429 → 重试风暴，且每次重试都计费 | `P0` |
 | **#61** | `total` 每翻一页跑一次全表 `COUNT(*)` | 10 万行时比主查询还慢；加 `owner_id` 后还要带条件计数 | `P1` |
 | **#62** | **无 CI**：`ruff` / `mypy` / `pytest` 全靠人记得手敲 | 质量门不可靠 = 形同没有质量门 | `P1` |
-| **#63** | [app.py](../../src/app/api/app.py) **818 行**、无 `services/` 层，业务编排全在路由里 | 加 RAG / Agent 后会继续膨胀；面试 review 会被要求分层 | `P1` |
+| **#63** | [app.py](../src/app/api/app.py) **818 行**、无 `services/` 层，业务编排全在路由里 | 加 RAG / Agent 后会继续膨胀；面试 review 会被要求分层 | `P1` |
 | **#64** | 无**幂等键**：客户端重试 = 重复计费 / 重复建对话 | 网络抖动下的重试是常态，不是异常 | `P2` |
 | **#65** | 无备份、无保留策略、提示词明文入库无脱敏 | 用户数据事故是「直接下线」级别 | `P2` |
 | **#66** | **无指标、无告警、无链路**（只有文本日志） | 服务对自己不透明：你不知道它现在健康还是正在坏 | `P1` |
@@ -228,7 +228,7 @@
 ⚠️ **本文件不写实测数据表格**（引用 roadmap 的 📎 证据）；也不写「我们决定用 A 不用 B」（去 `decisions.md`）。
 
 **待同步**：2026-11-01 的三条实测结论（连接被流独占 / 断开时账单保住 / 上游 4xx→502 语义）收口时补进
-[learning/learning-log.md](../learning/learning-log.md)。
+[DEVLOG.md](DEVLOG.md)。
 
 ---
 

@@ -1,7 +1,7 @@
 # 决策记录（ADR）
 
 > **这个文件回答一个问题：为什么这个项目长成现在这样。**
-> 只记**业务 / 架构层面**的决定，不记语法知识点（那些在 [learning/stage1-fastapi.md](../learning/stage1-fastapi.md)）。
+> 只记**业务 / 架构层面**的决定，不记语法知识点（那些在 [stage1-fastapi.md](../notes/stage1-fastapi.md)）。
 >
 > **什么时候该往这里写**（判据）：
 > ① 有**多个合理方案**、我们选了其中一个 —— 记下**放弃了什么、为什么**
@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-04 · 共 30 条
+**最后更新**：2026-11-14 · 共 31 条
 
 ---
 
@@ -51,6 +51,7 @@
 | [28](#28-两阶段记账的两次写入都用-commit不用-flush) | 记账两次写入用 `commit` 还是 `flush` | **都用 `commit`** | 2026-11-03 |
 | [29](#29-上游-4xx-按客户端能不能自己修好分流) | 上游 4xx/429 怎么映射给客户端 | **能修就透传 4xx，修不了给 502 + 细分码** | 2026-11-04 |
 | [30](#30-并发闸门有限等待-max_tokens只接受或拒绝) | 超并发上限怎么办 / `max_tokens` 超上限怎么办 | **有限等待 + 503；只接受或拒绝，从不改写** | 2026-11-04 |
+| [31](#31-文档分层docs-与-notes) | 文档怎么分层 | **`docs/` 项目台账 + `notes/` 学习笔记；DEVLOG 只引用编号** | 2026-11-14 |
 
 ---
 
@@ -64,7 +65,10 @@
 | **代价** ⚠️ | **学习笔记会进简历仓库**。将来要单独发代码仓库时，必须先拆分（拆起来不难，但要记住这件事） |
 | **重审条件** | 准备把仓库公开写进简历时 → 执行拆分（把 `study_notes/` 移出或加 `.gitignore` 到另一个仓库） |
 
-> 📍 原始位置：[工程规范与协作约定.md](../../工程规范与协作约定.md) §13.1 #1（保留，因为它是**协作约定**的一部分）
+> 🟡 **2026-11-14 进展（部分落地）**：目录已按「换个项目还对吗」拆成 `docs/`（项目台账）与 `notes/`（学习笔记），
+> 见 [决策 31](#31-文档分层docs-与-notes)。**尚未**拆成两个 Git 仓库 —— 触发条件仍是「公开写进简历时」。
+
+> 📍 原始位置：[ai-collaboration.md](ai-collaboration.md) §13.1 #1（保留，因为它是**协作约定**的一部分）
 
 ---
 
@@ -78,7 +82,7 @@
 | **代价** ⚠️ | 每次跑命令都必须 `uv run`（因为要安装后才有 `app` 包）；不能直接 `python xxx.py` 就 import |
 | **重审条件** | 不会变。这是 Python 打包的通行做法 |
 
-> 📍 原始位置：[工程规范与协作约定.md](../../工程规范与协作约定.md) §13.1 #2；[learning/stage0-engineering-basics.md](../learning/stage0-engineering-basics.md) 有详细原理
+> 📍 原始位置：[ai-collaboration.md](ai-collaboration.md) §13.1 #2；[stage0-engineering-basics.md](../notes/stage0-engineering-basics.md) 有详细原理
 
 ---
 
@@ -106,7 +110,7 @@
 | **代价** ⚠️ | client 是**全局可变状态**：如果一个请求改了它的配置（如 timeout），会影响其它请求。所以 client 必须设计成**无状态**的 |
 | **重审条件** | 需要"每个用户用不同的上游密钥"时 → 改成按 key 分组的 client 池 |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §6.4b；[learning/learning-log.md](../learning/learning-log.md) 流水 1.14
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §6.4b；[DEVLOG.md](DEVLOG.md) 流水 1.14
 > ⚠️ **原待办 #5 已定案**
 
 ---
@@ -137,8 +141,8 @@
 | **代价** ⚠️ | ⚠️ **路由层不许 `import httpx`** —— 用 `ruff` 的 `TID251`（banned-api）机械保证。这限制了"临时在路由里直接调上游"这种快速写法 |
 | **重审条件** | 接入第二家上游、且错误语义不同时 → 需要抽象出 provider 接口 |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §9 系列；[roadmap.md](roadmap.md) 待办 #19（已解决）
-> 📌 **关键文件**：[src/app/llm_client.py](../../src/app/llm_client.py) 是唯一 import httpx 的地方
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §9 系列；[roadmap.md](roadmap.md) 待办 #19（已解决）
+> 📌 **关键文件**：[src/app/llm_client.py](../src/app/llm_client.py) 是唯一 import httpx 的地方
 
 ---
 
@@ -152,7 +156,7 @@
 | **代价** ⚠️ | ① **不能中途"回传"**（用户想在上游生成时打断，只能靠断开连接）；② 一旦响应头发出，**状态码就改不了了** —— 所以错误必须在**流开始前**（pre-flight）发现，或编码进流内 |
 | **重审条件** | 需要"用户边说边发、模型边听边答"（语音对话）→ 换 WebSocket |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §9.1~§9.11（整章）
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §9.1~§9.11（整章）
 
 ---
 
@@ -169,7 +173,7 @@
 | 📎 **第二个实例（10.6b-2）** | 「对话不存在 → 404」原本在 **5 处**各写一遍（两条 chat + GET/PATCH/DELETE），`detail=f"对话不存在：…"` 出现在 5 个不同行号。抽成 `require_conversation` 后每处剩 1 行 |
 | ⭐ **判据** | ① **「改这条规则要打开几处代码？」大于 1 就是重复**<br>② **抽不抽看「失败路径」不看「成功路径」** —— 五处里成功路径形状各异（JSON / 流 / 无内容），失败路径全是一模一样的 404 |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §6 系列；[src/app/api/app.py](../../src/app/api/app.py) 的 `ensure_last_message_is_user` 与 `require_conversation`
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §6 系列；[src/app/api/app.py](../src/app/api/app.py) 的 `ensure_last_message_is_user` 与 `require_conversation`
 
 ---
 
@@ -183,7 +187,7 @@
 | **代价** ⚠️ | ① 路由**不能提前提交**（想在中间提交一次、后面还能回滚，做不到）；② 需要 `flush()` 才能拿到自增 id<br>③ ⚠️ **`CancelledError`（客户端断开）会绕过 `except Exception`** → 依赖走 commit 路径，可能提交半截数据。流式接口必须自己守 `except BaseException`（见 [16](#16-计费记录不能跟着对话一起删) 的相关说明） |
 | **重审条件** | 需要"一个请求内多个独立事务"时 → 引入 `async with session.begin()` 分段 |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.4；[src/app/api/deps.py](../../src/app/api/deps.py) 的 `get_db`
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.4；[src/app/api/deps.py](../src/app/api/deps.py) 的 `get_db`
 
 ---
 
@@ -197,7 +201,7 @@
 | **代价** ⚠️ | 现在 `In` 和 `Patch` 的字段**完全一样**，看起来重复。这个"重复"是**故意的**，不是能合并的冗余 |
 | **重审条件** | —— |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.5；[src/app/schemas.py](../../src/app/schemas.py)
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.5；[src/app/schemas.py](../src/app/schemas.py)
 
 ---
 
@@ -212,7 +216,7 @@
 | **重审条件** | 如果将来标题规则和别的字段规则分化 → 拆开 |
 | 📎 **起因** | 测试中发现 `{"title": "   "}` 返回 **200** 并把 3 个空格存进了库（前端显示空白标题） |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.5、§10.5f
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.5、§10.5f
 
 ---
 
@@ -228,7 +232,7 @@
 | **重审条件** | 字段多到需要"客户端只传变化项"时 → 必须换成 `exclude_unset` 写法 |
 | 📎 **为什么严格更好** | ⭐ **「必填字段」是免费的 bug 探测器**：前端把 `title` 拼成 `titel` 时，`title: str`（必填）会报 422 立刻暴露；改成"可选 + 默认 None"就变成 **200 但一个字没改**（静默成功） |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.5「PATCH」小节
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.5「PATCH」小节
 
 ---
 
@@ -242,7 +246,7 @@
 | **代价** ⚠️ | SQLite 有**三个方言差异**必须记住：<br>① **不强制 `String(100)`** —— 实测塞 200 字符能存进去，长度校验只能靠 pydantic<br>② **默认不强制外键** —— 必须挂 `connect` 事件执行 `PRAGMA foreign_keys=ON`<br>③ **不存时区** —— `DateTime(timezone=True)` 也丢 `tzinfo`，存 UTC 读回来是 `naive` |
 | **重审条件** | 需要并发写 / 全文检索 / JSON 查询 → 切 PostgreSQL（改 `database_url` + 装 `asyncpg`） |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.1~§10.3
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.1~§10.3
 
 ---
 
@@ -257,7 +261,7 @@
 | **重审条件** | 需要多租户 / 多库时 → 改成工厂函数 + `app.state` 字典 |
 | 📎 **为什么不选 B** | 四条理由见笔记 §10.3：① `deps.py` 要 import 它，lifespan 里创建时序太晚；② mypy 拿不到类型；③ 测试替换更麻烦；④ 引擎本身不是"请求级资源" |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.3；[src/app/database.py](../../src/app/database.py)
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.3；[src/app/database.py](../src/app/database.py)
 
 ---
 
@@ -272,7 +276,7 @@
 | **重审条件** | —— |
 | 📎 **连带发现** | README 第 6 行写"全部完成"、第 37 行写"CRUD 未做" —— **同一份文件自相矛盾**，因为我只改了一处 |
 
-> 📍 原始位置：[learning/learning-log.md](../learning/learning-log.md) 流水 1.53；[README.md](../../README.md) 状态行
+> 📍 原始位置：[DEVLOG.md](DEVLOG.md) 流水 1.53；[README.md](../README.md) 状态行
 
 ---
 
@@ -293,8 +297,8 @@
 | ⭐⭐ **判据（这条是本决策的核心）** | **「子记录该不该跟着父记录消失」取决于「谁有权删父记录」。<br>用户能删的东西，它下面不能挂不可再生的记录。** |
 | ⭐ 补充 | `LlmCall` 本身是**自足**的（`model` / 三种 token / `created_at` 都不依赖父表），只有「归属哪个对话」依赖父表 —— 所以断关联只丢这一项，**账本身还在** |
 
-> 📍 原始位置：[src/app/models.py](../../src/app/models.py) 的 `Conversation.calls` 与 `LlmCall.conversation_id`
-> ⚠️ 相关知识：`ondelete` 与 `cascade` 的两层分工、10 组矩阵实测 → [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6a
+> 📍 原始位置：[src/app/models.py](../src/app/models.py) 的 `Conversation.calls` 与 `LlmCall.conversation_id`
+> ⚠️ 相关知识：`ondelete` 与 `cascade` 的两层分工、10 组矩阵实测 → [stage1-fastapi.md](../notes/stage1-fastapi.md) §10.6a
 
 ---
 
@@ -310,7 +314,7 @@
 | ⭐ 判据 | **删掉这句注释，读者会不会写错代码？会 → 留；不会 → 挪走。**<br>**注释是「防错」，不是「教学」** —— 代码里塞教学内容的后果是学习者反而不读了 |
 | 📌 硬约束 | 单块连续注释 **≤ 4 行**；docstring 的「为什么」段 **≤ 3 行** |
 
-> 📍 原始位置：[工程规范与协作约定.md](../../工程规范与协作约定.md) §4.4c
+> 📍 原始位置：[ai-collaboration.md](ai-collaboration.md) §4.4c
 
 ---
 
@@ -325,7 +329,7 @@
 | **重审条件** | —— |
 | ⭐ 为什么分家 | **代码注释的读者在编辑器里**（等宽字体下彩色 emoji 宽度不齐、干扰对齐）；**md 的读者在渲染视图里**（emoji 是有效的层级扫读提示） |
 
-> 📍 原始位置：[工程规范与协作约定.md](../../工程规范与协作约定.md) §4.4b；[.github/copilot-instructions.md](../../.github/copilot-instructions.md) §三 6b
+> 📍 原始位置：[ai-collaboration.md](ai-collaboration.md) §4.4b；[.github/copilot-instructions.md](../.github/copilot-instructions.md) §三 6b
 
 ---
 
@@ -361,7 +365,7 @@
 | ⚠️ **实测订正** | 「进程崩溃时 `pending` 会留在库里」**是错的**：📎 强杀 uvicorn 后 `llm_calls = []`。`flush()` 只发 SQL、事务未提交，进程一死就被 SQLite 回滚。⭐ **`flush` ≠ 持久化，想扛崩溃必须 `commit`**（待办 #42：流开始前用独立会话 `commit` 一次） |
 | ⭐ **反面判据** | **在「已被取消」的上下文里做任何 `await` 写入都不可靠**，包 `shield` 也一样 |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6b-3（错误方案与推翻过程）+ §10.6b-4（正确方案）；[src/app/api/app.py](../../src/app/api/app.py) `event_source`
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.6b-3（错误方案与推翻过程）+ §10.6b-4（正确方案）；[src/app/api/app.py](../src/app/api/app.py) `event_source`
 
 ### ⚠️ 这一条被改过两次，为什么留着
 
@@ -430,7 +434,7 @@
 
 ⭐⭐ **「我能不能知道花了多少」和「我能不能不让它花」是两个系统。别指望记账去防攻击。**
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6b-4（两阶段记账）；相关待办 [#37](roadmap.md) 速率限制、[#42](roadmap.md) `aborted` 行 token 估算
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.6b-4（两阶段记账）；相关待办 [#37](roadmap.md) 速率限制、[#42](roadmap.md) `aborted` 行 token 估算
 
 ---
 
@@ -506,7 +510,7 @@
 | `total` 差 2（翻页期间别人删了） | 🟡 用户看不出，刷新就对了 |
 | **漏掉一个对话** | 🔴 用户永远不知道它存在过 |
 
-⭐⭐ **这正是 [工程规范 §7.0c](../../工程规范与协作约定.md) 那张「可以让步 vs 绝不能让步」表的直接应用。**
+⭐⭐ **这正是 [工程规范 §7.0c](ai-collaboration.md) 那张「可以让步 vs 绝不能让步」表的直接应用。**
 项目定位是**产品**，不是 demo —— 数据正确性属于绝不能让步的一栏。
 
 ### ⭐ 为什么不做纯 offset（即使它实现最简单）
@@ -537,7 +541,7 @@
 | **`limit` 设上限**（`le=100`） | 客户端传 `limit=1000000` 等于没分页 |
 | **`total` 与 `items` 长度区分清楚** | 📎 `total` 是「命中总数」，不是本页条数 |
 
-> 📍 原始位置：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §10.6d；相关待办 [#25](roadmap.md) 分页、[#39](roadmap.md) 形状统一
+> 📍 原始位置：[stage1-fastapi.md](../notes/stage1-fastapi.md) §10.6d；相关待办 [#25](roadmap.md) 分页、[#39](roadmap.md) 形状统一
 
 ---
 
@@ -551,7 +555,7 @@
 | **代价** ⚠️ | ① 配置写错时**服务完全起不来**（连 `/health` 都没有），本地残留一个环境变量就会"莫名崩" → 所以 `ValueError` 文案必须写清原因；② 放弃了 B 的"服务总能起"；③ 将来若要线上临时开 traceback 排障，得另加显式逃生阀 |
 | **重审条件** | 真需要「线上临时开 traceback」时 → 加显式逃生阀 + 日志告警（**不允许**退回静默纠正的 B） |
 
-> 📍 相关：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §11b、待办 #28（已关闭）、[决策 5](#5-三种错误形状并存暂不统一)（错误形状）
+> 📍 相关：[stage1-fastapi.md](../notes/stage1-fastapi.md) §11b、待办 #28（已关闭）、[决策 5](#5-三种错误形状并存暂不统一)（错误形状）
 
 ---
 
@@ -565,7 +569,7 @@
 | **代价** ⚠️ | ① **丢了客户端 IP** —— access 日志原本有，现在只能靠中间件那行（新增待办 #56）；② 维护两个调用点，漏一处就出现格式不一致；③ `log_config=None` 等于放弃 uvicorn 的 `--log-config` 能力；④ JSON 结构化与轮转仍未做（#51） |
 | **重审条件** | 需要按客户端 IP 排查 / 限流分析时 → 把 `request.client.host` 加进中间件那行（**不要**重新打开 `uvicorn.access`，否则又变两行）；接入日志平台时 → 换 JSON formatter |
 
-> 📍 相关：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §11c、待办 #7（已关闭）/ #51（拆分）/ #56（新增）
+> 📍 相关：[stage1-fastapi.md](../notes/stage1-fastapi.md) §11c、待办 #7（已关闭）/ #51（拆分）/ #56（新增）
 
 ---
 
@@ -579,7 +583,7 @@
 | **代价** ⚠️ | ① **多一处「码 ↔ 状态码」两处维护**：`AppError` 的码要同时出现在调用点与 `_STATUS_BY_CODE`，拼错会静默降级 400（待办 **#58**）；② 交给框架的错误（`/nope`、405）只能共用状态码兜底码，无法细分；③ 422 的 `details` 只挑 `loc/msg/type`，**丢掉了 `input`**（有意：防止回显用户内容）；④ 文案改成了全角冒号（`模型不存在：xxx`），与前端若有硬编码匹配需同步 |
 | **重审条件** | ① 客户端需要区分「同状态码的多种原因」→ 一律改用 `AppError` 自定义码，不再依赖状态码兜底；② 接入 OpenAPI 生成错误文档时 → 考虑把码定义成 `StrEnum`（即待办 #58 的选项 ③） |
 
-> 📍 相关：[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §11d、[decisions 5](#5-三种错误形状并存暂不统一)（本条是其重审后的执行记录）、待办 #6（已关闭）/ #57 / #58
+> 📍 相关：[stage1-fastapi.md](../notes/stage1-fastapi.md) §11d、[decisions 5](#5-三种错误形状并存暂不统一)（本条是其重审后的执行记录）、待办 #6（已关闭）/ #57 / #58
 
 ---
 
@@ -593,7 +597,7 @@
 | **代价** ⚠️ | ① **跳过 = 客户端永久看到缺字的回答且不知道缺了**（📎 实测「大家好」→「大好」，流里零信号）→ 待办 **#69**<br>② ~~🔴 **三个 `continue` 排在 usage 处理之前**会把同一帧的 `usage` 一起丢掉~~ ✅ **已修**（12d-3a，2026-11-02）：`record_usage` 提到三个 `continue` 之前，`yield usage` 留原位 → 帧序未变。原实测 3 组全部 `pending 0/0/0`，待办 **#70 已关闭**<br>③ `usage` 非 dict 静默变 `{}`，与「上游确实没给 usage」**不可区分**<br>④ 中止会丢掉本来能拿到的后半段（但那份内容已不可信）<br>⑤ 跳过这一档的账单停在 `pending`，与「进程中途崩了」分不开（待办 **#68**） |
 | **重审条件** | ① 有真实用户报「回答缺字」→ 必须给客户端一个「丢过帧」的信号（#69 的选项 ②/③）<br>② **12d-3 定账单语义时**：同时定掉 #70（usage 记账必须在三个 `continue` 之前）与 #68（零内容也要有明确状态）<br>③ 上游换协议 / 上多模态（`content` 变成数组成为正常形态）→ 「结构错跳过」这档要重写 |
 
-> 📍 相关：[architecture-map.md](architecture-map.md) §8.4b（四类坏法 → 两种处置的对照表）、[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §12.5d（判据与两次追问的逐条回应）、待办 #68 / #69 / #70
+> 📍 相关：[architecture.md](architecture.md) §8.4b（四类坏法 → 两种处置的对照表）、[stage1-fastapi.md](../notes/stage1-fastapi.md) §12.5d（判据与两次追问的逐条回应）、待办 #68 / #69 / #70
 
 ---
 
@@ -607,7 +611,7 @@
 | **代价** ⚠️ | ① 同状态值 `completed` 现在有两种「内容体验」（正常 / 内容空），客户端若不读 error 帧会以为拿到了答案（但流里本来就发了 `STREAM_NO_CONTENT`）<br>② `StrEnum` 只防**成员名**拼错，**不防值拼错** —— 📎 学习者的 `PENDING = "pengding"` 四道门全绿放过，必须另加断言兜住<br>③ 列类型仍是 `String(20)`，数据库**不做值域约束**：绕过 ORM 直接写 SQL 仍能写垃圾值 |
 | **重审条件** | ① 出现「内容空」的经营指标需求（如空回答率）→ 那时加独立列或指标，**不要**塞回 `status`<br>② 有待办 **#58**（错误码 `StrEnum`）落地时 → 两处枚举风格统一<br>③ 上 PostgreSQL 时 → 可评估换成原生 `ENUM` 类型（有值域约束，但加值要 `ALTER TYPE`） |
 
-> 📍 相关：[architecture-map.md](architecture-map.md) §12.1（四态流转图）、[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §12.5f、待办 #68（已关闭）/ #58
+> 📍 相关：[architecture.md](architecture.md) §12.1（四态流转图）、[stage1-fastapi.md](../notes/stage1-fastapi.md) §12.5f、待办 #68（已关闭）/ #58
 
 ---
 
@@ -621,7 +625,7 @@
 | **代价** ⚠️ | ① 请求会话被**中途提交**，不再是一个原子事务 —— 目前该事务里只有账单行（和一个只读的 `require_conversation`），所以没有业务影响；**将来若在同一请求里写业务数据，必须重新审视这条**<br>② 📎 「usage 处改回 flush」这个变异**测试抓不到**（最终状态相同，只是锁窗口变长）→ 靠注释守，不靠测试<br>③ `pending` 行现在真的会留下（进程崩溃后也在），需要有人定期看它 —— 这正是它存在的意义，但也要有对账流程 |
 | **重审条件** | ① 同一个请求里出现**第二处写操作**（如落 `messages` 表）→ 必须重新划分事务边界，或改回独立 session<br>② 上 PostgreSQL 后可以重新评估（MVCC 下读不挡写，锁的问题小得多，但连接仍会被占住 → 见 #59）<br>③ 引入消息队列 / 异步落账时 → 走 C |
 
-> 📍 相关：决策 20（两阶段记账本身）、[architecture-map.md](architecture-map.md) §8.6（时序图上的 ⑥ / ⑪）、[learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §12.7b、待办 #73 / #59 / #42
+> 📍 相关：决策 20（两阶段记账本身）、[architecture.md](architecture.md) §8.6（时序图上的 ⑥ / ⑪）、[stage1-fastapi.md](../notes/stage1-fastapi.md) §12.7b、待办 #73 / #59 / #42
 
 ---
 
@@ -631,7 +635,7 @@
 |---|---|
 | **背景** | `_request` 对所有非 2xx 都抛同一个 `UPSTREAM_BAD_STATUS` → 一律 502。后果：上游 429（限流）与上游 400（模型名错）表现成同一件事，客户端以为「网关坏了可以重试」→ **重试风暴**，每次重试都**真实计费**；监控上还会把我们自己被限流记成上游故障。📎 实测发现 `Retry-After` 头从头到尾没被读过 |
 | **方案对比** | **A** 只拆 429（最小改动）<br>**B** 按「客户端能不能自己修好」分五档<br>**C** 上游 4xx 原样透传（400→400、422→422） |
-| **决定** | **B**（学习者 2026-11-04 拍板）。映射见 [architecture-map §7.4b](architecture-map.md)：429→**429**（透传 `Retry-After`）、413→**413**、400 含超长标记→**413**、401/403→502 `UPSTREAM_AUTH_FAILED`、其它 4xx→502 `UPSTREAM_REJECTED`、5xx/3xx→502 `UPSTREAM_BAD_STATUS`。为此 `AppError` 增加**可选 `headers`**（`_error_response` **合并**而非覆盖 `X-Request-ID`） |
+| **决定** | **B**（学习者 2026-11-04 拍板）。映射见 [architecture.md §7.4b](architecture.md)：429→**429**（透传 `Retry-After`）、413→**413**、400 含超长标记→**413**、401/403→502 `UPSTREAM_AUTH_FAILED`、其它 4xx→502 `UPSTREAM_REJECTED`、5xx/3xx→502 `UPSTREAM_BAD_STATUS`。为此 `AppError` 增加**可选 `headers`**（`_error_response` **合并**而非覆盖 `X-Request-ID`） |
 | **代价** ⚠️ | ① **业务码从 3 个变 6 个**，客户端要能处理 429/413（不处理也不会崩，只是拿不到「该怎么退避」这个信息）<br>② **400 靠 body 里的字符串认**：`context_length_exceeded` / `maximum context length` 来自 OpenAI 兼容规范，**本机没有真触发过上游 400**（没花那个钱验证）→ 上游改文案就失效，但失效只是退回 `UPSTREAM_REJECTED`（502），**不会更糟**<br>③ `AppError` 多了 `headers` 字段，**开了「错误也能带响应头」这个口子** —— 以后要克制，别把业务数据往头里塞<br>④ **401 与 403 合并成一个 code**（`UPSTREAM_AUTH_FAILED`）：两者语义不同（401 = 凭据不对 / 403 = 凭据不够，📎 RFC 9110 §15.5.2 / §15.5.4），但对我们都只有运维能修，拆开也不会有人据此做不同动作 —— 要区分就看日志里上游 body |
 | **重审条件** | ① 真触发一次上游 400（发超长消息）→ 用真实 body 校准 marker<br>② 接入第二家上游、错误语义不同时 → 把 `_code_for_status` 抽成 provider 接口（也是决策 6 的重审条件）<br>③ 有了真实用户后如果 429 频繁 → 该做的是「排队/限流」（待办 #37），不是继续调映射<br>④ 有了指标（#66）之后，如果「我们的 bug」和「上游拒绝我们」需要分开告警 → 把 `UPSTREAM_REJECTED` 从 502 改成 500（**只需改 `_STATUS_BY_CODE` 一个字典项**） |
 
@@ -649,6 +653,18 @@
 
 ---
 
+## 31. 文档分层：`docs/` 与 `notes/`
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 2026-11-14 · 台账 6 个文件互相重复：流水有两套（roadmap 的 79 行工作单元表 + learning-log 的 128 条流水）、待办被 4 个文件复述、踩坑有 5 份「常见坑总表」、决策在 3 处出现；`study_notes/` 里「项目」与「学习」混装，README 又是「展示面 + 开发笔记」混装 |
+| **方案对比** | **A 维持 `study_notes/project` + `study_notes/learning`**：改动最小，但「换个项目还对吗」这条判据只能靠记忆执行<br>**B 平铺 `docs/` + `notes/`**：4 个入口（`README` / `CONTRIBUTING` / `docs/` / `notes/`），将来 `notes/` 可整目录迁出<br>**C 一个巨型 `DEVLOG.md` 装下决策 + 待办 + 流水**：入口最少，但单文件逼近 GitHub 的渲染上限，改一行要读全文 |
+| **决定** | **B + DEVLOG 只引用编号**：`docs/` 只放「这个项目」的事实，`notes/` 只放「换项目也成立」的知识；`DEVLOG.md` 是唯一时间线（§一 工作单元台账 / §二 过程记录 / §三 踩坑 `K<n>`），决策与待办各自保留正文，DEVLOG 只写 `[决策 N]` / `[#N]` |
+| **代价** ⚠️ | ① 目录搬家导致 **762 个相对链接**需要重算（已用脚本处理，校验 **0 broken**）；② 历史行里的旧路径（`study_notes/...`）**不改写** —— 那是历史事实，改了等于造假；③ 边界靠每次收口自觉维护（判据写进 `CONTRIBUTING.md` §6）；④ 旧规范里与 `CONTRIBUTING` 重复的三章改为指针，**内容搬到 `CONTRIBUTING` 而非删除** |
+| **重审条件** | ① `notes/` 里开始出现「我们决定…」→ 边界失效，改判据；② 单个 `docs/` 文件超过 300KB → 按阶段再拆；③ 准备公开简历仓库时 → 触发[决策 1](#1-练习项目与学习笔记共用一个-git-仓库)的仓库拆分（`notes/` 整目录迁出） |
+
+---
+
 ## 待定 / 需要以后拍板的
 
 > 这些**还没定**，列在这里避免忘。定了之后移到上面。
@@ -661,7 +677,7 @@
 | **认证 / 鉴权** | 学习阶段没有多用户 | **阶段 3 部署前必须做**（待办 #36） |
 | **速率限制** | 同上，且要防"循环刷爆余额" | **阶段 3 部署前**（待办 #37） |
 | **是否引入 Alembic 迁移** | 现在删库重建够用 | 有真实数据不能删时 |
-| **拆出独立的简历代码仓库** | 见 [决策 1](#1-练习项目与学习笔记共用一个-git-仓库) | 准备公开时 |
+| **拆出独立的简历代码仓库** | 见 [决策 1](#1-练习项目与学习笔记共用一个-git-仓库)；目录已分层（[决策 31](#31-文档分层docs-与-notes)），只剩仓库拆分 | 准备公开时 |
 
 ---
 
@@ -672,8 +688,8 @@
 | **要改某个已定的决策** | 先读这一条的「代价」和「重审条件」；满足条件才改，改完**新增一条记录**（不要直接改旧条目） |
 | **要做新的业务/架构决定** | 按五段格式追加一条，编号递增，更新顶部「最后更新」和索引表 |
 | **查「为什么当时这么定」** | 用索引表按关键词扫 |
-| **查语法 / 实测数据** | **不看这个文件** → [learning/stage1-fastapi.md](../learning/stage1-fastapi.md) / [learning/tools-reference.md](../learning/tools-reference.md) |
+| **查语法 / 实测数据** | **不看这个文件** → [stage1-fastapi.md](../notes/stage1-fastapi.md) / [tools-reference.md](../notes/tools-reference.md) |
 
-⚠️ **和路线图的关系**：路线图（[roadmap.md](roadmap.md)）记的是**「做到哪了」**，本文件记的是**「为什么这么做」**。两者互补，**不要互相搬内容**。
+⚠️ **和开发日志的关系**：开发日志（[DEVLOG.md](DEVLOG.md)）记的是**「做到哪了、怎么做到的」**，待办（[todos.md](todos.md)）记**「还剩什么」**，本文件记的是**「为什么这么做」**。两者互补，**不要互相搬内容**。
 
 ⚠️ **和学习笔记的关系**：笔记记**「知识点 + 实测数据」**（如"索引为什么是 O(log n)"），本文件**只记决定**（"我们决定给外键建索引"）。决定里引用笔记，笔记里不用反向引用决定。

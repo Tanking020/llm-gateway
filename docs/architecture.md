@@ -4,7 +4,7 @@
 > 谁调用谁、请求穿过哪些层、响应体有哪些字段、错误码长什么样、SSE 有哪几种帧、配置从哪来、日志树是什么形状。
 >
 > **不写**：为什么这么设计（→ [decisions.md](decisions.md)）、做到哪了（→ [roadmap.md](roadmap.md)）、
-> 原理推导与实测过程（→ [../learning/stage1-fastapi.md](../learning/stage1-fastapi.md)）。
+> 原理推导与实测过程（→ [stage1-fastapi.md](../notes/stage1-fastapi.md)）。
 > 这里只放**结论的图形化**，每张图都能在代码里对上。
 
 ---
@@ -88,11 +88,11 @@ Middleware(CORSMiddleware, allow_origins=[...5173...], allow_credentials=True,
 |---|---|---|
 | ① ServerErrorMiddleware | **FastAPI 自动** | — |
 | ② ExceptionTelemetryMiddleware | FastAPI 自动 | — |
-| ③ BaseHTTPMiddleware（含 `add_request_id`） | **我们**：`@app.middleware("http")` | [app.py](../../src/app/api/app.py) |
-| ④ CORSMiddleware | **我们**：`app.add_middleware(CORSMiddleware, ...)` | [app.py](../../src/app/api/app.py) |
-| ⑤ ExceptionMiddleware | **FastAPI 自动**（handler 表由 `register_exception_handlers(app)` 填） | [errors.py](../../src/app/errors.py) |
+| ③ BaseHTTPMiddleware（含 `add_request_id`） | **我们**：`@app.middleware("http")` | [app.py](../src/app/api/app.py) |
+| ④ CORSMiddleware | **我们**：`app.add_middleware(CORSMiddleware, ...)` | [app.py](../src/app/api/app.py) |
+| ⑤ ExceptionMiddleware | **FastAPI 自动**（handler 表由 `register_exception_handlers(app)` 填） | [errors.py](../src/app/errors.py) |
 | ⑥ AsyncExitStackMiddleware | FastAPI 自动 | — |
-| ⑦ APIRouter → 路由函数 | **我们**：`@app.get/@app.post/...` | [app.py](../../src/app/api/app.py) |
+| ⑦ APIRouter → 路由函数 | **我们**：`@app.get/@app.post/...` | [app.py](../src/app/api/app.py) |
 
 ### 1.2 「注册顺序」与「层的顺序」是反的
 
@@ -239,7 +239,7 @@ POST /v1/chat/stream
 顺带提供"可被替换的接缝"（这正是测试能绕过真库与真上游的原因，见 §11.2）。
 
 ⚠️ 四样资源各自**占用多久**不写在这里 —— 连接池那一半的唯一出处是
-[tests/README.md](../../tests/README.md) §4.2，闸门见 §4.7。
+[tests/README.md](../tests/README.md) §4.2，闸门见 §4.7。
 📌 闸门这一行有个反直觉点：**槽位持有到「整条流结束」**，比 `DbDep` 还长一截 ——
 而这一点是**要的**（"同时在生成的上游调用数"本来就该按整条流算）；同一个 `yield` 机制在 `get_db` 那里却是缺陷（#59）。
 
@@ -627,7 +627,7 @@ content-type: application/json
 
 📌 **为什么「我们自己的错」给 502 而不是 500**（学习者 2026-11-04 提出）：
 语义上 500 也讲得通（确实是我们拼错了 body），选 502 只为**保住 500 的独占含义** ——
-现在 500 只有一种来源：我们自己代码抛了未处理异常（[errors.py](../../src/app/errors.py) 的兜底 handler）。
+现在 500 只有一种来源：我们自己代码抛了未处理异常（[errors.py](../src/app/errors.py) 的兜底 handler）。
 混进去之后，「我们的 bug」和「依赖方不给面子」在告警上就分不开了，而 #66（无指标）还没做。
 另：Step 13 会在前面挂反向代理，`nginx` 自己用 **502/504** 表示上游异常，沿用同一个桶只需一条阈值。
 改起来是一行（`_STATUS_BY_CODE` 的一个字典项），已列进决策 29 的重审条件。
@@ -675,15 +675,15 @@ content-type: application/json
 
 | `code` | 谁产生 | 位置 | 出口 |
 |---|---|---|---|
-| `LAST_MESSAGE_NOT_USER` | `ensure_last_message_is_user` | [app.py:280](../../src/app/api/app.py) | 400 envelope |
-| `MODEL_NOT_FOUND` | `get_model` | [app.py:259](../../src/app/api/app.py) | 404 envelope |
-| `CONVERSATION_NOT_FOUND` | `_conversation_not_found`（**5 个端点共用这一处**） | [app.py:293](../../src/app/api/app.py) | 404 envelope |
-| `DB_UNAVAILABLE` | `health_ready` | [app.py:225](../../src/app/api/app.py) | 503 envelope |
-| `UPSTREAM_UNREACHABLE`（L1） | `LlmClient._request` | [llm_client.py:172](../../src/app/llm_client.py) | 502 envelope |
-| `UPSTREAM_BAD_STATUS`（L2） | `LlmClient._request` | [llm_client.py:182](../../src/app/llm_client.py) | 502 envelope |
-| `UPSTREAM_MALFORMED`（L3） | `LlmClient.list_models` | [llm_client.py:135](../../src/app/llm_client.py) | 502 envelope |
-| `STREAM_NO_CONTENT` | 零内容保护段 | [app.py:762](../../src/app/api/app.py) | ⚠️ **200 的流里的一帧**，不是状态码 |
-| `STREAM_FAILED` | `except Exception` 分支 | [app.py:795](../../src/app/api/app.py) | ⚠️ 同上 |
+| `LAST_MESSAGE_NOT_USER` | `ensure_last_message_is_user` | [app.py:280](../src/app/api/app.py) | 400 envelope |
+| `MODEL_NOT_FOUND` | `get_model` | [app.py:259](../src/app/api/app.py) | 404 envelope |
+| `CONVERSATION_NOT_FOUND` | `_conversation_not_found`（**5 个端点共用这一处**） | [app.py:293](../src/app/api/app.py) | 404 envelope |
+| `DB_UNAVAILABLE` | `health_ready` | [app.py:225](../src/app/api/app.py) | 503 envelope |
+| `UPSTREAM_UNREACHABLE`（L1） | `LlmClient._request` | [llm_client.py:172](../src/app/llm_client.py) | 502 envelope |
+| `UPSTREAM_BAD_STATUS`（L2） | `LlmClient._request` | [llm_client.py:182](../src/app/llm_client.py) | 502 envelope |
+| `UPSTREAM_MALFORMED`（L3） | `LlmClient.list_models` | [llm_client.py:135](../src/app/llm_client.py) | 502 envelope |
+| `STREAM_NO_CONTENT` | 零内容保护段 | [app.py:762](../src/app/api/app.py) | ⚠️ **200 的流里的一帧**，不是状态码 |
+| `STREAM_FAILED` | `except Exception` 分支 | [app.py:795](../src/app/api/app.py) | ⚠️ 同上 |
 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` | 路由未命中 / 方法不对（框架抛） | `errors.py` 的 `_CODE_BY_STATUS` | envelope |
 | `VALIDATION_ERROR` | pydantic 校验失败 | `errors.py` | 422 envelope |
 | `INTERNAL_ERROR` | 任何未捕获异常 | `errors.py` | 500 envelope |
@@ -910,7 +910,7 @@ recorded = True; call.status = "completed"
 | ⑥ 写锁 + ⑧ 并发（**#73**） | 并发 4 条流 → 后 3 条 TTFB 1.33s / 1.98s；并发 6 条 + 单流 2s → **3 条拿到 200 + 0 帧** | 每条单独跑都正常；`TestClient` 也全绿（无背压） |
 | ⑧ 跳过 + 无提示（**#69**） | 客户端看到「大好」，以为是模型说错 | 「模型答得不对」和「我们丢了它的话」在客户端一模一样 |
 
-📎 相关实测见 [../learning/stage1-fastapi.md](../learning/stage1-fastapi.md) §12.5c（帧序）、§12.5d（坏帧处置）、
+📎 相关实测见 [stage1-fastapi.md](../notes/stage1-fastapi.md) §12.5c（帧序）、§12.5d（坏帧处置）、
 §12.5f（账单四态）、§12.7b（并发串行化）。
 
 ---
@@ -985,14 +985,14 @@ APP_ENV=prod + DEBUG=true
 
 | 字段 | 谁读 | 怎么读 | 生效时机 |
 |---|---|---|---|
-| `app_env` | [api/app.py](../../src/app/api/app.py)（`_DOCS_ENABLED`） | 模块级直读 | **import 时**（决定 `/docs` 开不开） |
-| `debug` | [api/app.py](../../src/app/api/app.py)（`FastAPI(debug=…)`）、[__main__.py](../../src/app/__main__.py)（`reload=`） | 直读 | import 时 / 启动时 |
-| `host` / `port` | [__main__.py](../../src/app/__main__.py) | 直读 | **只走 `python -m app` 才生效**（`uvicorn app.api.app:app` 会绕过） |
-| `database_url` | [database.py](../../src/app/database.py) | 直读（建 engine） | import 时；**一个进程只能绑一个库** |
-| `llm_base_url` / `request_timeout` / `llm_api_key` | [llm_client.py](../../src/app/llm_client.py)（`create_llm_client`） | 直读 | lifespan 启动段造 client |
+| `app_env` | [api/app.py](../src/app/api/app.py)（`_DOCS_ENABLED`） | 模块级直读 | **import 时**（决定 `/docs` 开不开） |
+| `debug` | [api/app.py](../src/app/api/app.py)（`FastAPI(debug=…)`）、[__main__.py](../src/app/__main__.py)（`reload=`） | 直读 | import 时 / 启动时 |
+| `host` / `port` | [__main__.py](../src/app/__main__.py) | 直读 | **只走 `python -m app` 才生效**（`uvicorn app.api.app:app` 会绕过） |
+| `database_url` | [database.py](../src/app/database.py) | 直读（建 engine） | import 时；**一个进程只能绑一个库** |
+| `llm_base_url` / `request_timeout` / `llm_api_key` | [llm_client.py](../src/app/llm_client.py)（`create_llm_client`） | 直读 | lifespan 启动段造 client |
 | `llm_model` | `chat` / `chat_stream` | ⭐ **经 `SettingsDep` 注入**（`config.llm_model`） | 每请求，且**可被 `dependency_overrides` 换掉** |
-| `app_name` | 只有 [main.py](../../src/app/main.py) 打印 | 直读 | ⚠️ 服务自己的 `FastAPI(title=…)` 是**硬编码**，不读这个字段 |
-| `max_concurrent_upstream_calls` / `upstream_queue_timeout` | 🟡 [api/deps.py](../../src/app/api/deps.py)（`get_upstream_slot`，**12g-2 才落地**） | 直读 | 每请求 |
+| `app_name` | 只有 [main.py](../src/app/main.py) 打印 | 直读 | ⚠️ 服务自己的 `FastAPI(title=…)` 是**硬编码**，不读这个字段 |
+| `max_concurrent_upstream_calls` / `upstream_queue_timeout` | 🟡 [api/deps.py](../src/app/api/deps.py)（`get_upstream_slot`，**12g-2 才落地**） | 直读 | 每请求 |
 | `max_tokens_ceiling` | 🟡 `chat` / `chat_stream` 路由层（**12g-3 才落地**） | 待定（倾向于经 `SettingsDep`，这样测试能换） | 每请求 |
 
 ⭐ 判据：**只有 `llm_model` 走依赖注入**，所以测试能换的也只有它；
@@ -1075,7 +1075,7 @@ tests/
       └─ 护栏上限 ──────────── limits（闸门 503 / 槽位归还 / max_tokens / 输入长度）
 ```
 
-📌 **用例数 / 每个文件测什么 / 要不要真服务** —— 唯一出处是 [tests/README.md](../../tests/README.md) §1。
+📌 **用例数 / 每个文件测什么 / 要不要真服务** —— 唯一出处是 [tests/README.md](../tests/README.md) §1。
 本文件不抄一份（抄了就会有两处数字，改一处必漏另一处）。
 
 ### 11.2 依赖注入图（fixture 与 override）
@@ -1119,8 +1119,8 @@ tests/
 
 | 坑 | 一句话 | 细节 |
 |---|---|---|
-| `raise_server_exceptions` 默认 `True` | 要在断言里拿到 **500 的响应体**，必须 `TestClient(app, raise_server_exceptions=False)`；**但别改共享 fixture**，否则所有真 bug 都退化成"500 响应" | [tests/README.md](../../tests/README.md) §5、`test_errors.py::test_500_hides_internals` |
-| `TestClient` 没有 **TCP 背压** | 并发 / 池占用问题在 `TestClient` 下**复现不出来**（`checkedout` 峰值 0 vs 真 uvicorn 6） | [tests/README.md](../../tests/README.md) §5 #1 |
+| `raise_server_exceptions` 默认 `True` | 要在断言里拿到 **500 的响应体**，必须 `TestClient(app, raise_server_exceptions=False)`；**但别改共享 fixture**，否则所有真 bug 都退化成"500 响应" | [tests/README.md](../tests/README.md) §5、`test_errors.py::test_500_hides_internals` |
+| `TestClient` 没有 **TCP 背压** | 并发 / 池占用问题在 `TestClient` 下**复现不出来**（`checkedout` 峰值 0 vs 真 uvicorn 6） | [tests/README.md](../tests/README.md) §5 #1 |
 
 ---
 
@@ -1212,11 +1212,11 @@ POST /v1/conversations
 
 | 事实 | 值 | 位置 |
 |---|---|---|
-| 进程数 | **1**（`uvicorn.run(...)` 没传 `workers`；`reload` 只在 `debug=True` 时开） | [__main__.py](../../src/app/__main__.py) |
+| 进程数 | **1**（`uvicorn.run(...)` 没传 `workers`；`reload` 只在 `debug=True` 时开） | [__main__.py](../src/app/__main__.py) |
 | 监听 | `settings.host:settings.port`（默认 `127.0.0.1:8000`） | 同上 |
-| 路由条数 | dev **17** / prod **13**（4 条文档路由被 `docs_url=None` 关掉） | [app.py](../../src/app/api/app.py) |
-| 数据库池 | `AsyncAdaptedQueuePool`：`size=5` + `max_overflow=10` = **15**，等连接 `pool_timeout=30s` | [database.py](../../src/app/database.py) |
-| 上游 HTTP 池 | `max_connections=100`（httpx 默认 `Limits`） | [llm_client.py](../../src/app/llm_client.py) |
+| 路由条数 | dev **17** / prod **13**（4 条文档路由被 `docs_url=None` 关掉） | [app.py](../src/app/api/app.py) |
+| 数据库池 | `AsyncAdaptedQueuePool`：`size=5` + `max_overflow=10` = **15**，等连接 `pool_timeout=30s` | [database.py](../src/app/database.py) |
+| 上游 HTTP 池 | `max_connections=100`（httpx 默认 `Limits`） | [llm_client.py](../src/app/llm_client.py) |
 | SQLite 忙等 | `busy_timeout = 5000ms` | SQLite/`sqlite3` 默认 |
 | 部署产物 | **CI 已有**（`.github/workflows/ci.yml`，push/PR 跑四道门）；**没有** Dockerfile / nginx | 待办 #49 |
 
@@ -1249,7 +1249,7 @@ POST /v1/conversations
 | **L0 上游配额** | 未知（DeepSeek 账号的 RPM / TPM / 余额） | 供应商 | ❌ 只能被动挨 429 | 外部 |
 | **L1 我们的闸门** | **4** 条流 / 进程 | 我们自己 | ✅ 改 `.env` | `settings.max_concurrent_upstream_calls` |
 | **L2 上游 HTTP 连接池** | **100**（keepalive 20） | httpx 默认 | ✅ 但没必要 | `create_llm_client()` |
-| **L3 数据库连接池** | **15**（`size=5` + `max_overflow=10`），等连接 `pool_timeout=30s` | SQLAlchemy 默认 | ✅ | [database.py](../../src/app/database.py)（**没写参数 = 用默认值**） |
+| **L3 数据库连接池** | **15**（`size=5` + `max_overflow=10`），等连接 `pool_timeout=30s` | SQLAlchemy 默认 | ✅ | [database.py](../src/app/database.py)（**没写参数 = 用默认值**） |
 | **L4 SQLite 写者** | **1**（全库同时只能有一个写事务），忙等 `busy_timeout=5000ms` | SQLite 的锁模型 | ❌ 换 PG 才行（决策 13） | `app.db` |
 
 #### 13.3b ⭐⭐ 判据：不看"上限是多少"，看"顶住时客户端看到什么"
@@ -1340,35 +1340,35 @@ POST /v1/conversations
 | # | 决策一句话 | 代码落点 | 钉住它的测试 |
 |---|---|---|---|
 | 1 | 项目与笔记同仓库 | 仓库根 | — |
-| 2 | `app` + `src/` 布局 | [pyproject.toml](../../pyproject.toml) `packages = ["src/app"]` | — |
+| 2 | `app` + `src/` 布局 | [pyproject.toml](../pyproject.toml) `packages = ["src/app"]` | — |
 | 3 | Docker 延后 | 未落地（#49） | — |
-| 4 | client 应用级共享 | [app.py:57](../../src/app/api/app.py) `lifespan`、[deps.py:40](../../src/app/api/deps.py) | `test_upstream.py`（间接：override 的正是这个接缝） |
-| 5 | 三种错误形状暂不统一 | 已被 #25 取代 → [errors.py:85](../../src/app/errors.py) | `test_errors.py`（7） |
-| 6 | 上游错误三层翻译 | [llm_client.py:147](../../src/app/llm_client.py)（L1/L2）、[:115](../../src/app/llm_client.py)（L3） | ✅ `test_adapter_http.py`（10，穿过 `MockTransport`） |
-| 7 | 流式用 SSE | [app.py:530](../../src/app/api/app.py) `SseResponse`、[:540](../../src/app/api/app.py) | `test_stream_frames.py`、`test_stream_consumes_fake_chunks` |
-| 8 | 业务规则抽成共用函数 | [app.py:263](../../src/app/api/app.py)、[:346](../../src/app/api/app.py) | `test_error_envelope[business_400]`、`test_stream_preflight_failure_changes_status_code` |
-| 9 | 请求级会话由 `get_db` 统一提交 | [deps.py:54](../../src/app/api/deps.py) | `test_create_then_get`（间接） |
-| 10 | 契约按用途分家（In / Patch / Out） | [schemas.py:121](../../src/app/schemas.py) / [:133](../../src/app/schemas.py) / [:180](../../src/app/schemas.py) | `test_conversations.py`（9） |
-| 11 | 标题规则抽成 `ConversationTitle` | [schemas.py:115](../../src/app/schemas.py) | `test_invalid_title_returns_422`（3 组）、`test_title_is_stripped` |
-| 12 | PATCH 拒绝空 body | [schemas.py:147](../../src/app/schemas.py)（`title` 必填） | ⚠️ **无**（3 组 422 打的是 POST） |
-| 13 | SQLite 起步、可切 PG | [config.py:60](../../src/app/config.py)、[database.py:26](../../src/app/database.py) | — |
-| 14 | 引擎模块级单例 | [database.py:26](../../src/app/database.py)、关闭段 [app.py:85](../../src/app/api/app.py) | `test_smoke.py`（间接：lifespan 跑过才有表） |
+| 4 | client 应用级共享 | [app.py:57](../src/app/api/app.py) `lifespan`、[deps.py:40](../src/app/api/deps.py) | `test_upstream.py`（间接：override 的正是这个接缝） |
+| 5 | 三种错误形状暂不统一 | 已被 #25 取代 → [errors.py:85](../src/app/errors.py) | `test_errors.py`（7） |
+| 6 | 上游错误三层翻译 | [llm_client.py:147](../src/app/llm_client.py)（L1/L2）、[:115](../src/app/llm_client.py)（L3） | ✅ `test_adapter_http.py`（10，穿过 `MockTransport`） |
+| 7 | 流式用 SSE | [app.py:530](../src/app/api/app.py) `SseResponse`、[:540](../src/app/api/app.py) | `test_stream_frames.py`、`test_stream_consumes_fake_chunks` |
+| 8 | 业务规则抽成共用函数 | [app.py:263](../src/app/api/app.py)、[:346](../src/app/api/app.py) | `test_error_envelope[business_400]`、`test_stream_preflight_failure_changes_status_code` |
+| 9 | 请求级会话由 `get_db` 统一提交 | [deps.py:54](../src/app/api/deps.py) | `test_create_then_get`（间接） |
+| 10 | 契约按用途分家（In / Patch / Out） | [schemas.py:121](../src/app/schemas.py) / [:133](../src/app/schemas.py) / [:180](../src/app/schemas.py) | `test_conversations.py`（9） |
+| 11 | 标题规则抽成 `ConversationTitle` | [schemas.py:115](../src/app/schemas.py) | `test_invalid_title_returns_422`（3 组）、`test_title_is_stripped` |
+| 12 | PATCH 拒绝空 body | [schemas.py:147](../src/app/schemas.py)（`title` 必填） | ⚠️ **无**（3 组 422 打的是 POST） |
+| 13 | SQLite 起步、可切 PG | [config.py:60](../src/app/config.py)、[database.py:26](../src/app/database.py) | — |
+| 14 | 引擎模块级单例 | [database.py:26](../src/app/database.py)、关闭段 [app.py:85](../src/app/api/app.py) | `test_smoke.py`（间接：lifespan 跑过才有表） |
 | 15~19 | 命名 / 完成度表述 / 注释边界 / 标记符号 /「一次对话」无状态 | 文档与约定；"无状态"体现在**没有 messages 表**（#35） | — |
-| 16 | 计费记录不跟着对话删 | [models.py:93](../../src/app/models.py) `ondelete="SET NULL"` + 关系上**不写** `cascade` | ⚠️ **无**（只在手工实验里验过） |
-| 20 | 两阶段记账 | [app.py:604](../../src/app/api/app.py)（`add` + `commit`）→ [:626](../../src/app/api/app.py)（`record_usage`） | `test_stream_accounting.py`（10） |
+| 16 | 计费记录不跟着对话删 | [models.py:93](../src/app/models.py) `ondelete="SET NULL"` + 关系上**不写** `cascade` | ⚠️ **无**（只在手工实验里验过） |
+| 20 | 两阶段记账 | [app.py:604](../src/app/api/app.py)（`add` + `commit`）→ [:626](../src/app/api/app.py)（`record_usage`） | `test_stream_accounting.py`（10） |
 | 21 | 防刷靠限流不靠记账 | 未落地（#37 #44） | — |
-| 22 | 游标分页为主 | [app.py:495](../../src/app/api/app.py) | `test_pagination_walks_two_pages` |
-| 23 | `prod` + `debug` 启动即崩 | [config.py:82](../../src/app/config.py) `_forbid_debug_in_prod` | ⚠️ **无**（手动实测过 `exit_code=1`） |
-| 24 | `dictConfig` 接管日志 | [logging_setup.py:15](../../src/app/logging_setup.py) | ⚠️ **无** |
-| 25 | 统一错误形状、自有代码只抛 `AppError` | [errors.py:85](../../src/app/errors.py)、[:107](../../src/app/errors.py) | `test_errors.py`（7，含 3 种 404 靠码分开） |
-| 26 | 坏帧三档处置 | [llm_client.py:63](../../src/app/llm_client.py)（语义层）+ `event_source` 的守卫 | `test_stream_adapter.py`（11）、`test_stream_frames.py`（12） |
-| 27 | 账单四态 + `StrEnum` | [models.py:62](../../src/app/models.py) | `test_status_enum_values_are_pinned` |
-| 28 | 两次写入都用 `commit` | [app.py:605](../../src/app/api/app.py)、[:626](../../src/app/api/app.py) | `test_concurrency.py`（4，串行化回归） |
+| 22 | 游标分页为主 | [app.py:495](../src/app/api/app.py) | `test_pagination_walks_two_pages` |
+| 23 | `prod` + `debug` 启动即崩 | [config.py:82](../src/app/config.py) `_forbid_debug_in_prod` | ⚠️ **无**（手动实测过 `exit_code=1`） |
+| 24 | `dictConfig` 接管日志 | [logging_setup.py:15](../src/app/logging_setup.py) | ⚠️ **无** |
+| 25 | 统一错误形状、自有代码只抛 `AppError` | [errors.py:85](../src/app/errors.py)、[:107](../src/app/errors.py) | `test_errors.py`（7，含 3 种 404 靠码分开） |
+| 26 | 坏帧三档处置 | [llm_client.py:63](../src/app/llm_client.py)（语义层）+ `event_source` 的守卫 | `test_stream_adapter.py`（11）、`test_stream_frames.py`（12） |
+| 27 | 账单四态 + `StrEnum` | [models.py:62](../src/app/models.py) | `test_status_enum_values_are_pinned` |
+| 28 | 两次写入都用 `commit` | [app.py:605](../src/app/api/app.py)、[:626](../src/app/api/app.py) | `test_concurrency.py`（4，串行化回归） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #16 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
 
-> 📌 用例总数与每个文件的用例数**不写在这张表里** —— 唯一出处是 [tests/README.md](../../tests/README.md) §1。
+> 📌 用例总数与每个文件的用例数**不写在这张表里** —— 唯一出处是 [tests/README.md](../tests/README.md) §1。
 
 ---
 
@@ -1378,10 +1378,10 @@ POST /v1/conversations
 
 | 常量 | 值 | 位置 |
 |---|---|---|
-| `HEADER_REQUEST_ID` | `X-Request-ID` | [constants.py](../../src/app/constants.py) |
-| `KNOWN_MODELS` | `["deepseek-flash", "deepseek-v4-pro"]` | [app.py](../../src/app/api/app.py) |
-| `ALLOWED_ORIGINS` | `["http://localhost:5173", "http://127.0.0.1:5173"]` | [app.py](../../src/app/api/app.py) |
-| `MAX_ERROR_BODY_CHARS` | `500` | [llm_client.py](../../src/app/llm_client.py) |
+| `HEADER_REQUEST_ID` | `X-Request-ID` | [constants.py](../src/app/constants.py) |
+| `KNOWN_MODELS` | `["deepseek-flash", "deepseek-v4-pro"]` | [app.py](../src/app/api/app.py) |
+| `ALLOWED_ORIGINS` | `["http://localhost:5173", "http://127.0.0.1:5173"]` | [app.py](../src/app/api/app.py) |
+| `MAX_ERROR_BODY_CHARS` | `500` | [llm_client.py](../src/app/llm_client.py) |
 
 ### 15.2 文件职责一句话
 
