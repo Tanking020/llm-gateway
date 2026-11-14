@@ -4,11 +4,11 @@
 
 >
 
-> 不写「为什么这么设计」（→ [decisions.md](../study_notes/project/decisions.md)）、
+> 不写「为什么这么设计」（→ [decisions.md](../docs/decisions.md)）、
 
-> 不写框架原理与推导（→ [stage1-fastapi.md](../study_notes/learning/stage1-fastapi.md)）、
+> 不写框架原理与推导（→ [stage1-fastapi.md](../notes/stage1-fastapi.md)）、
 
-> 不写「做到哪了」（→ [roadmap.md](../study_notes/project/roadmap.md)）。
+> 不写「做到哪了」（→ [roadmap.md](../docs/roadmap.md)）。
 
 >
 
@@ -16,10 +16,10 @@
 
 | 内容 | 唯一出处 |
 |---|---|
-| 每个用例的**答案与原理** | [self-check-questions.md](../study_notes/learning/self-check-questions.md) Step 12（第 1~17 题） |
-| 踩坑的**完整过程与实测** | [learning-log.md](../study_notes/learning/learning-log.md) 流水 + 踩坑记录 + 重要结论 |
-| 待办的**编号、现状、证据** | [roadmap.md](../study_notes/project/roadmap.md) |
-| 线上一族症状的**档期与过门判据** | [production-readiness.md](../study_notes/project/production-readiness.md) 门 1 |
+| 每个用例的**答案与原理** | [self-check-questions.md](../notes/self-check-questions.md) Step 12（第 1~17 题） |
+| 踩坑的**完整过程与实测** | [DEVLOG.md](../docs/DEVLOG.md) 流水 + 踩坑记录 + 重要结论 |
+| 待办的**编号、现状、证据** | [roadmap.md](../docs/roadmap.md) |
+| 线上一族症状的**档期与过门判据** | [production-readiness.md](../docs/production-readiness.md) 门 1 |
 | **怎么跑、怎么读输出、连接池怎么算** | **本文件** |
 
 ---
@@ -290,7 +290,7 @@ httpx.AsyncClient
 | 换掉的是什么 | **transport** —— 我们发出去的请求不再进 socket | **适配器本身** —— `LlmClient` 整个被替换 |
 | 被测代码还剩哪些 | `LlmClient` **全是真的**：拼 URL、拼 body、读状态码、翻译错误、解析 SSE | 只剩路由和记账，适配器一行都不执行 |
 | 能测出什么 | 上游返回 429 / 401 / 3xx / 非 JSON 时**我们怎么翻译** | 路由接线、错误码 → HTTP 状态码、账单四态 |
-| 什么时候用 | 要覆盖 [llm_client.py](../../src/app/llm_client.py) 的翻译逻辑时（#75 / #60） | 要测「不依赖真实 LLM」的路由行为时（绝大多数用例） |
+| 什么时候用 | 要覆盖 [llm_client.py](../src/app/llm_client.py) 的翻译逻辑时（#75 / #60） | 要测「不依赖真实 LLM」的路由行为时（绝大多数用例） |
 
 🔴 **两个说法要纠正**（这曾是笔记里的错）：
 
@@ -312,13 +312,13 @@ httpx.AsyncClient
 |---|---|---|---|
 | 上游配额 | 未知 | **429** + `Retry-After` | 外部 |
 | **我们的闸门** | `MAX_CONCURRENT_UPSTREAM_CALLS`（默认 **4**） | **503** + `Retry-After` | 待 12g-2 落地 |
-| 上游 HTTP 池 | **100** | 排队（几乎不会满） | [llm_client.py](../../src/app/llm_client.py) |
-| 数据库池 | **15**（5+10），`pool_timeout=30s` | **卡 30 秒 → 500** | [database.py](../../src/app/database.py) |
+| 上游 HTTP 池 | **100** | 排队（几乎不会满） | [llm_client.py](../src/app/llm_client.py) |
+| 数据库池 | **15**（5+10），`pool_timeout=30s` | **卡 30 秒 → 500** | [database.py](../src/app/database.py) |
 
 ⭐⭐ **判据：闸门设得比它下游的池还宽 = 把「明确的 503」换成「30 秒后的 500」。**
 所以 `MAX_CONCURRENT_UPSTREAM_CALLS` 必须 **≤ 15 再减去非 chat 路由的余量**。
 📎 数字关系：`4（闸门） ≤ 15（DB 池） « 100（HTTP 池）`。
-完整推导见 [architecture-map §13.3](../study_notes/project/architecture-map.md)。
+完整推导见 [architecture.md §13.3](../docs/architecture.md)。
 
 📎 三种"超限怎么办"的实测（`Semaphore(1)`、单流 1.5s、同时发 2 个）：
 
@@ -356,7 +356,7 @@ httpx.AsyncClient
 
 ## 6. 重要问答索引（答案不在这里，指过去）
 
-完整题目与答案唯一出处：[self-check-questions.md](../study_notes/learning/self-check-questions.md) 的 **Step 12**（17 题）。
+完整题目与答案唯一出处：[self-check-questions.md](../notes/self-check-questions.md) 的 **Step 12**（17 题）。
 
 这里只给**主题**，方便你要查的时候知道去哪一条：
 
