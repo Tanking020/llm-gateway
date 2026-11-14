@@ -34,30 +34,37 @@
 
 ---
 
-## 二、下一步（按档期）
+## 二、下一步：Step 13「部署」拆成 6 个子阶段
 
-> 完整定义与证据在 [todos.md](todos.md)。这里只放「接下来先做哪些」，顺序就是建议的执行顺序。
+> **档期**：全部 `P1`（第一次发版之前）。**形态**：docker-compose + nginx（单机完整栈，本地可复现生产形态）。
+> **鉴权方案**：API key → 内部用户（一个中间件解析出 `owner_id`，为将来换成真正的用户表留好形状）。
+> 每个子阶段的完成判据必须是**一条命令 + 一组可见输出**，不是「代码写完了」。
 
-### P1 · 对外上线前必须做
+| 子阶段 | 做什么 | 关联待办 | 完成判据 | 依赖 |
+|---|---|---|---|---|
+| **13a 容器化底座** | `Dockerfile`（多阶段 · 非 root · exec 形式 CMD）+ `.dockerignore` + `docker-compose.yml`（app + nginx） | [#49](todos.md) | `docker compose up` 起来 → 经 nginx 访问 `/health` 200；镜像内无 `.venv`/`.git`/`tests`；进程非 root；`docker compose stop` 时收到 SIGTERM | — |
+| **13b 启动路径与迁移** | Alembic 接管 DDL；`lifespan` 移除 `create_all`；启动打印生效配置白名单 | [#50](todos.md) [#77](todos.md) | ① DB 未就绪时服务**能起来**（`/health/ready` 报 503，而不是进程退出）；② `alembic upgrade head` 建出与模型一致的表；③ 启动第一屏打印 6 个关键配置，**不含** `api_key` | 13a |
+| **13c 请求生命周期** | 上游总时长上限（`asyncio.timeout`）· 500 补 CORS 头 · `commit` 时机（[#54](todos.md)）· 优雅停机 | [#55](todos.md) [#57](todos.md) [#54](todos.md) | ① 慢速滴答上游被掐断；② 500 带 `Access-Control-Allow-Origin` 且 `request_id` 可读；③ 模拟 commit 失败**不再**返回 201；④ 发版时在途 SSE 跑完或明确超时 | 13b |
+| **13d 访问控制** | API key 校验 → `owner_id` · 迁移 + 全部查询带过滤 · 越权返 **404**（不是 403）· 限流（按 key） | [#36](todos.md) [#37](todos.md) | ① 换 key 看不到也删不掉别人的对话；② 跨用户访问 **404**；③ 超阈值 **429 + `Retry-After`** | 13b + 13c |
+| **13e 可观测** | 访问日志带客户端 IP（`X-Forwarded-For` 只信任自己那层）· 日志 JSON + 按天轮转 · 指标最小集 | [#56](todos.md) [#51](todos.md) [#66](todos.md) | ① 每行日志可被 `ConvertFrom-Json` 解析；② 日志有客户端 IP；③ `/metrics` 能读请求数 / 5xx 比例 / p99 / 池占用 | 13a |
+| **13f 压测定容量** | k6 / locust 打真实并发；把「闸门 4 / 池 15」换成实测数字 | [#76](todos.md) | 一张表：并发 N 时的 p95 首字节 / 错误率 / DB 池 `checkedout` / 上游 429 次数 | **13e** |
 
-| 优先级 | 待办 | 为什么在这一档 |
-|---|---|---|
-| 1 | **Step 13 部署**：[#49](todos.md) `Dockerfile` / `.dockerignore`、反向代理配置 | 没有部署产物就没有「上线」 |
-| 2 | [#36](todos.md) 鉴权 + `owner_id` | `owner_id` 越晚加越贵（现在只有 1 张业务表、5 个端点） |
-| 3 | [#37](todos.md) 限流（每用户速率 / 日配额） | 每次调用都花钱，一个循环就能烧完余额 |
-| 4 | [#55](todos.md) 请求总时长上限 | 慢速滴答的上游会让请求无限期挂着 |
-| 5 | [#57](todos.md) 500 响应补 CORS 头 | 500 时前端拿不到 `request_id`，而这是最需要它的场景 |
-| 6 | [#76](todos.md) 压测 | 「能扛多少」现在是猜的；`MAX_CONCURRENT_UPSTREAM_CALLS=4` 直接决定第 5 个用户看到什么 |
-| 7 | [#77](todos.md) 启动打印生效配置 | 值合法但配错了没人知道 |
-| 8 | [#66](todos.md) 指标 + 3 条告警 | 出事时只能靠 `Select-String` 翻日志 |
-| 9 | [#63](todos.md) 拆出 `services/` 层 | 阶段 3 加 RAG 之前必须拆，否则 `app.py` 继续膨胀 |
-| 10 | [#56](todos.md) 访问日志补客户端 IP / [#61](todos.md) `total` 计数 / [#51](todos.md) 日志 JSON + 轮转 | 运维层的最小集 |
+### 为什么是这个顺序
 
-### P2 / P3
+| 顺序 | 理由 |
+|---|---|
+| 容器化最前 | 「DB 未就绪会怎样」「代理下 XFF 对不对」在 `uv run python -m app` 里**复现不出来** |
+| 启动路径先于迁移 | 同一件事的两面：DDL 移出启动路径既是「迁移工具接管」，也是「服务不再 crash loop」 |
+| 生命周期先于访问控制 | 13c 改所有请求的公共路径，13d 改所有端点 —— 先公共后端点，回归里不会混两个变量 |
+| 鉴权先于限流 | 没有「这个请求属于谁」，限流只能按 IP 计；而 IP 在代理后面不可靠 |
+| 指标先于压测 | [#76](todos.md) 要读 p95 / 池占用，没有 13e 只能人工计时 |
 
-见 [todos.md](todos.md) 各行「建议处理时机」列。`P3` 只有一条（[#74](todos.md)），记录在案、不修。
+### 不在 Step 13 范围内的 P1
 
----
+| 待办 | 为什么移出 |
+|---|---|
+| [#63](todos.md) 拆出 `services/` 层 | 不改变「能不能上线」，只影响「改起来累不累」；独立成 Step 14，或推到加检索功能前 |
+| [#61](todos.md) `total` 的 `COUNT(*)` | 同上；加 `owner_id` 后变成带条件计数，与 13d 一起重估即可 |
 
 ## 三、阶段定义与验收判据
 
