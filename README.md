@@ -5,202 +5,295 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-93%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-92%25-success)
-![Ruff](https://img.shields.io/badge/lint-ruff-000000?logo=ruff&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-> **English** — A production-minded LLM backend service built from an empty directory:
-> async FastAPI + SSE streaming + upstream adapter + SQLite accounting + a 93-case
-> regression suite (92% branch coverage) gated by CI. Every design choice has a written
-> ADR, every test claim is verified by mutation testing, and every "silent failure"
-> found during development is logged with its evidence. Roadmap: FastAPI service →
-> native LLM API → RAG → Agent, then ship it.
+> **An async backend for LLM applications, built around three invariants.**
+>
+> **The upstream is replaceable** — every model call goes through a single adapter; the HTTP
+> layer cannot even import `httpx` (enforced by a lint rule, not a convention).
+> **Failures are legible** — one response envelope with stable machine-readable codes and request
+> IDs, including streaming-aware error frames that distinguish *"the model said nothing"* from
+> *"the upstream never answered"*.
+> **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
+> *"is the amount correct"* from *"is the content empty"*.
+>
+> 93 tests · 92% branch coverage · 47 mutation test runs (42 caught) · CI on every push.
 
 ---
 
-一个**从零搭起来的 LLM 应用后端**：工程规范先行，逐阶段长大，最终目标是**对外上线**的
-RAG 知识库问答服务。当前处于**阶段 1 · FastAPI 服务**（Step 1 ~ 12 完成，Step 13 部署未开始）。
+## 概览
 
-技术选型的门槛不是「能不能跑」，而是：**如果这个接口明天给 1000 个真实用户用，够不够？**
+面向 LLM 应用的异步 API 服务。对外提供 **SSE 流式对话**与会话管理接口，对内把「流式输出、
+上游故障、并发与成本、可对账账单」当作一等公民来设计，而不是事后补丁。
 
-## 现在有什么
+技术栈：FastAPI · SQLAlchemy 2.1 async（SQLite，代码保持可切 PostgreSQL）· httpx · pydantic v2 ·
+pydantic-settings · uv（锁文件 + 独立解释器）· ruff · mypy `--strict` · pytest。
 
-| 能力 | 状态 | 证据 |
+设计取向有三条硬约束，贯穿整个仓库：
+
+| 约束 | 落地方式 | 怎么证明 |
 |---|---|---|
-| 真实 LLM 流式对话（SSE） | ✅ | 真调上游 DeepSeek；状态帧 + 逐字正文 + `finish_reason` + token 用量；📎 首帧 60ms |
-| 上游适配器封层 | ✅ | 路由层零 `httpx`、零 `try/except`（由 lint 规则 `TID251` 机械保证） |
-| 可对账的账单 | ✅ | `llm_calls` 表四态（`completed` / `aborted` / `no_content` / `pending`），并发 6 条流时连接池峰值 **2** |
-| 统一错误形状 | ✅ | 任何错误都是 `{"error":{code,message,request_id}}`；`X-Request-ID` 恒等于 body 里的 `request_id` |
-| 并发与成本护栏 | ✅ | 上游并发闸门（超限 **503 + `Retry-After`**）+ `max_tokens` 上限 + 输入侧三个上限 |
-| 自动化回归 | ✅ | **93 个用例**（含真 uvicorn 并发测试与穿过适配器的真实 HTTP 路径）；**47 次变异测试、42 次被抓到** |
-| 一键质量门 | ✅ | `ruff` / `mypy --strict` / `pytest`，**GitHub Actions 推送即跑** |
+| **上游可替换** | 所有上游调用穿过 `LlmClient` / `LlmChatStream`；路由层零 `httpx` | lint 规则 `TID251` 把「绕过适配器」变成 CI 会红的事 |
+| **失败可解释** | 单一错误出口，业务码与 HTTP 码解耦，`X-Request-ID` 恒等于 body 里的 `request_id` | 错误形状被 7 个契约用例钉住 |
+| **成本可核算** | 每次调用落一行账单；流式记账两阶段提交 | 并发 6 条流时数据库连接池峰值 **2** |
 
-> ⚠️ **尚不能上线**：无鉴权 / 无限流 / 无 `Dockerfile` / 无指标，且 `/v1/chat`（非流式）仍是 `echo` 占位。
-> 完整缺口与档期见 [docs/production-readiness.md](docs/production-readiness.md)。
+## 能力一览
+
+| 能力 | 现状 | 关键实现 |
+|---|---|---|
+| **SSE 流式对话** | ✅ 真调上游 `stream=true` | 自造状态帧 + 逐字正文 + `finish_reason` + token 用量；首个数据帧 **60 ms** |
+| **流式失败的完整表意** | ✅ | 状态码层（pre-flight → 502）/ 协议层（坏帧跳过或中止 + WARNING）/ 业务层（`STREAM_NO_CONTENT`、`STREAM_FAILED` 帧） |
+| **上游故障三档翻译** | ✅ | L1 连不上 / L2 状态码不对 / L3 结构不可信，全部在适配器内分类 |
+| **会话增删改查** | ✅ | 游标分页；账单统计用 `outerjoin + group` 聚合，语句数与条目数无关（📎 N=100 时 2 条，朴素写法 101 条） |
+| **可对账账单** | ✅ | `completed` / `aborted` / `no_content` / `pending` 四态（`StrEnum`） |
+| **并发与成本护栏** | ✅ | 上游信号量（超限 **503 + `Retry-After`**）+ `max_tokens` 上限 + 输入三上限 |
+| **统一错误形状** | ✅ | `{"error": {code, message, request_id}}`，422 附加 `details` |
+| **生产环境防护** | ✅ | `prod` + `DEBUG=true` 启动即失败；`/docs`、`/redoc`、`/openapi.json` 一并关闭 |
+| **可观测性** | 🟡 部分 | 结构化访问日志（请求 ID / 耗时 / 状态）；指标与告警见 Roadmap |
+
+> 说明：`POST /v1/chat`（非流式）目前返回占位实现，真实上游接线与消息持久化一起做（[#46](docs/todos.md)）。
+> 这不是遗漏，而是刻意避免「一个端点真调上游、另一个假装」的不一致状态。
 
 ## 架构
 
-一次请求穿过的层（细节与真实样本见 [docs/architecture.md](docs/architecture.md)）：
-
 ```mermaid
-flowchart LR
-    subgraph Client
-        C[HTTP / SSE client]
+flowchart TB
+    C["HTTP / SSE client"]
+
+    subgraph ASGI["ASGI middleware"]
+        M1["ServerError (500)"]
+        M2["Request-ID + timing"]
+        M3["CORS"]
+        M4["Exception handlers"]
     end
 
-    subgraph ASGI["ASGI middleware stack"]
-        M1[ServerError<br/>兜底 500]
-        M2[Request-ID + 耗时]
-        M3[CORS]
-        M4[Exception<br/>统一错误形状]
-    end
-
-    subgraph App["应用层"]
-        R[APIRouter<br/>/v1/...]
-        D[Depends<br/>settings · llm client · db session]
-    end
-
-    subgraph Adapter["适配器"]
-        A[LlmClient / LlmChatStream<br/>唯一 import httpx 的地方<br/>L1/L2/L3 三层错误翻译]
-    end
-
-    DB[(SQLite<br/>conversations<br/>llm_calls)]
-    U[Upstream LLM<br/>DeepSeek]
+    R["routers: /v1/chat · /v1/chat/stream · /v1/conversations · /v1/models"]
+    D["deps: settings · llm client · db session · upstream slot"]
+    E["errors: AppError → 4xx / 5xx"]
+    A["LlmClient / LlmChatStream (L1·L2·L3)"]
+    DB[("SQLite: conversations · llm_calls")]
+    U["Upstream LLM"]
 
     C --> M1 --> M2 --> M3 --> M4 --> R
     R --> D
+    R --> E
+    R --> A
+    A --> U
+    A -.->|frames| R
+    R -.->|frames| C
     D --> DB
-    R --> A --> U
-    A -. SSE frames .-> R
-    R -. SSE frames .-> C
 ```
 
-**分层原则**：路由只做「校验 → 查库 → 调适配器 → 返回」，上游错误的分类与重试语义只在适配器里。
-这样换上游（DeepSeek → OpenAI → 自建 vLLM）只改一个文件。
+**依赖方向是单向的**：`api/ → db/ · core/`；`schemas.py` 只放契约，`config.py` 只读不写。
+上游调用只允许出现在适配器里 —— 这条不是靠 code review 记住的，是 `pyproject.toml` 里的一条规则。
+（`services/` 层的拆分已在计划中：路由文件目前同时承担校验编排与帧协议，加检索功能前会按
+「HTTP 契约变化」与「业务规则变化」分开，见 [#63](docs/todos.md)。）
+
+中间件栈的真实顺序（由 `app.build_middleware_stack()` 逐层取得）：
+`ServerError → (ExceptionTelemetry) → Request-ID → CORS → Exception → AsyncExitStack → Router`。
+顺序有语义：`ServerErrorMiddleware` 在最外层，所以 **500 响应不经过 CORS**（已知缺口 [#57](docs/todos.md)）。
 
 ## 快速开始
 
-前置：安装 [uv](https://docs.astral.sh/uv/)（唯一需要手动准备的工具）。
+前置：[uv](https://docs.astral.sh/uv/)（唯一需要手动准备的工具）。
 
 ```bash
 git clone https://github.com/Tanking020/llm-app-engineering.git
 cd llm-app-engineering
 
-uv sync                        # 按 uv.lock 还原逐位一致的依赖环境（含 Python 3.12）
-cp .env.example .env           # Windows PowerShell: Copy-Item .env.example .env
-#   至少在 .env 里填 LLM_API_KEY
+uv sync                        # 按 uv.lock 还原依赖（含 Python 3.12）
+cp .env.example .env           # Windows: Copy-Item .env.example .env
+#   编辑 .env，填入 LLM_API_KEY
 
-uv run python -m app           # 启动 HTTP 服务（读 .env 的 HOST / PORT / DEBUG）
-#   打开 http://127.0.0.1:8000/docs  —— 自动生成的交互式 API 文档（仅 dev 环境开启）
+uv run python -m app           # 监听地址 / 端口 / reload 全部读 .env
 ```
 
-> ⭐ 用 `uv run python -m app` 而不是 `uvicorn app.api.app:app --reload`：
-> 前者的监听地址 / 端口 / 是否 reload 都读 `.env`；后者会**静默绕过**这些配置。
->
-> 阶段 0 的 CLI 仍可用：`uv run python -m app.main ping` 验证上游连通性。
+打开 <http://127.0.0.1:8000/docs> 查看交互式 API 文档（仅 `APP_ENV=dev` 时开启）。
 
-## 接口
+> 用 `uv run python -m app` 而不是 `uvicorn app.api.app:app --reload`：前者的 `HOST` / `PORT` /
+> `DEBUG` 来自配置；后者会**静默绕过**它们（`.env` 写 `PORT=9001` 也不会生效）。
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/health` · `/health/ready` | liveness（不碰外部依赖）· readiness（探库，失败 503） |
-| GET | `/v1/models` · `/v1/models/latest` · `/v1/models/{name}` | 模型清单（未知模型 404） |
-| GET | `/v1/upstream/models` | **真实调上游**，字段白名单（10 键 → 3 字段） |
-| POST | `/v1/chat` | 非流式（⚠️ 仍为 `echo` 占位，[#46](docs/todos.md)） |
-| POST | `/v1/chat/stream` | **SSE 流式**，真调上游，每次调用落一行账单 |
-| POST/GET | `/v1/conversations` | 新建 · **游标分页**列表（含账单统计） |
-| GET/PATCH/DELETE | `/v1/conversations/{id}` | 详情 · 改标题 · 删除（计费记录 `SET NULL` 保留） |
+## 使用
 
-请求/响应真实样本、错误码、SSE 帧契约、逐条 curl 命令 → **[docs/api.md](docs/api.md)**。
-
-## 质量门
+### 流式对话（SSE）
 
 ```bash
-uv run ruff format .          # 1. 格式化
-uv run ruff check . --fix     # 2. lint（E/F/I/UP/B/TID）
-uv run mypy .                 # 3. 类型检查（strict，含 tests/ 与 playground/）
-uv run pytest -q              # 4. 回归（93 个用例，约 12s，不碰真上游、不碰开发库）
+curl -N -s http://127.0.0.1:8000/v1/chat/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"列出三种排序算法"}]}'
 ```
 
-| 检查 | 当前结果 |
-|---|---|
-| `ruff check .` | All checks passed |
-| `ruff format --check .` | 32 files already formatted |
-| `mypy .` | Success: no issues found in 32 source files |
-| `pytest -q` | 93 passed |
-| `pytest --cov` | 服务代码**分支**覆盖 **92%**（`llm_client.py` 100%）。不设 `--cov-fail-under`：覆盖率用来找缺口，守行为靠断言 |
-| GitHub Actions | `.github/workflows/ci.yml`：上面四条**推送即跑** |
+```text
+data: {"status": "thinking"}
 
-**「全绿」不等于「断言有牙」**：每批用例写完要抽 3 ~ 5 处做**变异测试**
-（故意改坏一行源码，看测试红不红，再还原）。累计 **47 次、42 次抓到**，
-5 次抓不到的全部记了原因 —— 详见 [docs/DEVLOG.md](docs/DEVLOG.md)。
+data: {"delta": "1"}
+
+data: {"delta": "."}
+
+data: {"finish_reason": "stop"}
+
+data: {"usage": {"prompt_tokens": 44, "completion_tokens": 63, "total_tokens": 107}}
+
+data: [DONE]
+```
+
+帧契约（7 类，含 2 类错误帧）见 [docs/api.md](docs/api.md)。
+两个容易被误读的点：
+
+- **`200` 不代表成功**：响应头一旦发出就改不了状态码，所以流中途失败只能表达成 `error` 帧。
+  真正的连接 / 状态码级失败在 **pre-flight** 阶段就被拦成 `502`。
+- **收到 `finish_reason` 不代表内容结束**：`usage` 帧与最后一个 `delta` 可能排在它之后，
+  正确的封笔信号是 `[DONE]`。
+
+### 会话与账单
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/conversations \
+  -H 'Content-Type: application/json' -d '{"title": "第一次对话"}'
+
+curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 账单统计
+```
+
+### 错误契约
+
+```json
+{
+  "error": {
+    "code": "LAST_MESSAGE_NOT_USER",
+    "message": "最后一条消息必须是 user，当前是 assistant",
+    "request_id": "1b085bd5c5b3"
+  }
+}
+```
+
+客户端**只认 `code`**（稳定）；`message` 可以改文案。`X-Request-ID` 响应头与 body 里的
+`request_id` 恒等 —— 用户报障时给这一个字符串就能定位到那一条日志。
+
+## 关键设计决策
+
+每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，31 条 ADR）。以下是影响最大的几条：
+
+| 决策 | 选择 | 为什么 | 代价 / 何时重审 |
+|---|---|---|---|
+| 流式协议 | **SSE** | 单向推送够用；能走 HTTP/1.1、能过代理、能直接用 `curl` 调试 | 需要双向交互时重议（WebSocket） |
+| 上游隔离 | **适配器 + lint 强制** | 换上游只改一个文件；错误分类只有一处 | 多一层间接调用 |
+| 流式记账 | **两阶段：先 `commit` 一行 `pending`，拿到 usage 再改状态** | 若在流结束时才写，数据库写事务横跨整条流 → SQLite 单写者 → 并发流完全串行化（实测 4 条并发 **2.60 s → 0.71 s**） | 每请求多一次独立提交；需维护状态机 |
+| 列表分页 | **游标**（`id > N`），`total` 为辅 | offset 在「翻页期间删数据」时会**漏掉一条**（实测），用户永远看不到 | 不支持随机跳页 |
+| 错误形状 | **统一 envelope + 稳定业务码** | 客户端只写一份解析代码；新增错误码不动客户端 | 500 不经过 CORS（[#57](docs/todos.md)） |
+| 上游 4xx | **按「客户端能否自己修好」分流** | 429 透传 + `Retry-After`，避免把上游限流伪装成网关故障而引发重试风暴（每次重试都真实计费） | 需识别 body 中的超长标记（未对真实上游验证） |
+| 并发超限 | **有限等待 → 503 + `Retry-After`** | 纯排队会让被挡用户等 3 s 以上才见到响应头（实测 3.05 s vs 0.50 s） | 单进程信号量；多副本需下沉到 Redis / 网关 |
+| 配置错误 | **启动即失败**（`prod` + `DEBUG=true`、越界值） | 配错在启动时暴露，而不是在第一次请求时 | 需要维护跨字段校验 |
+
+## 可靠性与成本控制
+
+| 机制 | 参数 | 行为 |
+|---|---|---|
+| 上游并发闸门 | `MAX_CONCURRENT_UPSTREAM_CALLS=4` | 超出后等待 `UPSTREAM_QUEUE_TIMEOUT=1.0 s`，仍未拿到槽位 → **503 + `Retry-After`** |
+| 输出上限 | `MAX_TOKENS_CEILING=4096` | 超限 → **400**；未指定 → 填上限（**只接受或拒绝，从不改写**） |
+| 输入上限 | 单条 20 000 字符 / 100 条 / 合计 60 000 字符 | 分别拦下「巨型单条」「海量短消息」「乘积爆炸」 |
+| 客户端断开 | — | `aclose()` 让上游实测 **4 ms 内**停止生成；已产生的用量仍落账单（`aborted`） |
+| 账单对账 | 四态 `StrEnum` | `status` 只回答「金额准不准」，不回答「内容空不空」 |
+| 生产防护 | `APP_ENV=prod` | 交互式文档全部关闭；`DEBUG=true` 直接拒绝启动 |
+
+单请求最坏成本 ≈ **$0.05**（按 1 M 上下文上限 + 4096 输出上限推算，见 [docs/architecture.md](docs/architecture.md)）。
+
+## 测试与质量门
+
+```bash
+uv run ruff format .    # 格式化
+uv run ruff check .     # lint（E/F/I/UP/B/TID）
+uv run mypy .           # 类型检查（strict + warn_unreachable）
+uv run pytest -q        # 93 个用例，约 8 s
+```
+
+| | 结果 |
+|---|---|
+| `ruff check` / `format --check` | 全绿（32 files） |
+| `mypy --strict` | 全绿（32 source files，含 `tests/` 与 `playground/`） |
+| `pytest -q` | **93 passed** |
+| 分支覆盖 | **92%**（`llm_client.py` 100%） |
+| CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
+
+测试策略有三条判据（细节见 [tests/README.md](tests/README.md)）：
+
+| 判据 | 做法 | 为什么必须这样 |
+|---|---|---|
+| **不碰真上游** | `dependency_overrides` 注入假对象；假对象**继承真类**，签名漂移由 mypy 抓 | 测试要能离线跑、可重复、不花钱 |
+| **不碰开发库** | `conftest.py` 在 `import app` 之前把 `DATABASE_URL` 指到临时库；每个用例清表 | 「测了一下，开发库空了」是可以避免的事故 |
+| **必须走 HTTP** | 测试不 import 路由函数，只认 URL | 中间件、异常处理器、依赖注入才会真实经过 |
+
+**「全绿」不等于「断言有牙」。** 每批用例写完抽 3 ~ 5 处做变异测试（故意改坏一行源码，看它红不红）：
+累计 **47 次、42 次被抓到**，5 次抓不到的（等价变异、只在时序上才成立的变异）全部记了原因。
+
+其中一次失败直接暴露了方法论问题：把枚举值拼成 `"pengding"` 时**四道门全绿** ——
+`mypy` 只检查成员名，`ruff` 只看格式。于是补了一条「值必须被断言钉住」的守卫用例。
+
+## 实测结果
+
+以下数字全部来自本仓库的实测记录（环境与方法见 [docs/DEVLOG.md](docs/DEVLOG.md)）：
+
+| 指标 | 改前 | 改后 | 条件 |
+|---|---|---|---|
+| 首个 SSE 数据帧 | 845.8 ms | **60.0 ms** | 真实上游；加状态帧后不再空等 |
+| 4 条并发流总耗时 | 2.60 s | **0.71 s** | 真 uvicorn + 真 TCP + SQLite（修写事务横跨整条流） |
+| 数据库连接池峰值（6 条流） | 6 | **2** | 同上 |
+| 外键查询（5 万行） | 全表扫 | **快 25 倍** | 加 `index=True` |
+| 连接复用（20 次请求） | 20 条 TCP | **1 条 TCP（快 6.28 倍）** | httpx 连接池 |
+| 上游停止生成的延迟 | — | **4 ms** | 客户端断开后 `aclose()` |
 
 ## 项目结构
 
 ```text
 .
-├── README.md                    # 本文件：面向访客
-├── CONTRIBUTING.md              # 开发约定：改代码前后必须满足什么
-├── LICENSE                      # MIT
-├── pyproject.toml / uv.lock     # 依赖与工具配置的唯一事实来源
-├── .env.example                 # 配置模板（真值放 .env，不提交）
-├── .github/
-│   ├── workflows/ci.yml         # 质量门：push / PR 自动跑
-│   └── copilot-instructions.md  # AI 协作指令（新会话自动加载）
-├── docs/                        # 项目文档（台账 / 决策 / 架构 / 接口）
-├── src/app/                     # 应用代码
-│   ├── config.py                # 全部可调参数（类型安全 + 跨字段校验）
-│   ├── logging_setup.py         # dictConfig 唯一出口
-│   ├── schemas.py               # 对外数据契约
-│   ├── errors.py                # AppError + 码↔状态码 + 4 个处理器（单一出口）
-│   ├── llm_client.py            # 上游适配器：唯一 import httpx 的文件
-│   ├── database.py / models.py  # 引擎 / 会话工厂 / ORM
-│   ├── __main__.py              # 启动入口（让 settings.host/port/debug 生效）
-│   └── api/app.py + api/deps.py # 应用对象 / lifespan / 路由 / 依赖
-├── tests/                       # 93 个用例：按「测哪一层」分家（见 tests/README.md）
-├── playground/                  # 实验区：一次性验证代码，不参与交付
-└── notes/                       # 学习笔记（换项目也成立的知识，将独立成库）
+├── src/app/
+│   ├── api/app.py          # 应用对象 · lifespan · 路由
+│   ├── api/deps.py         # 依赖：settings / llm client / db session / upstream slot
+│   ├── llm_client.py       # 上游适配器（唯一 import httpx 的文件）
+│   ├── schemas.py          # 对外契约（请求 / 响应 / 分页 / 统计）
+│   ├── errors.py           # AppError + 业务码↔状态码 + 4 个处理器（单一出口）
+│   ├── models.py           # ORM：Conversation / LlmCall（含四态枚举）
+│   ├── database.py         # engine / session factory / 外键 PRAGMA
+│   ├── config.py           # 全部可调参数 + 跨字段校验
+│   ├── logging_setup.py    # dictConfig 单一出口
+│   ├── constants.py        # 跨模块必须一致的常量（如头名）
+│   ├── __main__.py         # 启动入口（让 settings.host/port/debug 生效）
+│   └── main.py             # CLI：上游连通性检查
+├── tests/                  # 93 个用例，按「测哪一层」分为 10 个文件
+├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
+├── notes/                  # 机制与实测的深度笔记
+├── playground/             # 一次性实验脚本（不参与交付）
+├── pyproject.toml          # 依赖、工具配置、lint 边界的唯一来源
+└── .github/workflows/ci.yml
 ```
-
-**为什么用 `src` 布局**：扁平布局下 `import app` 能成功只是因为「当前目录恰好在 `sys.path` 里」；
-`src` 布局必须先真正安装项目才能导入 —— 打包配置写错会**立刻**报错，而不是等别人 `pip install` 之后。
-
-## 文档地图
-
-| 想知道 | 去哪 |
-|---|---|
-| 做到哪了、下一步做什么 | [docs/roadmap.md](docs/roadmap.md) |
-| 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |
-| 还剩哪些事（#1 ~ #77） | [docs/todos.md](docs/todos.md) |
-| 为什么这么设计、放弃了什么 | [docs/decisions.md](docs/decisions.md)（30 条 ADR） |
-| 七层栈 / ER / 帧序 / 状态机 | [docs/architecture.md](docs/architecture.md) |
-| 端点契约与响应样本 | [docs/api.md](docs/api.md) |
-| 离上线还差什么 | [docs/production-readiness.md](docs/production-readiness.md) |
-| 测试怎么跑、两个连接池谁占谁 | [tests/README.md](tests/README.md) |
-| 换成别的项目也成立的知识 | [notes/](notes/) |
-
-## 关键技术决策（各有 ADR）
-
-| 决策 | 结论 | 为什么 |
-|---|---|---|
-| 流式协议 | **SSE**，不是 WebSocket | 单向推送够用；能用 HTTP/1.1、能过代理、能直接 curl | 
-| 上游调用 | **适配器封层**，路由看不见 `httpx` | 换上游只改一个文件；错误分类只有一处 |
-| 流式记账 | **两阶段**：开流前 commit `pending`，拿到 usage 改状态 | 写完再记账 = 数据库写锁横跨整条流 → 并发流串行化 |
-| 列表分页 | **游标**（`id > N`）为主，`total` 为辅 | 📎 实测 offset 在翻页期间删数据会**漏一条** |
-| 错误形状 | 统一 envelope，业务码与 HTTP 码解耦 | 客户端只认 `code`；文案可以改 |
-| 上游 4xx | 按「客户端能不能自己修好」分流 | 429 透传而不是 502，避免客户端重试风暴 |
-
-完整 30 条 + 代价 + 重审条件 → [docs/decisions.md](docs/decisions.md)。
 
 ## Roadmap
 
-阶段 0 工程基础 ✅ → **阶段 1 FastAPI + 数据库 🟡（Step 1~12 完成，Step 13 部署待做）** →
-阶段 2 原生 LLM API → 阶段 3 RAG（重点：检索质量 + 量化评估）→ 阶段 4 Agent + 部署。
+| 状态 | 内容 |
+|---|---|
+| ✅ **已完成** | HTTP/ASGI 地基 → 参数与契约 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式 → 上游适配器封层 → 持久化与账单 → 配置 / 日志 / 安全 → 回归测试 → CI |
+| 🔜 **进行中（P1，上线前）** | 容器化与反向代理（[#49](docs/todos.md)）· 鉴权与 `owner_id`（[#36](docs/todos.md)）· 速率限制（[#37](docs/todos.md)）· 请求总时长上限（[#55](docs/todos.md)）· 500 的 CORS 头（[#57](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)） |
+| 📋 **规划中** | 消息持久化（`messages` 表）· 指标与告警 · 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
-下一步的优先级与理由见 [docs/roadmap.md](docs/roadmap.md) §二。
+完整的 82 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
 
-## 说明
+## 文档
 
-- 本仓库把**代码与学习笔记放在一起**（[notes/](notes/)）。笔记的目标是将来迁到独立仓库，
-  所以目录边界按「换个项目还对吗」画清楚了 —— 见 [notes/README.md](notes/README.md)。
-- 所有实测数字都标了 📎，并写清是在什么环境下测的。没实测的一律写「推断」。
-- 提交规范、质量门、目录约定与 PR 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+| 想知道 | 去哪 |
+|---|---|
+| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（31 条 ADR） |
+| 系统长什么样（中间件栈 / ER / 帧序 / 状态机） | [docs/architecture.md](docs/architecture.md) |
+| 端点契约与真实响应样本 | [docs/api.md](docs/api.md) |
+| 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |
+| 离「敢上线」还差什么 | [docs/production-readiness.md](docs/production-readiness.md) |
+| 测试怎么跑、两个连接池谁占谁 | [tests/README.md](tests/README.md) |
+| 机制、协议与实测的深度笔记 | [notes/](notes/) |
+| 改代码必须满足什么 | [CONTRIBUTING.md](CONTRIBUTING.md) |
+
+## Contributing
+
+见 [CONTRIBUTING.md](CONTRIBUTING.md)：质量门、提交规范、命名与注释约定、测试要求，以及
+「改了什么就要更新哪个文档」的清单。
+
+## License
+
+[MIT](LICENSE)
