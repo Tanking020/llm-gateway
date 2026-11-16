@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-93%20passed-success)
+![Tests](https://img.shields.io/badge/tests-95%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-92%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -17,7 +17,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 93 tests · 92% branch coverage · 47 mutation test runs (42 caught) · CI on every push.
+> 95 tests · 92% branch coverage · 50 mutation test runs (45 caught) · CI on every push.
 
 ---
 
@@ -203,14 +203,14 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
-uv run pytest -q        # 93 个用例，约 8 s
+uv run pytest -q        # 95 个用例，约 9 s
 ```
 
 | | 结果 |
 |---|---|
-| `ruff check` / `format --check` | 全绿（33 files） |
-| `mypy --strict` | 全绿（34 source files，含 `tests/` 与 `playground/`） |
-| `pytest -q` | **93 passed** |
+| `ruff check` / `format --check` | 全绿（34 files） |
+| `mypy --strict` | 全绿（35 source files，含 `tests/` 与 `playground/`） |
+| `pytest -q` | **95 passed** |
 | 分支覆盖 | **92%**（`llm_client.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
 
@@ -221,9 +221,10 @@ uv run pytest -q        # 93 个用例，约 8 s
 | **不碰真上游** | `dependency_overrides` 注入假对象；假对象**继承真类**，签名漂移由 mypy 抓 | 测试要能离线跑、可重复、不花钱 |
 | **不碰开发库** | `conftest.py` 在 `import app` 之前把 `DATABASE_URL` 指到临时库；每个用例清表 | 「测了一下，开发库空了」是可以避免的事故 |
 | **必须走 HTTP** | 测试不 import 路由函数，只认 URL | 中间件、异常处理器、依赖注入才会真实经过 |
+| **DDL 归迁移独占** | `tests/test_migrations.py`：`alembic check` 无漂移 + 迁移建出的 DDL 与 `create_all` 逐字一致 | 模型改了忘生成迁移时，其余用例全绿（它们跑在 `create_all` 建的表上） |
 
 **「全绿」不等于「断言有牙」。** 每批用例写完抽 3 ~ 5 处做变异测试（故意改坏一行源码，看它红不红）：
-累计 **47 次、42 次被抓到**，5 次抓不到的（等价变异、只在时序上才成立的变异）全部记了原因。
+累计 **50 次、45 次被抓到**，5 次抓不到的（等价变异、只在时序上才成立的变异）全部记了原因。
 
 其中一次失败直接暴露了方法论问题：把枚举值拼成 `"pengding"` 时**四道门全绿** ——
 `mypy` 只检查成员名，`ruff` 只看格式。于是补了一条「值必须被断言钉住」的守卫用例。
@@ -260,7 +261,7 @@ uv run pytest -q        # 93 个用例，约 8 s
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 93 个用例，按「测哪一层」分为 10 个文件
+├── tests/                  # 95 个用例，按「测哪一层」分为 11 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── playground/             # 一次性实验脚本（不参与交付）

@@ -24,9 +24,9 @@
 
 ---
 
-## 1. 十个文件各测什么
+## 1. 十一个文件各测什么
 
-**93 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+**95 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
 
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
@@ -40,6 +40,7 @@
 | `test_adapter_http.py` | 20 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
 | `test_concurrency.py` | 4 | **并发与连接池**：串行化、首字节延迟、流跑到一半时 `pending` 已落库 | `FakeLlm`（慢速版） | ✅ **真 uvicorn** |
 | `test_limits.py` | 11 | **护栏上限**：并发闸门 503 / 槽位归还（正常+异常）/ `max_tokens` 三分支 / 输入三条上限 | `FakeLlm` | ❌ |
+| `test_migrations.py` | 2 | **迁移层**：`alembic check` 无漂移 + 迁移建出的 DDL 与 `create_all` 逐字一致 | 不涉及（**起子进程跑 alembic CLI**） | ❌ |
 
 > ⚠️ **`fakes.py` 不是测试文件**，是共用的假对象：
 
@@ -48,6 +49,9 @@
 > 所以签名漂移会被 mypy 抓成 `[override]` 错误。
 
 > `conftest.py` 是全局准备（环境变量 / 清表 / `client` 与 `db_path` fixture）。
+
+> `test_migrations.py` 是**唯一**起子进程的用例（`sys.executable -m alembic`）：`env.py` 的连接串取自
+> `settings` 单例，进程内改不动 → 代价是多约 2 秒（[决策 33](../docs/decisions.md)）。
 
 ---
 
@@ -351,12 +355,13 @@ httpx.AsyncClient
 | 8 | **`with sqlite3.connect(...)` 不关连接** | 退出 `with` 后连接**仍可用**（`__exit__` 只 commit/rollback） | 「`with` 不承诺关闭」——**判断一个 `with` 做了什么，只看 `__enter__`/`__exit__` 源码** |
 | 9 | **不写 `with TestClient(app)` → 表不存在** | `/health`·`/v1/models`·`/health/ready` 全 200，`POST /v1/conversations` 炸 `no such table` | **「某个接口 200」完全不能证明 lifespan 跑过** —— 只有用到 lifespan 那份资源的接口才验得出来 |
 | 10 | **`lambda f=fake: f` 当依赖覆盖会炸** | FastAPI 把参数当查询参数 → `TypeError: AppError.__init__() missing 1 required positional argument` | 覆盖值必须是**不接收参数**的可调用对象 |
+| 11 | **断言工具退出码写死 `== 1`，守卫会永远绿** | 📎 Windows 上 `alembic check` 检测到漂移时 `sys.exit(-1)` → `subprocess` 拿到 **`4294967295`**（Python 里是 `-1`），断言 `== 1` 就永远不成立 | 断言**只写「成功是 0」**（`returncode == 0`），失败一律按 `<成功条件之外>` 处理，并检查输出里的关键字（坑 K92） |
 
 ---
 
 ## 6. 重要问答索引（答案不在这里，指过去）
 
-完整题目与答案唯一出处：[self-check-questions.md](../notes/self-check-questions.md) 的 **Step 12**（17 题）。
+完整题目与答案唯一出处：[self-check-questions.md](../notes/self-check-questions.md) 的 **Step 12**（17 题）+ **Step 13b-2a**（4 题，迁移守卫）。
 
 这里只给**主题**，方便你要查的时候知道去哪一条：
 
@@ -399,6 +404,7 @@ httpx.AsyncClient
 | 2026-11-04 | ✅ **#60 关闭** 上游 4xx/429 一律 502 | 补 `llm_client` 覆盖率时看清了 `_STATUS_BY_CODE` 里**只有 3 个上游码** | 📎 11 个上游状态码逐个实测；`82 passed`、分支覆盖 **91%** |
 | 2026-11-04 | ✅ **#38 关闭** 输入侧无上限（单请求输入可达 1M tokens ≈ $0.30） | 学习者读 `le=32768` 那段注释时追问「客户端能不能把值调大」 | 📎 单请求最坏 $0.05；6 个边界实测；**只有「合计」那条真管成本** |
 | 2026-11-04 | ✅ **#44 的 P0 部分关闭** 并发上限 + 成本上限 | 12g 前实测：把 `finally: release()` 整块删掉，**82 个用例一个都不红** | 📎 补 11 条后 9 个变异 9 抓；`deps.py` 89%→94%、`schemas.py` 94%→97% |
+| 2026-11-16 | 🆕 **迁移与模型分叉，93 个用例一个都不红**（13b-2a，无编号） | 13b-1 把 DDL 交给 Alembic **之后**才发现：所有用例都跑在 `lifespan` 的 `create_all` 建好的库上，**没有一条用例读过迁移文件** | 📎 3 个变异（删索引 / 删 `ondelete` / 模型加列不生成迁移）→ 补守卫前全绿，补后 **6 条全红** |
 
 ⭐⭐ **最值钱的一条**：**测试最大的产出不是用例数，而是「用测试逼出真缺陷」。**
 
