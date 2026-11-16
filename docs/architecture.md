@@ -243,7 +243,7 @@ POST /v1/chat/stream
 📌 闸门这一行有个反直觉点：**槽位持有到「整条流结束」**，比 `DbDep` 还长一截 ——
 而这一点是**要的**（"同时在生成的上游调用数"本来就该按整条流算）；同一个 `yield` 机制在 `get_db` 那里却是缺陷（#59）。
 
-### 2.5 `app.py` 内部调用链（829 行怎么读）
+### 2.5 `app.py` 内部调用链（857 行怎么读）
 
 `app.py` 是**组合层**：全部路由 + 装配 + SSE 生成器都在同一个文件里，没有 `services/` 层（待办 #63）。
 所以"改一处会影响谁"只能靠文件内部的调用关系看。
@@ -310,10 +310,9 @@ POST  /v1/chat/stream ─────────→ chat_stream ─────
 uvicorn 启动
    │
    ├─ lifespan.startup ──────────────────────────────────────────────┐
-   │     ① engine.begin() → create_all()   建表（已存在的表不改）      │
-   │        🟡 2026-11-16：这一步**正在移除**（13b）。迁移骨架已就位     │
-   │        （`alembic/`，13b-1 ✅），13b-2 会把它从启动路径摘掉 →       │
-   │        建表改由 `alembic upgrade head` 独立执行                    │
+   │     ① 上游并发闸门：app.state.upstream_semaphore                 │
+   │        （2026-11-16 13b-2b-2 起，启动【不再碰数据库】——           │
+   │         DDL 全归 `alembic upgrade head`，见 decisions 32 / #50）  │
    │     ② async with create_llm_client() as client:                 │
    │           app.state.llm_client = client                          │
    │           yield  ←──────── 服务运行期间停在这里 ──────────────┐   │
@@ -332,14 +331,12 @@ uvicorn 启动
 |---|---|---|
 | `/health`、`/v1/models` | 什么都不要 | 200 |
 | `/health/ready` | 只要一条**能用的连接**（引擎懒建立，与 lifespan 无关） | **200** |
-| `POST /v1/conversations` 等用表的 | **表结构** | ❌ `no such table` |
+| `POST /v1/conversations` 等用表的 | **表结构**（📎 2026-11-16 起来自 `alembic upgrade head`，**不再来自 lifespan**） | 200 需要迁移已跑；没跑 → ❌ `no such table`（📎 实测，见 #84） |
 | `/v1/upstream/models`、`/v1/chat/stream` | **`app.state.llm_client`** | ❌ `AttributeError: 'State' object has no attribute 'llm_client'` |
 
-> ⭐ 一句话：**lifespan 的产物是「表结构」和「`app.state` 上的共享对象」，不是「连接」。**
->
-> 🟡 **2026-11-16 起「表结构」这一行要改**：13b-2b-2 之后 lifespan **不再建表**，表由 `alembic upgrade head` 提供
-> （测试里由 `conftest.migrated` 跑迁移，见 §11.2）。届时「不开 lifespan」只会缺 `app.state` 上的两个对象，
-> 用表的端点仍能工作 —— 除非迁移没跑（那才是 `no such table`，见待办 #84）。
+> ⭐ 一句话：**lifespan 的产物只有「`app.state` 上的两个共享对象」，不是「表结构」、也不是「连接」。**
+> 📎 2026-11-16（13b-2b-2）起，`create_all` 已移出启动路径：DB 不可用时进程**照常起来**，
+> `/health` 200、`/health/ready` 503，由编排系统摘流量而不是 crash loop。
 
 ---
 
@@ -682,15 +679,15 @@ content-type: application/json
 
 | `code` | 谁产生 | 位置 | 出口 |
 |---|---|---|---|
-| `LAST_MESSAGE_NOT_USER` | `ensure_last_message_is_user` | [app.py:280](../src/app/api/app.py) | 400 envelope |
-| `MODEL_NOT_FOUND` | `get_model` | [app.py:259](../src/app/api/app.py) | 404 envelope |
-| `CONVERSATION_NOT_FOUND` | `_conversation_not_found`（**5 个端点共用这一处**） | [app.py:293](../src/app/api/app.py) | 404 envelope |
-| `DB_UNAVAILABLE` | `health_ready` | [app.py:225](../src/app/api/app.py) | 503 envelope |
-| `UPSTREAM_UNREACHABLE`（L1） | `LlmClient._request` | [llm_client.py:172](../src/app/llm_client.py) | 502 envelope |
-| `UPSTREAM_BAD_STATUS`（L2） | `LlmClient._request` | [llm_client.py:182](../src/app/llm_client.py) | 502 envelope |
-| `UPSTREAM_MALFORMED`（L3） | `LlmClient.list_models` | [llm_client.py:135](../src/app/llm_client.py) | 502 envelope |
-| `STREAM_NO_CONTENT` | 零内容保护段 | [app.py:762](../src/app/api/app.py) | ⚠️ **200 的流里的一帧**，不是状态码 |
-| `STREAM_FAILED` | `except Exception` 分支 | [app.py:795](../src/app/api/app.py) | ⚠️ 同上 |
+| `LAST_MESSAGE_NOT_USER` | `ensure_last_message_is_user` | [app.py](../src/app/api/app.py) | 400 envelope |
+| `MODEL_NOT_FOUND` | `get_model` | [app.py](../src/app/api/app.py) | 404 envelope |
+| `CONVERSATION_NOT_FOUND` | `_conversation_not_found`（**5 个端点共用这一处**） | [app.py](../src/app/api/app.py) | 404 envelope |
+| `DB_UNAVAILABLE` | `health_ready` | [app.py](../src/app/api/app.py) | 503 envelope |
+| `UPSTREAM_UNREACHABLE`（L1） | `LlmClient._request` | [llm_client.py](../src/app/llm_client.py) | 502 envelope |
+| `UPSTREAM_BAD_STATUS`（L2） | `LlmClient._request` | [llm_client.py](../src/app/llm_client.py) | 502 envelope |
+| `UPSTREAM_MALFORMED`（L3） | `LlmClient.list_models` | [llm_client.py](../src/app/llm_client.py) | 502 envelope |
+| `STREAM_NO_CONTENT` | 零内容保护段 | [app.py](../src/app/api/app.py) | ⚠️ **200 的流里的一帧**，不是状态码 |
+| `STREAM_FAILED` | `except Exception` 分支 | [app.py](../src/app/api/app.py) | ⚠️ 同上 |
 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` | 路由未命中 / 方法不对（框架抛） | `errors.py` 的 `_CODE_BY_STATUS` | envelope |
 | `VALIDATION_ERROR` | pydantic 校验失败 | `errors.py` | 422 envelope |
 | `INTERNAL_ERROR` | 任何未捕获异常 | `errors.py` | 500 envelope |
@@ -1348,7 +1345,9 @@ POST /v1/conversations
 
 ## 14. 决策 ↔ 代码 ↔ 钉住它的测试（一张对账表）
 
-> 用途有两个：读到一条决策想知道**它落在哪一行**；想改一行想知道**哪条决策会因此失效**。
+> 用途有两个：读到一条决策想知道**它落在哪个符号**；改一个符号想知道**哪条决策会因此失效**。
+> ⚠️ **本表只写符号名、不写行号** —— 📎 2026-11-16 实测：旧表里的行号整体漂了 2~30 行（一次 4 行的删除就够），
+> 行号是**必然过期**的信息；要行号就 `Select-String -Pattern "def chat_stream"`。
 > 决策正文（为什么、放弃了什么）在 [decisions.md](decisions.md)，这里只放**落点**。
 
 | # | 决策一句话 | 代码落点 | 钉住它的测试 |
@@ -1356,29 +1355,29 @@ POST /v1/conversations
 | 1 | 项目与笔记同仓库 | 仓库根 | — |
 | 2 | `app` + `src/` 布局 | [pyproject.toml](../pyproject.toml) `packages = ["src/app"]` | — |
 | 3 | Docker 延后 | 未落地（#49） | — |
-| 4 | client 应用级共享 | [app.py:57](../src/app/api/app.py) `lifespan`、[deps.py:40](../src/app/api/deps.py) | `test_upstream.py`（间接：override 的正是这个接缝） |
-| 5 | 三种错误形状暂不统一 | 已被 #25 取代 → [errors.py:85](../src/app/errors.py) | `test_errors.py`（7） |
-| 6 | 上游错误三层翻译 | [llm_client.py:147](../src/app/llm_client.py)（L1/L2）、[:115](../src/app/llm_client.py)（L3） | ✅ `test_adapter_http.py`（10，穿过 `MockTransport`） |
-| 7 | 流式用 SSE | [app.py:530](../src/app/api/app.py) `SseResponse`、[:540](../src/app/api/app.py) | `test_stream_frames.py`、`test_stream_consumes_fake_chunks` |
-| 8 | 业务规则抽成共用函数 | [app.py:263](../src/app/api/app.py)、[:346](../src/app/api/app.py) | `test_error_envelope[business_400]`、`test_stream_preflight_failure_changes_status_code` |
-| 9 | 请求级会话由 `get_db` 统一提交 | [deps.py:54](../src/app/api/deps.py) | `test_create_then_get`（间接） |
-| 10 | 契约按用途分家（In / Patch / Out） | [schemas.py:121](../src/app/schemas.py) / [:133](../src/app/schemas.py) / [:180](../src/app/schemas.py) | `test_conversations.py`（9） |
-| 11 | 标题规则抽成 `ConversationTitle` | [schemas.py:115](../src/app/schemas.py) | `test_invalid_title_returns_422`（3 组）、`test_title_is_stripped` |
-| 12 | PATCH 拒绝空 body | [schemas.py:147](../src/app/schemas.py)（`title` 必填） | ⚠️ **无**（3 组 422 打的是 POST） |
-| 13 | SQLite 起步、可切 PG | [config.py:60](../src/app/config.py)、[database.py:26](../src/app/database.py) | — |
-| 14 | 引擎模块级单例 | [database.py:26](../src/app/database.py)、关闭段 [app.py:85](../src/app/api/app.py) | `test_smoke.py`（间接：lifespan 跑过才有表） |
+| 4 | client 应用级共享 | [app.py](../src/app/api/app.py) `lifespan`、[deps.py](../src/app/api/deps.py) | `test_upstream.py`（间接：override 的正是这个接缝） |
+| 5 | 三种错误形状暂不统一 | 已被 #25 取代 → [errors.py](../src/app/errors.py) | `test_errors.py`（7） |
+| 6 | 上游错误三层翻译 | [llm_client.py](../src/app/llm_client.py) `_request`（L1/L2）、`list_models`（L3） | ✅ `test_adapter_http.py`（10，穿过 `MockTransport`） |
+| 7 | 流式用 SSE | [app.py](../src/app/api/app.py) `SseResponse`、`chat_stream` | `test_stream_frames.py`、`test_stream_consumes_fake_chunks` |
+| 8 | 业务规则抽成共用函数 | [app.py](../src/app/api/app.py) `ensure_last_message_is_user`（两条 chat 路由共用） | `test_error_envelope[business_400]`、`test_stream_preflight_failure_changes_status_code` |
+| 9 | 请求级会话由 `get_db` 统一提交 | [deps.py](../src/app/api/deps.py) | `test_create_then_get`（间接） |
+| 10 | 契约按用途分家（In / Patch / Out） | [schemas.py](../src/app/schemas.py) `ConversationIn` / `ConversationPatch` / `ConversationStatsOut` | `test_conversations.py`（9） |
+| 11 | 标题规则抽成 `ConversationTitle` | [schemas.py](../src/app/schemas.py) | `test_invalid_title_returns_422`（3 组）、`test_title_is_stripped` |
+| 12 | PATCH 拒绝空 body | [schemas.py](../src/app/schemas.py)（`title` 必填） | ⚠️ **无**（3 组 422 打的是 POST） |
+| 13 | SQLite 起步、可切 PG | [config.py](../src/app/config.py)、[database.py](../src/app/database.py) | — |
+| 14 | 引擎模块级单例 | [database.py](../src/app/database.py) `engine`、关闭段 [app.py](../src/app/api/app.py) `engine.dispose()` | `test_smoke.py`（间接：`/health/ready` 用到引擎） |
 | 15~19 | 命名 / 完成度表述 / 注释边界 / 标记符号 /「一次对话」无状态 | 文档与约定；"无状态"体现在**没有 messages 表**（#35） | — |
-| 16 | 计费记录不跟着对话删 | [models.py:93](../src/app/models.py) `ondelete="SET NULL"` + 关系上**不写** `cascade` | ✅ `test_migrations.py`（DDL 对比钉住 `ON DELETE SET NULL`；📎 从迁移里删掉它 → 两条全红） |
-| 20 | 两阶段记账 | [app.py:604](../src/app/api/app.py)（`add` + `commit`）→ [:626](../src/app/api/app.py)（`record_usage`） | `test_stream_accounting.py`（10） |
+| 16 | 计费记录不跟着对话删 | [models.py](../src/app/models.py) `ondelete="SET NULL"` + 关系上**不写** `cascade` | ✅ `test_migrations.py`（DDL 对比钉住 `ON DELETE SET NULL`；📎 从迁移里删掉它 → 两条全红） |
+| 20 | 两阶段记账 | [app.py](../src/app/api/app.py) `add` + `commit` → `record_usage` | `test_stream_accounting.py`（10） |
 | 21 | 防刷靠限流不靠记账 | 未落地（#37 #44） | — |
-| 22 | 游标分页为主 | [app.py:495](../src/app/api/app.py) | `test_pagination_walks_two_pages` |
-| 23 | `prod` + `debug` 启动即崩 | [config.py:82](../src/app/config.py) `_forbid_debug_in_prod` | ⚠️ **无**（手动实测过 `exit_code=1`） |
-| 24 | `dictConfig` 接管日志 | [logging_setup.py:15](../src/app/logging_setup.py) | ⚠️ **无** |
-| 25 | 统一错误形状、自有代码只抛 `AppError` | [errors.py:85](../src/app/errors.py)、[:107](../src/app/errors.py) | `test_errors.py`（7，含 3 种 404 靠码分开） |
-| 26 | 坏帧三档处置 | [llm_client.py:63](../src/app/llm_client.py)（语义层）+ `event_source` 的守卫 | `test_stream_adapter.py`（11）、`test_stream_frames.py`（12） |
-| 27 | 账单四态 + `StrEnum` | [models.py:62](../src/app/models.py) | `test_status_enum_values_are_pinned` |
-| 28 | 两次写入都用 `commit` | [app.py:605](../src/app/api/app.py)、[:626](../src/app/api/app.py) | `test_concurrency.py`（4，串行化回归） |
-| 32 | 测试跑真实迁移，不跑 `create_all` | ⬜ 未落地（13b-2b：`lifespan` + `conftest.py`） | — |
+| 22 | 游标分页为主 | [app.py](../src/app/api/app.py) `list_conversations` | `test_pagination_walks_two_pages` |
+| 23 | `prod` + `debug` 启动即崩 | [config.py](../src/app/config.py) `_forbid_debug_in_prod` | ⚠️ **无**（手动实测过 `exit_code=1`） |
+| 24 | `dictConfig` 接管日志 | [logging_setup.py](../src/app/logging_setup.py) | ⚠️ **无** |
+| 25 | 统一错误形状、自有代码只抛 `AppError` | [errors.py](../src/app/errors.py) `_error_response` / `AppError` | `test_errors.py`（7，含 3 种 404 靠码分开） |
+| 26 | 坏帧三档处置 | [llm_client.py](../src/app/llm_client.py)（语义层）+ `event_source` 的守卫 | `test_stream_adapter.py`（11）、`test_stream_frames.py`（12） |
+| 27 | 账单四态 + `StrEnum` | [models.py](../src/app/models.py) | `test_status_enum_values_are_pinned` |
+| 28 | 两次写入都用 `commit` | [app.py](../src/app/api/app.py) `record_usage` | `test_concurrency.py`（4，串行化回归） |
+| 32 | 测试跑真实迁移，不跑 `create_all` | ✅ [tests/conftest.py](../tests/conftest.py) `migrated`（session 级）+ `lifespan` 已不建表（13b-2b-2） | ✅ `test_smoke.py`（2 条 ready 用例）+ `test_migrations.py` |
 | 33 | 迁移守卫用子进程跑 alembic CLI | [tests/test_migrations.py](../tests/test_migrations.py) `_run_alembic` | 它自己就是守卫（📎 3 个变异 6 条全红） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
