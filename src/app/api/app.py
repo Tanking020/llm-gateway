@@ -42,7 +42,7 @@ from app.database import engine
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
 from app.logging_setup import configure_logging
-from app.models import Base, Conversation, LlmCall, LlmCallStatus
+from app.models import Conversation, LlmCall, LlmCallStatus
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -70,16 +70,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         判据：async with 的作用域 = 【它被使用的那段时间】。
     """
 
-    # 启动段[1]：建表。create_all 只建"还不存在的表"，已存在的表不会改结构
-    #   run_sync 用 greenlet 在同线程内跑同步风格的 DDL（不是线程池）
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # 【注意】：启动【不碰数据库】—— DDL 归 alembic（#50）。DB 挂了也要能起来，
+    #   由 /health/ready 报 503 让编排系统摘流量，而不是让进程 crash loop
 
-    # 启动段[2]：上游并发闸门（进程级）。放在 state 上，deps 里按请求取
+    # 启动段[1]：上游并发闸门（进程级）。放在 state 上，deps 里按请求取
     # 【注意】：必须每次启动都新建 —— 复用一个被上一轮测试耗尽的 Semaphore 会永远挡住请求
     app.state.upstream_semaphore = asyncio.Semaphore(settings.max_concurrent_upstream_calls)
 
-    # 启动段[3]：整个进程共享一个上游适配器
+    # 启动段[2]：整个进程共享一个上游适配器
     async with create_llm_client() as client:
         # 把 client 挂到 app.state 的 llm_client 属性上
         app.state.llm_client = client

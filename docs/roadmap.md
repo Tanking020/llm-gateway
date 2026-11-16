@@ -59,8 +59,8 @@
 | 小步 | 内容 | 判据 |
 |---|---|---|
 | **13b-1** ✅ | `uv add alembic` + `alembic init -t async` + 配 `env.py` + autogenerate 出初始迁移 | ✅ **2026-11-16 完成**：项目内实测 **3 对象、差异 0**；四步验证（upgrade / check / downgrade / upgrade）全通；四道门全绿 |
-| **13b-2** 🟡 **进行中（2a ✅ / 2b-1 ✅ / 2b-2 下一步）** | 拆成 2a / 2b，**先加守卫再拆**：<br>**13b-2a** ✅ 2026-11-16：建 `tests/test_migrations.py`（`alembic check` 无漂移 + 迁移 DDL 与 `create_all` 逐字一致）<br>**13b-2b-1** ✅ 2026-11-16：`conftest.py` 改跑真实迁移（`migrated` session fixture + 表存在断言），测试不再依赖 `create_all`<br>**13b-2b-2** ⬜ `lifespan` 移除 `create_all`；`/health/ready` 语义复核 | ① DB 不可用 → 服务**起得来** + 503（📎 2b-2 已预跑：进程 ALIVE / `/health` 200 / `/health/ready` 503）；② **95 个**用例全绿（✅ 2b-1 已达成）；③ 迁移写错时 CI 会红（✅ 2a 已达成：3 个变异 6 条全红） |
-| **13b-3** | 启动打印生效配置白名单（[#77](todos.md)） | 启动第一屏 6 项关键配置；**没有** `api_key` / 完整 `database_url` |
+| **13b-2** ✅ **2026-11-16 完成（2a + 2b-1 + 2b-2）** | 拆成 2a / 2b，**先加守卫再拆**：<br>**13b-2a** ✅ 2026-11-16：建 `tests/test_migrations.py`（`alembic check` 无漂移 + 迁移 DDL 与 `create_all` 逐字一致）<br>**13b-2b-1** ✅ 2026-11-16：`conftest.py` 改跑真实迁移（`migrated` session fixture + 表存在断言），测试不再依赖 `create_all`<br>**13b-2b-2** ✅ 2026-11-16：`lifespan` 移除 `create_all`；`/health/ready` 两态写成用例（200 / 503） | ① ✅ DB 不可用 → 服务**起得来** + 503（📎 真进程实测：进程 ALIVE / `/health` 200 / `/health/ready` 503）；② ✅ **97 个**用例全绿；③ ✅ 迁移写错时 CI 会红（3 个变异 6 条全红） |
+| **13b-3** 🟡 **下一步** | 启动打印生效配置白名单（[#77](todos.md)） | 启动第一屏 6 项关键配置；**没有** `api_key` / 完整 `database_url` |
 
 ### 为什么是这个顺序
 
