@@ -36,28 +36,41 @@
 
 ## 二、下一步：Step 13「部署」拆成 6 个子阶段
 
-> **档期**：全部 `P1`（第一次发版之前）。**形态**：docker-compose + nginx（单机完整栈，本地可复现生产形态）。
-> **鉴权方案**：API key → 内部用户（一个中间件解析出 `owner_id`，为将来换成真正的用户表留好形状）。
+> **档期**：全部 `P1`（第一次发版之前）。**形态**：docker-compose + nginx（单机完整栈，本地复现生产形态）。
+> **鉴权方案**：API key → 内部用户（中间件解析出 `owner_id`，为将来换成真正的用户表留好形状）。
 > 每个子阶段的完成判据必须是**一条命令 + 一组可见输出**，不是「代码写完了」。
+>
+> ⚠️ **执行顺序（2026-11-16 调整）**：原为 `13a→13b→…`，现改为 **`13b→13c→13d→13a→13e→13f`**。
+> 两个理由：① 本机**没有 Docker / 无 WSL / 非管理员**，13a 只能"写出来"不能"证明它对"
+> （见 [dev-environment.md](dev-environment.md) §8）；② 13b 要改启动路径（`create_all` 退出 `lifespan`），
+> **先定启动路径再封装镜像**，compose 只需写一次。
 
-| 子阶段 | 做什么 | 关联待办 | 完成判据 | 依赖 |
-|---|---|---|---|---|
-| **13a 容器化底座** | `Dockerfile`（多阶段 · 非 root · exec 形式 CMD）+ `.dockerignore` + `docker-compose.yml`（app + nginx） | [#49](todos.md) | `docker compose up` 起来 → 经 nginx 访问 `/health` 200；镜像内无 `.venv`/`.git`/`tests`；进程非 root；`docker compose stop` 时收到 SIGTERM | — |
-| **13b 启动路径与迁移** | Alembic 接管 DDL；`lifespan` 移除 `create_all`；启动打印生效配置白名单 | [#50](todos.md) [#77](todos.md) | ① DB 未就绪时服务**能起来**（`/health/ready` 报 503，而不是进程退出）；② `alembic upgrade head` 建出与模型一致的表；③ 启动第一屏打印 6 个关键配置，**不含** `api_key` | 13a |
-| **13c 请求生命周期** | 上游总时长上限（`asyncio.timeout`）· 500 补 CORS 头 · `commit` 时机（[#54](todos.md)）· 优雅停机 | [#55](todos.md) [#57](todos.md) [#54](todos.md) | ① 慢速滴答上游被掐断；② 500 带 `Access-Control-Allow-Origin` 且 `request_id` 可读；③ 模拟 commit 失败**不再**返回 201；④ 发版时在途 SSE 跑完或明确超时 | 13b |
-| **13d 访问控制** | API key 校验 → `owner_id` · 迁移 + 全部查询带过滤 · 越权返 **404**（不是 403）· 限流（按 key） | [#36](todos.md) [#37](todos.md) | ① 换 key 看不到也删不掉别人的对话；② 跨用户访问 **404**；③ 超阈值 **429 + `Retry-After`** | 13b + 13c |
-| **13e 可观测** | 访问日志带客户端 IP（`X-Forwarded-For` 只信任自己那层）· 日志 JSON + 按天轮转 · 指标最小集 | [#56](todos.md) [#51](todos.md) [#66](todos.md) | ① 每行日志可被 `ConvertFrom-Json` 解析；② 日志有客户端 IP；③ `/metrics` 能读请求数 / 5xx 比例 / p99 / 池占用 | 13a |
-| **13f 压测定容量** | k6 / locust 打真实并发；把「闸门 4 / 池 15」换成实测数字 | [#76](todos.md) | 一张表：并发 N 时的 p95 首字节 / 错误率 / DB 池 `checkedout` / 上游 429 次数 | **13e** |
+| 执行序 | 子阶段 | 做什么 | 关联待办 | 完成判据 | 硬依赖 |
+|---|---|---|---|---|---|
+| **①** | **13b 启动路径与迁移** | Alembic 接管 DDL；`lifespan` 移除 `create_all`；启动打印生效配置白名单 | [#50](todos.md) [#77](todos.md) | ① DB 未就绪时服务**能起来**（`/health/ready` 503，而非进程退出）；② `alembic upgrade head` 建出的表与模型一致；③ 启动第一屏打印 6 项配置，**不含** `api_key` | — |
+| **②** | **13c 请求生命周期** | 上游总时长上限（`asyncio.timeout`）· 500 补 CORS 头 · `commit` 时机（[#54](todos.md)）· 优雅停机 | [#55](todos.md) [#57](todos.md) [#54](todos.md) | ① 慢速滴答上游被掐断；② 500 带 `Access-Control-Allow-Origin` 且 `request_id` 可读；③ 模拟 commit 失败**不再**返 201；④ 发版时在途 SSE 跑完或明确超时 | 13b |
+| **③** | **13d 访问控制** | API key 校验 → `owner_id` · 迁移 + 全部查询带过滤 · 越权返 **404**（不是 403）· 限流（按 key） | [#36](todos.md) [#37](todos.md) | ① 换 key 看不到也删不掉别人的对话；② 跨用户访问 **404**；③ 超阈值 **429 + `Retry-After`** | 13b + 13c |
+| **④** | **13a 容器化底座** | `Dockerfile`（多阶段 · 非 root · exec 形式 CMD）+ `.dockerignore` + `docker-compose.yml`（app + nginx） | [#49](todos.md) | `docker compose up` → 经 nginx 访问 `/health` 200；镜像内无 `.venv`/`.git`/`tests`；进程非 root；`stop` 时收到 SIGTERM | 13b（启动路径定稿）· **需先装 Docker** |
+| **⑤** | **13e 可观测** | 访问日志带客户端 IP（`X-Forwarded-For` 只信任自己那层）· 日志 JSON + 按天轮转 · 指标最小集 | [#56](todos.md) [#51](todos.md) [#66](todos.md) | ① 每行日志可被 `ConvertFrom-Json` 解析；② 日志有客户端 IP；③ `/metrics` 能读请求数 / 5xx 比例 / p99 / 池占用 | **13a**（XFF 需真实 nginx） |
+| **⑥** | **13f 压测定容量** | k6 / locust 打真实并发；把「闸门 4 / 池 15」换成实测数字 | [#76](todos.md) | 一张表：并发 N 时的 p95 首字节 / 错误率 / DB 池 `checkedout` / 上游 429 次数 | **13e**（要读指标） |
+
+### 13b 内部再拆 3 小步（一次一个可验证单元）
+
+| 小步 | 内容 | 判据 |
+|---|---|---|
+| **13b-1** | `uv add alembic` + `alembic init -t async` + 配 `env.py` + autogenerate 出初始迁移 | `alembic upgrade head` 建出的表与 `create_all` **逐字一致**（📎 已在探针验证：3 对象、差异 0） |
+| **13b-2** | `lifespan` 移除 `create_all`；`conftest.py` 改为跑真实迁移；`/health/ready` 语义复核 | ① DB 不可用 → 服务**起得来** + 503；② 93 个用例全绿；③ 迁移写错时 CI 会红 |
+| **13b-3** | 启动打印生效配置白名单（[#77](todos.md)） | 启动第一屏 6 项关键配置；**没有** `api_key` / 完整 `database_url` |
 
 ### 为什么是这个顺序
 
 | 顺序 | 理由 |
 |---|---|
-| 容器化最前 | 「DB 未就绪会怎样」「代理下 XFF 对不对」在 `uv run python -m app` 里**复现不出来** |
-| 启动路径先于迁移 | 同一件事的两面：DDL 移出启动路径既是「迁移工具接管」，也是「服务不再 crash loop」 |
-| 生命周期先于访问控制 | 13c 改所有请求的公共路径，13d 改所有端点 —— 先公共后端点，回归里不会混两个变量 |
-| 鉴权先于限流 | 没有「这个请求属于谁」，限流只能按 IP 计；而 IP 在代理后面不可靠 |
-| 指标先于压测 | [#76](todos.md) 要读 p95 / 池占用，没有 13e 只能人工计时 |
+| 启动路径最先 | 它改的是**进程怎么活**：DDL 移出启动路径既是「迁移工具接管」，也是「DB 未就绪不再 crash loop」。容器化必须建在定稿的启动路径上 |
+| 生命周期先于访问控制 | 13c 改所有请求的公共路径，13d 改所有端点 —— 先公共后端点，回归里只变一个变量 |
+| 鉴权先于限流 | 没有「这个请求属于谁」，限流只能按 IP，而 IP 在反向代理后面不可靠 |
+| 容器化先于可观测 | `X-Forwarded-For` 只信任自己那层代理 —— 没有 nginx 就没法验证这条 |
+| 指标先于压测 | [#76](todos.md) 要读 p95 / 池占用，没有 13e 只能人工计时，数字不可信 |
 
 ### 不在 Step 13 范围内的 P1
 

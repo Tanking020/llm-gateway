@@ -82,6 +82,34 @@ uv 报 `warning: Ignoring unsupported Python request ﻿3.12 in version file`，
 
 `git reset --hard` · `git clean -fd` · 删除 `.venv` · `docker system prune` · 任何 `Remove-Item` 指向 `app.db`。
 
+## 8. 本机**没有**的工具（会卡住哪些工作）
+
+> 2026-11-16 实测。这一节的意义：**下次不要假设这些命令能用**。
+
+| 工具 | 状态 | 怎么确认 | 卡住什么 |
+|---|---|---|---|
+| **Docker / Docker Desktop** | ❌ 未安装 | `docker --version` → 命令不存在；4 个常见安装路径全部 `Test-Path` = False | Step 13a（镜像 / compose / 非 root / SIGTERM）、13e（`X-Forwarded-For`）、13f（容器内压测） |
+| **WSL / WSL2** | ❌ 未安装 | `wsl --status` → 「未安装用于 Linux 的 Windows 子系统」 | Docker Desktop 的前置条件 |
+| 管理员权限 | ❌ 当前会话无 | `WindowsPrincipal.IsInRole(Administrator)` = False | 安装 Docker Desktop / `wsl --install` / 查 `Get-WindowsOptionalFeature` |
+| 虚拟化 | ✅ 已开启 | `Win32_ComputerSystem.HypervisorPresent` = True | — |
+| 磁盘 | ✅ 剩 169.8 GB | `Get-PSDrive C` | — |
+| 系统版本 | Windows 11 **家庭版** | `Win32_OperatingSystem.Caption` | 家庭版**只能**用 WSL2 后端（Hyper-V 后端要 Pro/Enterprise） |
+
+**要装 Docker 的话，顺序固定**（在管理员终端里）：
+
+```powershell
+wsl --install                 # 装 WSL2，完成后必须重启
+# ── 重启后，管理员终端 ──
+winget install --id Docker.DockerDesktop -e
+# 启动 Docker Desktop → Settings 确认 Use WSL 2 based engine
+docker run --rm hello-world   # 验证
+```
+
+### 8.1 与这条相关的排期决定
+
+Step 13 的执行顺序因此调整为 **13b → 13c → 13d → 13a → 13e → 13f**（见 [roadmap.md](roadmap.md) §二）。
+理由不是"绕过"，是**先做不需要容器的三件事**，而且 13b 要改启动路径 —— 先定启动路径再封装镜像，compose 只需写一次。
+
 ## 7. 相关
 
 | 想深入 | 去 |
