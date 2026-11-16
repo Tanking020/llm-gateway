@@ -336,6 +336,10 @@ uvicorn 启动
 | `/v1/upstream/models`、`/v1/chat/stream` | **`app.state.llm_client`** | ❌ `AttributeError: 'State' object has no attribute 'llm_client'` |
 
 > ⭐ 一句话：**lifespan 的产物是「表结构」和「`app.state` 上的共享对象」，不是「连接」。**
+>
+> 🟡 **2026-11-16 起「表结构」这一行要改**：13b-2b-2 之后 lifespan **不再建表**，表由 `alembic upgrade head` 提供
+> （测试里由 `conftest.migrated` 跑迁移，见 §11.2）。届时「不开 lifespan」只会缺 `app.state` 上的两个对象，
+> 用表的端点仍能工作 —— 除非迁移没跑（那才是 `no such table`，见待办 #84）。
 
 ---
 
@@ -1085,10 +1089,16 @@ tests/
 ### 11.2 依赖注入图（fixture 与 override）
 
 ```text
+                    conftest.migrated  (session 作用域 · autouse)
+                            │
+                            ▼
+                   alembic upgrade head   ← 建表（13b-2b-1 起；lifespan 不再建表）
+                            │
+                            ▼
                     conftest.client  (function 作用域)
                             │
                             ▼
-                  with TestClient(app)      ← 触发 lifespan：建表 + 造 client
+                  with TestClient(app)      ← 触发 lifespan：造 llm_client / 并发闸门
                             │
                             ▼
                      _truncate_all()        ← 清表（必须在 with 之后，否则 no such table）

@@ -277,7 +277,7 @@ uv run pytest -q        # 95 个用例，约 9 s
 | 🔜 **进行中（P1，上线前）** | 容器化与反向代理（[#49](docs/todos.md)）· 鉴权与 `owner_id`（[#36](docs/todos.md)）· 速率限制（[#37](docs/todos.md)）· 请求总时长上限（[#55](docs/todos.md)）· 500 的 CORS 头（[#57](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)） |
 | 📋 **规划中** | 消息持久化（`messages` 表）· 指标与告警 · 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
-完整的 83 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
+完整的 84 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 文档
 

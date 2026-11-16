@@ -678,6 +678,10 @@
 | **重审条件** | ① 测试时长涨到影响开发节奏（> 60 s）→ 考虑 C；② 改用 PostgreSQL 后迁移变慢 → 只跑一次并 `TRUNCATE` 清表（现在的做法）；③ 需要测「从旧版本升级」时 → 增加专门的迁移升级用例 |
 
 > 📍 实测依据：[DEVLOG.md](DEVLOG.md) 流水 1.143 的探针 1 —— autogenerate 与 `create_all` 的 DDL **差异 0**。
+>
+> ✅ **落地（2026-11-16，13b-2b-1）**：`tests/conftest.py` 的 `migrated` fixture（`session` + `autouse`）用
+> `command.upgrade(cfg, "head")` 建表，并断言「模型里的表真的建出来了」。📎 成本：空库 **166 ms** / 已是最新 **7 ms**
+> （见 [DEVLOG 流水 1.147](DEVLOG.md)）。`lifespan` 的 `create_all` 在 13b-2b-2 移除。
 
 ---
 
