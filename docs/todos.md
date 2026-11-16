@@ -11,7 +11,7 @@
 > | 为什么选了现在这个做法 | [decisions.md](decisions.md) |
 >
 > **档期语义**：`P0` = 阻断正确性或成本，现在就做｜`P1` = 对外上线前必须做｜`P2` = 有真实用户前做｜`P3` = 记录在案、不修。
-> **最后更新**：2026-11-16 · 共 83 条（关闭状态逐行标注）
+> **最后更新**：2026-11-16 · 共 84 条（关闭状态逐行标注）
 
 ---
 
@@ -119,6 +119,7 @@
 | 80 | 🟢 **无 PR 模板** | `.github/PULL_REQUEST_TEMPLATE.md` 不存在。作用是把质量门与「文档更新清单」变成提交前勾选，而不是靠记忆 | **`P2` · 有学习价值，后面补**（checklist 直接引用 `CONTRIBUTING.md` §2 与 §6） |
 | 81 | 🟢 **无 dependabot** | 依赖升级靠手动 `uv lock --upgrade`。dependabot 能自动开升级 PR，但 **uv 生态的支持情况要实测**（是否识别 `uv.lock`） | **`P2` · 有学习价值，后面补**（先验证它是否读 `uv.lock`，否则等于没接） |
 | 82 | ~~🟡 **`notes/stage1-fastapi.md` 562KB，可能超过 GitHub 的 Markdown 渲染上限**~~ | ✅ **已关闭（2026-11-14 实测证伪）**：学习者在 GitHub 网页打开该文件（**562.4 KB / 12070 行**），**未截断、正常展示**。原推断（"512 KB 上限"）在本仓库不成立。⭐ 教训：这类限制**直接开网页看**，不要拿二手数字做设计决定 —— 按传闻拆文件，成本照付、问题可能根本不存在 | — |
+| 84 | 🟠 **生产部署没有「跑迁移」这一步 —— 13b-2b 之后新库上线即 `no such table`** | 13b-2b 拆掉 `lifespan` 的 `create_all` 后，建表只剩 `alembic upgrade head` 一条路，而**部署形态里没有任何地方执行它**（`Dockerfile` / `docker-compose.yml` 都还没写，见 #49）。⚠️ 两层后果：① 空库第一次部署 → 第一个写请求 **500 `no such table`**；② `/health/ready` 只 `SELECT 1`，**表不存在也照样 200** → 就绪探针发现不了这个故障，实例被放上流量后才炸 | **`P0`，随 13a（容器化底座）一起做**：compose 里加一次性 `migrate` 服务（`alembic upgrade head`，app 用 `depends_on: service_completed_successfully` 等它）或部署流水线的一步。判据：**空库** `docker compose up` → 迁移先跑完 → `POST /v1/conversations` 返回 201。⚠️ 可顺带评估「`/health/ready` 是否要探 schema 版本」—— 代价是探针变重，收益是把「迁移没跑」变成显式的 503 |
 | 83 | 🟠 **DB 不可用时业务端点返回 500 `INTERNAL_ERROR`，而不是 503** | 📎 实测（13b-2b 预跑，`DATABASE_URL` 指向不存在的目录）：`/health` → 200、`/health/ready` → **503 `DB_UNAVAILABLE`**（都对）；但 `POST /v1/conversations`、`GET /v1/conversations` 都返回 **500 `INTERNAL_ERROR`** —— `get_db` / 查询处的 `OperationalError` 没被映射成「依赖不可用」。⚠️ 后果：① 编排系统把 500 当「我们的 bug」→ 报警指向错误方向；② 客户端分不清「重试有用」（503）与「重试没用」（500）；③ 与 `/health/ready` 的语义自相矛盾 | **`P1`，并在 13c（请求生命周期）里做**：把连接层的 `OperationalError` 映射成 **503 `DB_UNAVAILABLE` + `Retry-After`**（与 #26 的 ready 语义对齐）。判据：DB 目录不存在时业务端点返回 **503**（不是 500） |
 | 76 | 🔴 **从来没压测过：「能扛多少」至今是一个猜出来的数**（2026-11-04 学习者读「闸门 vs 连接池」时自己提出要记住） | 📎 现在的数字全是**推导**不是**实测**：闸门 4（保守起点）、DB 池 15（SQLAlchemy 默认值）、HTTP 池 100（httpx 默认值）—— 没有一个来自压力测试。⚠️ 而 12g-2 之后 `MAX_CONCURRENT_UPSTREAM_CALLS=4` **直接决定第 5 个用户看到 503 还是看到回答**，这个数拍错了要么浪费钱、要么白白拒绝用户。📎 另外「4 够不够」「要不要调 8」这类问题，只有压测能回答 | **`P1`（2026-11-04 从 `P2` 上调；2026-11-14 定位为 Step **13f**，须排在 13e 指标之后）**：用 `locust` / `k6` 对 `/v1/chat/stream` 打真实并发，记录「并发 N 时的 p95 首字节 / 错误率 / DB 池 checkedout / 上游 429 次数」，把「能扛多少」变成一个**数字**。⚠️ 必须用真 uvicorn + 真 TCP（`TestClient` 测不出池占用，见 #73） |
 > 🟡 **#51 拆成两半**（11c，2026-10-31）：

@@ -48,10 +48,21 @@
 
 > 所以签名漂移会被 mypy 抓成 `[override]` 错误。
 
-> `conftest.py` 是全局准备（环境变量 / 清表 / `client` 与 `db_path` fixture）。
+> `conftest.py` 是全局准备（环境变量 / **跑真实迁移建表** / 清表 / `client` 与 `db_path` fixture）。
 
 > `test_migrations.py` 是**唯一**起子进程的用例（`sys.executable -m alembic`）：`env.py` 的连接串取自
 > `settings` 单例，进程内改不动 → 代价是多约 2 秒（[决策 33](../docs/decisions.md)）。
+
+📎 **「跑真实迁移建表」的一次性成本（2026-11-16 本机实测）**：
+
+| 动作 | 耗时 | 说明 |
+|---|---|---|
+| `upgrade head` 对着**空库**（真建表） | **166 ms** | 这就是 `conftest` 每次 pytest 多付的那点钱 |
+| `upgrade head` 对着**已是最新**的库 | **7 ms** | 幂等：只读 `alembic_version` 比一下，什么都不做 |
+| `create_all` 建同样 3 个对象 | **18 ms** | 快 9 倍，但它**不读迁移文件** → 迁移写错测不出来 |
+
+⚠️ 关键：这个成本按 **pytest 会话**（一次 `uv run pytest`）付，**不是按用例**付 ——
+95 个用例共用同一个库，每个用例前只 `DELETE` 清表。**也不要**在应用启动时跑迁移（多副本会 DDL 竞态）。
 
 ---
 

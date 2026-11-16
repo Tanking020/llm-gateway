@@ -1,4 +1,7 @@
-"""pytest 的全局准备：本文件在任何测试模块被 import 前执行"""
+"""pytest 的全局准备：本文件在任何测试模块被 import 前执行
+
+【注意】：建表由 alembic 迁移负责（决策 32）—— 迁移文件写错时这里会先炸
+"""
 
 import os
 
@@ -20,17 +23,43 @@ os.environ["APP_ENV"] = "dev"
 os.environ["DEBUG"] = "false"
 
 import pytest  # noqa: E402
+from alembic import command  # noqa: E402
+from alembic.config import Config  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.api.app import app  # noqa: E402
 from app.models import Base  # noqa: E402
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def migrated() -> None:
+    """整个会话只建一次表：跑真实迁移，让「迁移文件写错」在这里就炸"""
+    # 【注意】：ini 用绝对路径 —— alembic 内部的 script_location 是相对 ini 所在目录解析的；
+    # 写死路径后从任何工作目录跑 pytest 都能找到 alembic/
+    cfg = Config(str(_PROJECT_ROOT / "alembic.ini"))
+    command.upgrade(cfg, "head")
+    # 【注意】：一条 revision 都没有时 upgrade 静默成功（实测）→ 必须自己断言表已建出，
+    #   否则症状会变成别的用例里的 no such table（根因不直观）
+    conn = sqlite3.connect(str(_TEST_DB))
+    try:
+        found = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        conn.close()
+    missing = {table.name for table in Base.metadata.sorted_tables} - found
+    assert not missing, (
+        f"迁移没有建出这些表：{sorted(missing)} —— alembic/versions/ 的迁移文件提交了吗？"
+    )
 
 
 def _truncate_all() -> None:
     """
     清空所有业务表：让每个测试都从空库开始
 
-    【注意】：必须在 with 之后调用 —— 表是 lifespan 里的 create_all 建的
+    【注意】：必须在 migrated 之后调用 —— 表由它建（别再依赖 lifespan 的 create_all）
     """
     conn = sqlite3.connect(str(_TEST_DB))
     try:
