@@ -17,6 +17,7 @@ requires-python = ">=3.12"
 # < 用于防止 uv.lock --upgrade 后可能出现的破坏性升级（通过上界明确排除 3.x）
 dependencies = [
     "aiosqlite>=0.22.1",
+    "alembic>=1.20.1",
     "fastapi>=0.143.0",
     "httpx>=0.28.1",
     "pydantic>=2.13.5,<3",
@@ -117,12 +118,19 @@ line-length = 100
 # ⚠️ 把 markdown 排除在 ruff 之外
 # ruff format 会格式化 .md 里 ```python 代码块；而文档里的示例是【教学材料】
 # （刻意对齐的注释、故意报错的例子、不完整片段），被格式化后反而失去可读性
-extend-exclude = ["*.md"]
+#
+# ⚠️ alembic/versions 也排除：那是 `alembic revision --autogenerate` 生成的产物。
+# 被 ruff 改写后，下次 regenerate 会产出「格式差异」的假 diff，掩盖真正的 schema 变更。
+# 迁移文件的正确性由 `alembic check`（漂移检测）与「迁移 vs create_all 的 DDL 对比」守卫，不靠 lint
+extend-exclude = ["*.md", "alembic/versions"]
 
 [tool.ruff.lint.isort]
 # tests/fakes.py 是本项目自己的代码，但它不在 src/app 包里，
 # ruff 默认会把它归到「第三方」import 组里，导致 import 顺序检查报 I001
 known-first-party = ["app", "fakes"]
+# 【注意】：根目录有个 alembic/ 目录，ruff 会据此把 `import alembic` 判成第一方，
+# 于是 env.py 里 alembic 与 sqlalchemy 被分到不同组 → I001。必须显式声明它是第三方
+known-third-party = ["alembic"]
 
 [tool.ruff.lint]
 # select = 启用哪些规则集# ⚠️ ruff 默认只开一小部分（E4/E7/E9/F），这里显式点亮更多
