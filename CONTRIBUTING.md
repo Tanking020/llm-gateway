@@ -103,6 +103,30 @@ config.py   ←任何层可读（只读，不写状态）
 
 **emoji 只用于 `.md`**；`.py` 里一律用 `【注意】：`。
 
+## 4.5 数据库变更流程（改了模型就必须生成迁移）
+
+改动 `src/app/models.py` 后，**必须**生成迁移文件并提交，否则「模型」与「库」会悄悄分叉：
+
+```bash
+# 1. 对【空库】生成迁移：autogenerate 算的是「metadata vs 现有库」的差集，
+#    若对着已有表的开发库跑，差集会为空 —— 生成的迁移是空的且不会报错
+$env:DATABASE_URL = "sqlite+aiosqlite:///$env:TEMP\autogen.db"   # PowerShell
+uv run alembic revision --autogenerate -m "add owner_id to conversations"
+
+# 2. 人工 review 生成的文件：列类型、外键 ondelete、索引、downgrade 顺序
+# 3. 验证
+uv run alembic upgrade head
+uv run alembic check          # 期望 No new upgrade operations detected
+uv run alembic downgrade base && uv run alembic upgrade head
+```
+
+| 规则 | 理由 |
+|---|---|
+| 迁移文件**必须提交** | 它是部署产物的一部分；CI 与生产都靠它建表 |
+| **不要手改** autogenerate 的产物到「看不出来源」 | 要改就在文件顶部写一句为什么，review 时才看得懂 |
+| `alembic/versions` **排除在 ruff 之外** | 它是生成物；被改写后下次 regenerate 会产出格式上的假 diff，掩盖真正的 schema 变更 |
+| `alembic.ini` **只写英文** | `fileConfig` 用 locale 编码读它，中文在 GBK 环境下会 `UnicodeDecodeError`（坑 K89） |
+
 ## 5. 测试约定
 
 | 判据 | 做法 |

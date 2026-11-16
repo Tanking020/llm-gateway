@@ -258,6 +258,8 @@ uv run pytest -q        # 93 个用例，约 8 s
 │   ├── constants.py        # 跨模块必须一致的常量（如头名）
 │   ├── __main__.py         # 启动入口（让 settings.host/port/debug 生效）
 │   └── main.py             # CLI：上游连通性检查
+├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
+├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
 ├── tests/                  # 93 个用例，按「测哪一层」分为 10 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记

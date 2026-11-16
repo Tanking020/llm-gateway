@@ -58,8 +58,8 @@
 
 | 小步 | 内容 | 判据 |
 |---|---|---|
-| **13b-1** | `uv add alembic` + `alembic init -t async` + 配 `env.py` + autogenerate 出初始迁移 | `alembic upgrade head` 建出的表与 `create_all` **逐字一致**（📎 已在探针验证：3 对象、差异 0） |
-| **13b-2** | `lifespan` 移除 `create_all`；`conftest.py` 改为跑真实迁移；`/health/ready` 语义复核 | ① DB 不可用 → 服务**起得来** + 503；② 93 个用例全绿；③ 迁移写错时 CI 会红 |
+| **13b-1** ✅ | `uv add alembic` + `alembic init -t async` + 配 `env.py` + autogenerate 出初始迁移 | ✅ **2026-11-16 完成**：项目内实测 **3 对象、差异 0**；四步验证（upgrade / check / downgrade / upgrade）全通；四道门全绿 |
+| **13b-2** 🟡 **下一步** | `lifespan` 移除 `create_all`；`conftest.py` 改为跑真实迁移；`/health/ready` 语义复核 | ① DB 不可用 → 服务**起得来** + 503；② 93 个用例全绿；③ 迁移写错时 CI 会红 |
 | **13b-3** | 启动打印生效配置白名单（[#77](todos.md)） | 启动第一屏 6 项关键配置；**没有** `api_key` / 完整 `database_url` |
 
 ### 为什么是这个顺序
