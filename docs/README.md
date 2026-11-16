@@ -14,6 +14,9 @@
 | [architecture.md](architecture.md) | **长什么样**：七层栈 / 模块依赖 / ER+DDL / 端点总表 / 成功·错误·SSE 形状 / 配置 / 日志 / 状态机 | 弄清「这个请求经过哪几层」「这个字段从哪来」 | 随提问增补 |
 | [api.md](api.md) | **端点契约**：请求 / 成功响应真实样本 / 错误码 / SSE 帧 | 对接前端、联调 | 加端点时 |
 | [production-readiness.md](production-readiness.md) | **距离上线还差什么**：七道门 + 档期 + 过门判据 | 排优先级、准备评审 | 每次评审 |
+| [ai-collaboration.md](ai-collaboration.md) | **AI 怎么协作**：步骤卡格式、讲解顺序、批改机制、边界、触发词 | 定协作方式时 | 学习者定新规则时 |
+| [tool-approval.md](tool-approval.md) | **哪些操作用 AI 动手前要确认**：两层模型（工具批准 / 编辑接受）、危险与安全清单、当前设置与回滚 | 觉得「点得太频繁」或想收紧安全时 | 改审批设置时 |
+| [dev-environment.md](dev-environment.md) | **本机命令与环境的硬规则**：PowerShell 5.1 四条硬规则、编码陷阱、本机缺哪些工具 | 写命令 / 排查编码问题时 | 换机器或装新工具时 |
 
 ## 边界：谁写什么、谁不写什么
 
