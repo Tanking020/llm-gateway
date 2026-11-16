@@ -1075,6 +1075,7 @@ tests/
       ├─ 路由层接线与守卫 ──── upstream / stream_frames / stream_accounting
       ├─ 适配器协议层 ──────── stream_adapter / adapter_http ← 唯一允许 import httpx 的测试
       ├─ 并发与连接池 ──────── concurrency ← 唯一真起 uvicorn 的测试
+      ├─ 迁移层 ────────────── migrations ← 唯一【起子进程】的测试（跑 alembic CLI）
       └─ 护栏上限 ──────────── limits（闸门 503 / 槽位归还 / max_tokens / 输入长度）
 ```
 
@@ -1357,7 +1358,7 @@ POST /v1/conversations
 | 13 | SQLite 起步、可切 PG | [config.py:60](../src/app/config.py)、[database.py:26](../src/app/database.py) | — |
 | 14 | 引擎模块级单例 | [database.py:26](../src/app/database.py)、关闭段 [app.py:85](../src/app/api/app.py) | `test_smoke.py`（间接：lifespan 跑过才有表） |
 | 15~19 | 命名 / 完成度表述 / 注释边界 / 标记符号 /「一次对话」无状态 | 文档与约定；"无状态"体现在**没有 messages 表**（#35） | — |
-| 16 | 计费记录不跟着对话删 | [models.py:93](../src/app/models.py) `ondelete="SET NULL"` + 关系上**不写** `cascade` | ⚠️ **无**（只在手工实验里验过） |
+| 16 | 计费记录不跟着对话删 | [models.py:93](../src/app/models.py) `ondelete="SET NULL"` + 关系上**不写** `cascade` | ✅ `test_migrations.py`（DDL 对比钉住 `ON DELETE SET NULL`；📎 从迁移里删掉它 → 两条全红） |
 | 20 | 两阶段记账 | [app.py:604](../src/app/api/app.py)（`add` + `commit`）→ [:626](../src/app/api/app.py)（`record_usage`） | `test_stream_accounting.py`（10） |
 | 21 | 防刷靠限流不靠记账 | 未落地（#37 #44） | — |
 | 22 | 游标分页为主 | [app.py:495](../src/app/api/app.py) | `test_pagination_walks_two_pages` |
@@ -1367,8 +1368,10 @@ POST /v1/conversations
 | 26 | 坏帧三档处置 | [llm_client.py:63](../src/app/llm_client.py)（语义层）+ `event_source` 的守卫 | `test_stream_adapter.py`（11）、`test_stream_frames.py`（12） |
 | 27 | 账单四态 + `StrEnum` | [models.py:62](../src/app/models.py) | `test_status_enum_values_are_pinned` |
 | 28 | 两次写入都用 `commit` | [app.py:605](../src/app/api/app.py)、[:626](../src/app/api/app.py) | `test_concurrency.py`（4，串行化回归） |
+| 32 | 测试跑真实迁移，不跑 `create_all` | ⬜ 未落地（13b-2b：`lifespan` + `conftest.py`） | — |
+| 33 | 迁移守卫用子进程跑 alembic CLI | [tests/test_migrations.py](../tests/test_migrations.py) `_run_alembic` | 它自己就是守卫（📎 3 个变异 6 条全红） |
 
-⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #16 #23 #24）意味着：
+⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
 
 > 📌 用例总数与每个文件的用例数**不写在这张表里** —— 唯一出处是 [tests/README.md](../tests/README.md) §1。

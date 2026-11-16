@@ -126,6 +126,7 @@ uv run alembic downgrade base && uv run alembic upgrade head
 | **不要手改** autogenerate 的产物到「看不出来源」 | 要改就在文件顶部写一句为什么，review 时才看得懂 |
 | `alembic/versions` **排除在 ruff 之外** | 它是生成物；被改写后下次 regenerate 会产出格式上的假 diff，掩盖真正的 schema 变更 |
 | `alembic.ini` **只写英文** | `fileConfig` 用 locale 编码读它，中文在 GBK 环境下会 `UnicodeDecodeError`（坑 K89） |
+| 上面第 3 步**已自动化** | `tests/test_migrations.py` 每次 `pytest` 都会跑 `upgrade head` + `alembic check` + DDL 对比 → 忘生成迁移 / 迁移写漏，CI 直接红。手工那三条命令现在只用于**定位**（[决策 33](docs/decisions.md)） |
 
 ## 5. 测试约定
 
