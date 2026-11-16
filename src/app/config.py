@@ -109,6 +109,26 @@ class Settings(BaseSettings):
         return self
 
 
+def startup_config_summary(config: Settings) -> dict[str, object]:
+    """启动第一屏要打印的【生效配置摘要】—— 白名单制，不是「打印整个 settings」
+
+    【注意】：这里是白名单，新增敏感字段时【不要】加进来；新增运行期旋钮时必须加进来
+        （配错了值合法也看不出来，只有打出来才能发现）。tests/test_startup_config.py 钉住这份清单。
+    """
+    dialect, _, rest = config.database_url.partition("://")
+    db_name = rest.rsplit("/", 1)[-1] if rest else ""
+    return {
+        "app_env": config.app_env,
+        "debug": config.debug,
+        # 【注意】：只打方言 + 库名 —— 连接串里可能有 用户名:密码@主机
+        "database": f"{dialect}://…/{db_name}",
+        "max_concurrent_upstream_calls": config.max_concurrent_upstream_calls,
+        "upstream_queue_timeout": config.upstream_queue_timeout,
+        "max_tokens_ceiling": config.max_tokens_ceiling,
+        "request_timeout": config.request_timeout,
+    }
+
+
 # 模块级单例：整个应用共用这一个 settings 对象。
 # 其它文件通过 `from app.config import settings` 拿到它
 settings = Settings()

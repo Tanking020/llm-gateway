@@ -47,7 +47,7 @@
 
 | 执行序 | 子阶段 | 做什么 | 关联待办 | 完成判据 | 硬依赖 |
 |---|---|---|---|---|---|
-| **①** | **13b 启动路径与迁移** | Alembic 接管 DDL；`lifespan` 移除 `create_all`；启动打印生效配置白名单 | [#50](todos.md) [#77](todos.md) | ① DB 未就绪时服务**能起来**（`/health/ready` 503，而非进程退出）；② `alembic upgrade head` 建出的表与模型一致（✅ 13b-2a 已由 `tests/test_migrations.py` 钉住）；③ 启动第一屏打印 6 项配置，**不含** `api_key` | — |
+| **①** | **13b 启动路径与迁移** ✅ **2026-11-16 完成** | Alembic 接管 DDL；`lifespan` 移除 `create_all`；启动打印生效配置白名单 | [#50](todos.md) [#77](todos.md) | ① DB 未就绪时服务**能起来**（`/health/ready` 503，而非进程退出）；② `alembic upgrade head` 建出的表与模型一致（✅ 13b-2a 已由 `tests/test_migrations.py` 钉住）；③ 启动第一屏打印 6 项配置，**不含** `api_key` | — |
 | **②** | **13c 请求生命周期** | 上游总时长上限（`asyncio.timeout`）· 500 补 CORS 头 · `commit` 时机（[#54](todos.md)）· 优雅停机 | [#55](todos.md) [#57](todos.md) [#54](todos.md) | ① 慢速滴答上游被掐断；② 500 带 `Access-Control-Allow-Origin` 且 `request_id` 可读；③ 模拟 commit 失败**不再**返 201；④ 发版时在途 SSE 跑完或明确超时 | 13b |
 | **③** | **13d 访问控制** | API key 校验 → `owner_id` · 迁移 + 全部查询带过滤 · 越权返 **404**（不是 403）· 限流（按 key） | [#36](todos.md) [#37](todos.md) | ① 换 key 看不到也删不掉别人的对话；② 跨用户访问 **404**；③ 超阈值 **429 + `Retry-After`** | 13b + 13c |
 | **④** | **13a 容器化底座** | `Dockerfile`（多阶段 · 非 root · exec 形式 CMD）+ `.dockerignore` + `docker-compose.yml`（app + nginx + **一次性 migrate 服务**） | [#49](todos.md) [#84](todos.md) | `docker compose up` → 经 nginx 访问 `/health` 200；镜像内无 `.venv`/`.git`/`tests`；进程非 root；`stop` 时收到 SIGTERM；**空库时迁移先跑完**，`POST /v1/conversations` 返回 201 | 13b（启动路径定稿）· **需先装 Docker** |
@@ -60,7 +60,7 @@
 |---|---|---|
 | **13b-1** ✅ | `uv add alembic` + `alembic init -t async` + 配 `env.py` + autogenerate 出初始迁移 | ✅ **2026-11-16 完成**：项目内实测 **3 对象、差异 0**；四步验证（upgrade / check / downgrade / upgrade）全通；四道门全绿 |
 | **13b-2** ✅ **2026-11-16 完成（2a + 2b-1 + 2b-2）** | 拆成 2a / 2b，**先加守卫再拆**：<br>**13b-2a** ✅ 2026-11-16：建 `tests/test_migrations.py`（`alembic check` 无漂移 + 迁移 DDL 与 `create_all` 逐字一致）<br>**13b-2b-1** ✅ 2026-11-16：`conftest.py` 改跑真实迁移（`migrated` session fixture + 表存在断言），测试不再依赖 `create_all`<br>**13b-2b-2** ✅ 2026-11-16：`lifespan` 移除 `create_all`；`/health/ready` 两态写成用例（200 / 503） | ① ✅ DB 不可用 → 服务**起得来** + 503（📎 真进程实测：进程 ALIVE / `/health` 200 / `/health/ready` 503）；② ✅ **97 个**用例全绿；③ ✅ 迁移写错时 CI 会红（3 个变异 6 条全红） |
-| **13b-3** 🟡 **下一步** | 启动打印生效配置白名单（[#77](todos.md)） | 启动第一屏 6 项关键配置；**没有** `api_key` / 完整 `database_url` |
+| **13b-3** ✅ 2026-11-16 | 启动打印生效配置白名单（[#77](todos.md) 关闭） | ✅ 启动第一屏 7 项（6 旋钮 + 脱敏库标识）；📎 不含 `api_key` / 完整 `database_url` / 主机 |
 
 ### 为什么是这个顺序
 

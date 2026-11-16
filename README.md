@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-97%20passed-success)
+![Tests](https://img.shields.io/badge/tests-101%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-92%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -17,7 +17,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 97 tests · 92% branch coverage · 50 mutation test runs (45 caught) · CI on every push.
+> 101 tests · 92% branch coverage · 50 mutation test runs (45 caught) · CI on every push.
 
 ---
 
@@ -203,14 +203,14 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
-uv run pytest -q        # 97 个用例，约 9 s
+uv run pytest -q        # 101 个用例，约 9 s
 ```
 
 | | 结果 |
 |---|---|
 | `ruff check` / `format --check` | 全绿（34 files） |
 | `mypy --strict` | 全绿（35 source files，含 `tests/` 与 `playground/`） |
-| `pytest -q` | **97 passed** |
+| `pytest -q` | **101 passed** |
 | 分支覆盖 | **92%**（`llm_client.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
 
@@ -261,7 +261,7 @@ uv run pytest -q        # 97 个用例，约 9 s
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 97 个用例，按「测哪一层」分为 11 个文件
+├── tests/                  # 101 个用例，按「测哪一层」分为 12 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── playground/             # 一次性实验脚本（不参与交付）
@@ -277,7 +277,7 @@ uv run pytest -q        # 97 个用例，约 9 s
 | 🔜 **进行中（P1，上线前）** | 容器化与反向代理（[#49](docs/todos.md)）· 鉴权与 `owner_id`（[#36](docs/todos.md)）· 速率限制（[#37](docs/todos.md)）· 请求总时长上限（[#55](docs/todos.md)）· 500 的 CORS 头（[#57](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)） |
 | 📋 **规划中** | 消息持久化（`messages` 表）· 指标与告警 · 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
-完整的 84 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
+完整的 85 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 文档
 

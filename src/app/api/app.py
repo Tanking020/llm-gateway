@@ -36,7 +36,7 @@ from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep, UpstreamSlotDep
-from app.config import Settings, settings
+from app.config import Settings, settings, startup_config_summary
 from app.constants import HEADER_REQUEST_ID
 from app.database import engine
 from app.errors import AppError, register_exception_handlers
@@ -73,11 +73,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 【注意】：启动【不碰数据库】—— DDL 归 alembic（#50）。DB 挂了也要能起来，
     #   由 /health/ready 报 503 让编排系统摘流量，而不是让进程 crash loop
 
-    # 启动段[1]：上游并发闸门（进程级）。放在 state 上，deps 里按请求取
+    # 启动段[1]：把【生效配置】打到第一屏（白名单 + 脱敏）—— 值合法但配错时，只有打出来才发现
+    logger.info("生效配置：%s", startup_config_summary(settings))
+
+    # 启动段[2]：上游并发闸门（进程级）。放在 state 上，deps 里按请求取
     # 【注意】：必须每次启动都新建 —— 复用一个被上一轮测试耗尽的 Semaphore 会永远挡住请求
     app.state.upstream_semaphore = asyncio.Semaphore(settings.max_concurrent_upstream_calls)
 
-    # 启动段[2]：整个进程共享一个上游适配器
+    # 启动段[3]：整个进程共享一个上游适配器
     async with create_llm_client() as client:
         # 把 client 挂到 app.state 的 llm_client 属性上
         app.state.llm_client = client

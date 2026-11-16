@@ -983,6 +983,26 @@ APP_ENV=prod + DEBUG=true
 
 📎 为什么必须崩、不能静默改 False：`debug=True` 会让 `@app.exception_handler(Exception)` 不执行，**traceback 直接进响应体**。
 
+**「值合法但配错了」不归这一节管 —— 归启动摘要**（2026-11-16，[#77](../docs/todos.md) / [决策 34](../docs/decisions.md)）：
+
+```text
+lifespan 启动段[1]
+   └─ logger.info("生效配置：%s", startup_config_summary(settings))
+        └─ 白名单 7 项：app_env / debug / database / max_concurrent_upstream_calls
+                        / upstream_queue_timeout / max_tokens_ceiling / request_timeout
+        └─ 📎 database 只打「方言://…/库名」—— 不出现 用户名:密码@主机
+```
+
+📎 真进程第一屏样本（`MAX_CONCURRENT_UPSTREAM_CALLS=7`）：
+
+```text
+INFO    app.api.app | 生效配置：{'app_env': 'dev', 'debug': False, 'database': 'sqlite+aiosqlite://…/x.db',
+                                'max_concurrent_upstream_calls': 7, 'upstream_queue_timeout': 1.0,
+                                'max_tokens_ceiling': 4096, 'request_timeout': 30.0}
+```
+
+⚠️ 白名单的「漏项」目前没有机械兜底（见 [#85](../docs/todos.md)）：`Settings` 新增字段而忘了加进摘要，测试不会红。
+
 ### 9.5 配置项 → 读取点（改一个字段，谁的行为会变）
 
 📎 从源码里 `settings.<字段>` / `config.<字段>` 实读（2026-11-04）：
