@@ -171,7 +171,7 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 
 ## 关键设计决策
 
-每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，31 条 ADR）。以下是影响最大的几条：
+每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，32 条 ADR）。以下是影响最大的几条：
 
 | 决策 | 选择 | 为什么 | 代价 / 何时重审 |
 |---|---|---|---|
@@ -208,8 +208,8 @@ uv run pytest -q        # 93 个用例，约 8 s
 
 | | 结果 |
 |---|---|
-| `ruff check` / `format --check` | 全绿（32 files） |
-| `mypy --strict` | 全绿（32 source files，含 `tests/` 与 `playground/`） |
+| `ruff check` / `format --check` | 全绿（33 files） |
+| `mypy --strict` | 全绿（34 source files，含 `tests/` 与 `playground/`） |
 | `pytest -q` | **93 passed** |
 | 分支覆盖 | **92%**（`llm_client.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
@@ -282,7 +282,7 @@ uv run pytest -q        # 93 个用例，约 8 s
 
 | 想知道 | 去哪 |
 |---|---|
-| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（31 条 ADR） |
+| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（32 条 ADR） |
 | 系统长什么样（中间件栈 / ER / 帧序 / 状态机） | [docs/architecture.md](docs/architecture.md) |
 | 端点契约与真实响应样本 | [docs/api.md](docs/api.md) |
 | 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |

@@ -311,6 +311,9 @@ uvicorn 启动
    │
    ├─ lifespan.startup ──────────────────────────────────────────────┐
    │     ① engine.begin() → create_all()   建表（已存在的表不改）      │
+   │        🟡 2026-11-16：这一步**正在移除**（13b）。迁移骨架已就位     │
+   │        （`alembic/`，13b-1 ✅），13b-2 会把它从启动路径摘掉 →       │
+   │        建表改由 `alembic upgrade head` 独立执行                    │
    │     ② async with create_llm_client() as client:                 │
    │           app.state.llm_client = client                          │
    │           yield  ←──────── 服务运行期间停在这里 ──────────────┐   │
