@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 import uvicorn
+from conftest import AUTH_HEADERS, reset_db
 
 from app.api.app import app
 from app.api.deps import get_llm_client
@@ -65,6 +66,8 @@ def live_server() -> Iterator[str]:
     #   不放大的话：把 MAX_CONCURRENT_UPSTREAM_CALLS 调小（比如 2），4 并发用例会收到 503
     #   而变红，报错方向完全跑偏
     app.state.upstream_semaphore = asyncio.Semaphore(32)
+    # 本文件不经过 client fixture（它要真 TCP），所以身份与清库得自己做
+    reset_db()
     try:
         yield f"http://127.0.0.1:{port}"
     finally:
@@ -80,7 +83,9 @@ def _concurrent(base: str, count: int) -> list[tuple[float, float, int]]:
         start = time.perf_counter()
         first = None
         body = ""
-        async with client.stream("POST", f"{base}/v1/chat/stream", json=REQ) as response:
+        async with client.stream(
+            "POST", f"{base}/v1/chat/stream", json=REQ, headers=AUTH_HEADERS
+        ) as response:
             assert response.status_code == 200
             async for piece in response.aiter_text():
                 if first is None and piece.strip():
@@ -141,7 +146,9 @@ def test_pending_row_is_visible_while_stream_is_running(live_server: str, db_pat
 
     async def probe() -> tuple[object, ...] | None:
         async with httpx.AsyncClient(timeout=60) as client:
-            async with client.stream("POST", f"{live_server}/v1/chat/stream", json=REQ) as r:
+            async with client.stream(
+                "POST", f"{live_server}/v1/chat/stream", json=REQ, headers=AUTH_HEADERS
+            ) as r:
                 pieces = r.aiter_text()
                 await pieces.__anext__()  # 推进到第一帧
                 snapshot = latest()  # 此刻流还在跑

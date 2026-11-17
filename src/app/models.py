@@ -35,6 +35,11 @@ class Conversation(Base):
     # 两边分别是"列类型注解"和"列配置"
     id: Mapped[int] = mapped_column(primary_key=True)
 
+    # 归属：这条对话属于谁。NOT NULL + 索引 —— 每次查询都会带 owner_id 过滤
+    # 【注意】：故意【不写】ondelete="CASCADE"：删用户不能连对话和账单一起蒸发（决策 16 / 40）
+    #   不写 = NO ACTION，数据库会拒绝删一个还有对话的用户，逼你先处理归属
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+
     # 【注意】：SQLite 不强制这个上限（实测塞 200 字符能存进去），真正的长度校验要在
     # pydantic 层做；写在这里是为了换 PostgreSQL 时语义正确、也便于生成文档
     title: Mapped[str] = mapped_column(String(100))
@@ -57,6 +62,9 @@ class Conversation(Base):
     # 【注意】：故意【不写 cascade="all, delete-orphan"】——
     #   那会让删对话时把计费记录一起删掉（级联删除），账目就丢了
     calls: Mapped[list["LlmCall"]] = relationship(back_populates="conversation")
+
+    # 反向导航：conv.owner 拿到属主。不写 back_populates（User 那边不需要 conversations）
+    owner: Mapped["User"] = relationship()
 
 
 class LlmCallStatus(StrEnum):

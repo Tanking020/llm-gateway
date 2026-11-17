@@ -24,13 +24,14 @@
 
 ---
 
-## 1. 十三个文件各测什么
+## 1. 十四个文件各测什么
 
-**115 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+**131 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
 
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
 | `test_smoke.py` | 4 | 地基：应用能起、lifespan 跑过、独立临时库生效、**健康检查两态**（`/health/ready` 200 / DB 挂时 503） | 不涉及 | ❌ |
+| `test_auth.py` | 14 | **鉴权与归属**（13d-2）：6 个端点的 401 / 公开路由免鉴权 / 错 key / **已撤销 key** / 越权读改写删全 **404** / 列表与 `total` 不泄露 / 聊天挂别人对话 id / **库里只有 sha256** | 不涉及（`FakeLlm` 只用于 chat 两条） | ❌ |
 | `test_conversations.py` | 12 | 对话 CRUD 契约：全生命周期 / 游标分页 / 422 校验 / 404 语义 / **提交失败必须 5xx（不能先回 201）** | 不涉及 | ❌ |
 | `test_upstream.py` | 7 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、**上游 429 → 429 + `Retry-After`**、pre-flight 能改状态码 | `FakeLlm` | ❌ |
 | `test_errors.py` | 11 | **错误形状契约**：envelope 三键 / 三种 404 靠业务码分 / 422 的 `details` 只留三键 / 500 不泄漏 / **500 的 CORS 头与 404 一致且不外泄给外来源** / **DB 连不上 → 503（SQL 错仍 500）** | `FakeLlm` | ❌ |
@@ -40,9 +41,9 @@
 | `test_adapter_http.py` | 21 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
 | `test_concurrency.py` | 4 | **并发与连接池**：串行化、首字节延迟、流跑到一半时 `pending` 已落库 | `FakeLlm`（慢速版） | ✅ **真 uvicorn** |
 | `test_limits.py` | 13 | **护栏上限**：并发闸门 503 / 槽位归还（正常+异常）/ `max_tokens` 三分支 / 输入三条上限 / **上游总时长超预算 → `STREAM_TIMEOUT`** / `UPSTREAM_TIMEOUT` → 504 | `FakeLlm` | ❌ |
-| `test_migrations.py` | 2 | **迁移层**：`alembic check` 无漂移 + 迁移建出的 DDL 与 `create_all` 逐字一致 | 不涉及（**起子进程跑 alembic CLI**） | ❌ |
+| `test_migrations.py` | 2 | **迁移层**：`alembic check` 无漂移 + 迁移建出的**结构**（列/外键/索引/唯一约束，用 `PRAGMA` 读）与 `create_all` 一致 | 不涉及（**起子进程跑 alembic CLI**） | ❌ |
 | `test_startup_config.py` | 6 | **启动摘要层 + 启动接线**：白名单恰好这几项 / **每个 `Settings` 字段要么打出来、要么写明为何不打** / 连接串只留方言 + 库名 / 密钥与主机绝不出现 / **优雅窗口真的传给 uvicorn** | 不涉及 | ❌ |
-| `test_source_rules.py` | 2 | **源码约定（静态检查）**：用 `ast` 断言每个写路由函数体里都有 `await db.commit()`（#86）；白名单不许留过期项 | 不涉及（**只读源码，不跑应用**） | ❌ |
+| `test_source_rules.py` | 4 | **源码约定（静态检查）**：用 `ast` 断言每个写路由函数体里有 `await db.commit()`（#86）+ **每个非公开路由都声明了 `CurrentUserDep`**（13d-2）；两条白名单都不许留过期项 | 不涉及（**只读源码，不跑应用**） | ❌ |
 
 > ⚠️ **`fakes.py` 不是测试文件**，是共用的假对象：
 
@@ -50,7 +51,15 @@
 
 > 所以签名漂移会被 mypy 抓成 `[override]` 错误。
 
-> `conftest.py` 是全局准备（环境变量 / **跑真实迁移建表** / 清表 / `client` 与 `db_path` fixture）。
+> `conftest.py` 是全局准备（环境变量 / **跑真实迁移建表** / 清表 + **写两个测试用户与两把 key** / `client`、`other_client`、`anon_client`、`db_path` fixture）。
+
+> ⭐ **三条 fixture 的分工**（13d-2 起所有业务端点都要 `X-API-Key`）：
+
+> `client` = alice 的 key，绝大多数用例用它；`other_client` = bob 的 key，只用来测**越权**；
+
+> `anon_client` = 不带凭据，只用来测 **401**。要自己裸造 `TestClient(app)` 的用例（如 `test_errors.py` 里要 `raise_server_exceptions=False`）
+
+> 必须显式传 `headers=AUTH_HEADERS` —— 📎 不传就是成片 401，而不是"能调但没数据"。
 
 > `test_migrations.py` 是**唯一**起子进程的用例（`sys.executable -m alembic`）：`env.py` 的连接串取自
 > `settings` 单例，进程内改不动 → 代价是多约 2 秒（[决策 33](../docs/decisions.md)）。

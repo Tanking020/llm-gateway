@@ -74,3 +74,72 @@ def test_read_only_whitelist_has_no_stale_entry() -> None:
     routes = _write_routes(ast.parse(_APP_PY.read_text(encoding="utf-8")))
     stale = _READ_ONLY_ROUTES - {path for _, path in routes}
     assert stale == set(), f"白名单里的这些路由已经不存在了：{sorted(stale)}"
+
+
+# ============ 鉴权覆盖（13d-2） ============
+_ALL_METHODS = {"get", "post", "patch", "put", "delete"}
+
+# 不需要鉴权的路由：健康检查 + 本地静态模型表（不花钱、不碰库）
+_PUBLIC_ROUTES = {
+    ("get", "/health"),
+    ("get", "/health/ready"),
+    ("get", "/v1/models"),
+    ("get", "/v1/models/latest"),
+    ("get", "/v1/models/{model_name}"),
+}
+
+
+def _all_routes(tree: ast.Module) -> dict[tuple[str, str], ast.AST]:
+    """收集 @app.<method>("路径") 装饰的函数：(方法, 路径) -> 函数节点"""
+    routes: dict[tuple[str, str], ast.AST] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for dec in node.decorator_list:
+            if not isinstance(dec, ast.Call):
+                continue
+            func = dec.func
+            if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+                continue
+            if func.value.id != "app" or func.attr not in _ALL_METHODS:
+                continue
+            if dec.args and isinstance(dec.args[0], ast.Constant):
+                if isinstance(dec.args[0].value, str):
+                    routes[(func.attr, dec.args[0].value)] = node
+    return routes
+
+
+def _declares_current_user(node: ast.AST) -> bool:
+    """签名里有没有某个参数的注解就是 CurrentUserDep"""
+    args = node.args  # type: ignore[attr-defined]
+    all_args = [*args.posonlyargs, *args.args, *args.kwonlyargs]
+    return any(
+        isinstance(arg.annotation, ast.Name) and arg.annotation.id == "CurrentUserDep"
+        for arg in all_args
+    )
+
+
+def test_every_non_public_route_requires_a_user() -> None:
+    """回归 13d-2：新增路由忘了写 CurrentUserDep，就会变成【任何人可调】
+
+    这是「按路由挂依赖」这种显式写法的唯一代价 —— 用一条静态检查把它补上
+    """
+    tree = ast.parse(_APP_PY.read_text(encoding="utf-8"))
+    routes = _all_routes(tree)
+    assert routes, "没解析到任何路由：AST 匹配规则可能已过时（先修这条用例本身）"
+
+    unprotected = [
+        f"{method.upper()} {path}"
+        for (method, path), node in routes.items()
+        if (method, path) not in _PUBLIC_ROUTES and not _declares_current_user(node)
+    ]
+    assert unprotected == [], (
+        f"这些路由没有声明 CurrentUserDep（任何人可调）：{sorted(unprotected)}"
+    )
+
+
+def test_public_route_whitelist_has_no_stale_entry() -> None:
+    """白名单也会过期：路由改名 / 删掉后必须跟着清"""
+    routes = _all_routes(ast.parse(_APP_PY.read_text(encoding="utf-8")))
+    stale = _PUBLIC_ROUTES - set(routes)
+    assert stale == set(), f"公开白名单里的这些路由已经不存在了：{sorted(stale)}"

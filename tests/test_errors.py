@@ -4,6 +4,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from conftest import AUTH_HEADERS
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -97,7 +98,7 @@ def test_500_hides_internals() -> None:
 
     app.dependency_overrides[get_settings] = boom
     try:
-        with TestClient(app, raise_server_exceptions=False) as raw:
+        with TestClient(app, headers=AUTH_HEADERS, raise_server_exceptions=False) as raw:
             response = raw.post("/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]})
         error = _assert_error_envelope(response, 500, "INTERNAL_ERROR")
     finally:
@@ -117,7 +118,7 @@ def test_500_carries_the_same_cors_headers_as_other_errors() -> None:
 
     app.dependency_overrides[get_settings] = boom
     try:
-        with TestClient(app, raise_server_exceptions=False) as raw:
+        with TestClient(app, headers=AUTH_HEADERS, raise_server_exceptions=False) as raw:
             origin = {"Origin": "http://localhost:5173"}
             r500 = raw.post(
                 "/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=origin
@@ -144,7 +145,7 @@ def test_500_does_not_echo_a_foreign_origin() -> None:
 
     app.dependency_overrides[get_settings] = boom
     try:
-        with TestClient(app, raise_server_exceptions=False) as raw:
+        with TestClient(app, headers=AUTH_HEADERS, raise_server_exceptions=False) as raw:
             r = raw.post(
                 "/v1/chat",
                 json={"messages": [{"role": "user", "content": "hi"}]},
@@ -190,7 +191,7 @@ def test_sql_level_failure_stays_500() -> None:
         raise OperationalError("INSERT INTO conversations ...", {}, Exception("no such table"))
 
     with patch.object(AsyncSession, "execute", broken_sql):
-        with TestClient(app, raise_server_exceptions=False) as raw:
+        with TestClient(app, headers=AUTH_HEADERS, raise_server_exceptions=False) as raw:
             response = raw.post("/v1/conversations", json={"title": "x"})
 
     _assert_error_envelope(response, 500, "INTERNAL_ERROR")

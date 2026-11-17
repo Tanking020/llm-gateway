@@ -16,3 +16,8 @@ HEADER_REQUEST_ID = "X-Request-ID"
 # 【注意】：放这里而不是 api/app.py —— errors.py 也要用它（500 由最外层
 #   ServerErrorMiddleware 产出，不经过 CORSMiddleware，只能由处理器自己补头）
 ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+# 鉴权凭据的 HTTP 头名
+# 【注意】：必须是【自定义请求头】，不能用 Cookie —— 跨站页面发不出带自定义头的请求
+#   （会先触发预检，非白名单源被拦），所以这一条同时把 CSRF 面消掉了
+HEADER_API_KEY = "X-API-Key"

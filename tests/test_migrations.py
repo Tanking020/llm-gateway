@@ -2,6 +2,11 @@
 
 【注意】：这是 schema 的唯一守卫 —— 其它测试都跑在「已经建好表」的库上，
 模型改了却忘生成迁移时它们全绿，只有这里会红
+
+【注意】：比的是【结构】不是 SQL 文本 —— SQLite 没有任何 ALTER COLUMN，
+    alembic 的 batch 模式（建新表 → 拷数据 → 改名）会让 sqlite_master 里的语句
+    带上双引号表名、把列追加到末尾、给外键加 CONSTRAINT 名字。这些都不改变语义，
+    但会让「文本相等」的比较误报。所以这里用 PRAGMA 读出结构来比。
 """
 
 import os
@@ -38,23 +43,53 @@ def _run_alembic(args: list[str], db_path: Path) -> subprocess.CompletedProcess[
     )
 
 
-def _schema(db_path: Path) -> dict[tuple[str, str], str]:
-    """库里每个对象的 DDL（表 / 索引），空白归一后比较
+def _schema(db_path: Path) -> dict[str, dict[str, object]]:
+    """库里每张表的【结构】：列 / 外键 / 索引 / 唯一约束
 
-    【注意】：排除 alembic_version —— 它由迁移工具自己维护，不属于模型
+    【注意】：排除 alembic_version —— 它由迁移工具自己维护，不属于模型。
+    列按名字排序、约束按内容排序：顺序不是语义，缺一个才是
     """
     conn = sqlite3.connect(str(db_path))
     try:
-        rows = conn.execute(
-            "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
-        ).fetchall()
+        names = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+                " AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+            if row[0] != _VERSION_TABLE
+        ]
+        out: dict[str, dict[str, object]] = {}
+        for table in names:
+            columns = sorted(
+                (name, decl_type, bool(notnull), int(pk), default)
+                for _cid, name, decl_type, notnull, default, pk in conn.execute(
+                    f"PRAGMA table_info({table})"
+                )
+            )
+            # PRAGMA foreign_key_list 的列序：id, seq, table(父表), from(本表列), to(父表列),
+            #   on_update, on_delete, match —— 只取会改变语义的前五项
+            foreign_keys = sorted(
+                (row[3], row[2], row[4], row[5], row[6])
+                for row in conn.execute(f"PRAGMA foreign_key_list({table})")
+            )
+            constraints: list[tuple[str, bool, tuple[str, ...]]] = []
+            for row in conn.execute(f"PRAGMA index_list({table})"):
+                # 列序：seq, name, unique, origin, partial —— origin: c=CREATE INDEX，
+                #   u=UNIQUE 约束自动建的，pk=主键（主键已在 columns 里体现，跳过）
+                index_name, unique, origin = row[1], bool(row[2]), row[3]
+                if origin == "pk":
+                    continue
+                cols = tuple(r[2] for r in conn.execute(f"PRAGMA index_info({index_name})"))
+                constraints.append(("unique" if origin == "u" else "index", unique, cols))
+            out[table] = {
+                "columns": columns,
+                "foreign_keys": foreign_keys,
+                "constraints": sorted(constraints),
+            }
+        return out
     finally:
         conn.close()
-    return {
-        (row_type, name): " ".join((sql or "").split())
-        for row_type, name, sql in rows
-        if name != _VERSION_TABLE
-    }
 
 
 @pytest.fixture(scope="module")
@@ -74,7 +109,7 @@ def test_migrations_leave_no_drift(migrated_db: Path) -> None:
     )
 
 
-def test_migration_ddl_matches_create_all(migrated_db: Path, tmp_path: Path) -> None:
+def test_migration_schema_matches_create_all(migrated_db: Path, tmp_path: Path) -> None:
     created_db = tmp_path / "created.db"
     engine = create_engine(f"sqlite:///{created_db.as_posix()}")
     try:
@@ -87,13 +122,13 @@ def test_migration_ddl_matches_create_all(migrated_db: Path, tmp_path: Path) -> 
     only_migrations = from_migrations.keys() - from_create_all.keys()
     only_create_all = from_create_all.keys() - from_migrations.keys()
     different = {
-        key: (from_migrations[key], from_create_all[key])
-        for key in from_migrations.keys() & from_create_all.keys()
-        if from_migrations[key] != from_create_all[key]
+        table: {"迁移": from_migrations[table], "create_all": from_create_all[table]}
+        for table in from_migrations.keys() & from_create_all.keys()
+        if from_migrations[table] != from_create_all[table]
     }
     assert not (only_migrations or only_create_all or different), (
-        "迁移建出的 DDL 与 create_all 不一致：\n"
+        "迁移建出的结构与 create_all 不一致：\n"
         f"只在迁移里：{sorted(only_migrations)}\n"
         f"只在 create_all 里：{sorted(only_create_all)}\n"
-        f"定义不同：{different}"
+        f"结构不同：{different}"
     )
