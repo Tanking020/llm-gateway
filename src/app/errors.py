@@ -21,7 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.constants import HEADER_REQUEST_ID
+from app.constants import ALLOWED_ORIGINS, HEADER_REQUEST_ID
 
 
 class AppError(Exception):
@@ -124,6 +124,24 @@ def _error_response(
     )
 
 
+def _cors_headers(request: Request) -> dict[str, str]:
+    """给【绕过 CORSMiddleware 的响应】补 CORS 头（目前只有 500）
+
+    【注意】：500 由最外层 ServerErrorMiddleware 产出，在 CORSMiddleware 之外 → 拿不到它的头。
+        浏览器里前端只会看到「网络错误」，读不到 request_id —— 而 500 恰恰最需要它。
+    """
+    origin = request.headers.get("origin")
+    # 只回显白名单里的源；不在名单里就不写头（绝不回落到 "*"）
+    if origin is None or origin not in ALLOWED_ORIGINS:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        # 与 CORSMiddleware 保持一致：同一 URL 的响应随 Origin 变化，不能被缓存复用
+        "Vary": "Origin",
+    }
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """把各类异常的【翻译器】挂到 app 上（在 app 创建后调用一次）"""
 
@@ -180,4 +198,5 @@ def register_exception_handlers(app: FastAPI) -> None:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "INTERNAL_ERROR",
             "服务内部错误",
+            headers=_cors_headers(request),
         )

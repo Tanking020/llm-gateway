@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-16 · 共 34 条
+**最后更新**：2026-11-17 · 共 35 条
 
 ---
 
@@ -55,6 +55,7 @@
 | [32](#32-测试跑真实迁移而不是-create_all) | 测试怎么建表 | **跑真实 Alembic 迁移**（顺带验证迁移文件） | 2026-11-16 |
 | [33](#33-迁移守卫用子进程跑-alembic-cli而不是进程内调用) | 迁移守卫怎么跑 alembic | **子进程 + 换环境变量**（进程内被 `settings` 单例锁死） | 2026-11-16 |
 | [34](#34-启动只打印生效配置的白名单而不是打印整个-settings) | 启动第一屏打什么配置 | **白名单 7 项 + 连接串脱敏** | 2026-11-16 |
+| [35](#35-500-的-cors-头由处理器自己补而不是调整中间件顺序) | 500 的 CORS 头怎么补 | **处理器补头 + 共享白名单常量**（挪顺序不可能） | 2026-11-17 |
 
 ---
 
@@ -708,6 +709,18 @@
 | **决定** | **C**。`config.startup_config_summary(config)` 返回固定 7 项（6 个运行期旋钮 + 1 个脱敏库标识）；`database` 只保留「方言://…/库名」，**不含** 用户名 / 密码 / 主机；`lifespan` 启动段[1] 打一行 `logger.info("生效配置：%s", …)`。`tests/test_startup_config.py`（4 条）钉住「白名单恰好这几项」「只留方言 + 库名」「密钥与主机绝不出现」 |
 | **代价** ⚠️ | ① **漏项**：`Settings` 新增字段而忘了加进摘要 → 没有任何测试会红（[#85](todos.md) 待加固）<br>② **库名进日志**：属于内部信息，多租户 / 日志外发场景要重审<br>③ 白名单要随配置演化维护（每加一个运行期旋钮就多一处要改）<br>④ 只解决「看得见」，不解决「配错自动纠正」—— 值错了仍然要人看日志才发现 |
 | **重审条件** | ① 配置项涨到 ~20 个、维护白名单开始频繁漏改 → 改成字段元数据驱动（`Field(json_schema_extra={"startup": True})` + 反射生成）<br>② 日志要外发（第三方 SIEM / 公开预览环境）→ 库名是否脱敏重新评估<br>③ #85 落地后**仍**出现「配错了没发现」事故 → 升级为启动时打印「未打印配置项的数量」（不打印名字，名字本身是攻击面线索） |
+
+---
+
+## 35. 500 的 CORS 头由处理器自己补，而不是调整中间件顺序
+
+| 项 | 内容 |
+|---|---|
+| **背景** | [#57](todos.md)：500 响应没有任何 CORS 头 → 浏览器里前端只看到「网络错误」，读不到 body、读不到 `request_id`；而 500 恰恰最需要这个 ID。待办里列了三个候选（挪中间件顺序 / 处理器补头 / nginx 加） |
+| **方案对比** | **A 把 CORS 挪到最外层**：📎 **实测不可能** —— FastAPI 0.143 把 `@app.exception_handler(Exception)` 挂在 `ServerErrorMiddleware` 上（打印构建栈得到 `handler=<function h500>`），而 `ServerErrorMiddleware` **永远是 stack 的第一层**，任何 `add_middleware` 都排在它里面；它还在发完响应后 `raise exc`（📎 最外层 ASGI 间谍看到 `response.start` 先发出、异常随后逃出）<br>**B 处理器里补 CORS 头**：必然可行；代价是 CORS 策略出现第二个出口<br>**C 只在 nginx 加**：本地 / 测试仍然缺，等于「开发和线上不一致」<br>**D 自己实现 `build_middleware_stack` 把 CORS 包在 `ServerErrorMiddleware` 外**：能修，但要复制 Starlette 内部实现，升级即碎 |
+| **决定** | **B**。`errors._cors_headers(request)` 只给 500 用；白名单从 `api/app.py` 搬到 `constants.ALLOWED_ORIGINS`（`errors.py` 是下层，下层要用的常量必须放上层）。三个头与 `CORSMiddleware` 输出对齐：`Access-Control-Allow-Origin`（**回显**源）、`Access-Control-Allow-Credentials: true`、`Vary: Origin`；**白名单外的源不写头，绝不回落 `*`** |
+| **代价** ⚠️ | ① **CORS 策略有两个出口**：中间件的 `allow_headers` / `expose_headers` 等改动不会同步到 500 那份（那份只发 3 个头）<br>② 白名单字面量从 `app.py` 搬家 → 文档里引用 `api/app.py` 的旧行号全部失效（已改为符号名定位）<br>③ 新增「绕过 CORS 的响应」时必须记得也补头（目前只有 500）<br>④ `test_500_carries_the_same_cors_headers_as_other_errors` 断言的是**集合相等** —— 如果将来给 404 加了新 CORS 头，这条会红（**这是故意的**，逼你同步） |
+| **重审条件** | ① Starlette / FastAPI 改成把 Exception 处理器放回 `ExceptionMiddleware`（或提供「CORS 包住 ServerErrorMiddleware」的官方开关）→ 改回 A，删掉 `_cors_headers`<br>② 出现第二个绕过 CORS 的响应类型（例如自建 ASGI 中间件直接发响应）→ 把补头提到「统一出口」，而不是再多一处<br>③ 需要 `Access-Control-Expose-Headers` 等更复杂的 CORS 策略 → 评估 D（复制 Starlette 栈）是否更省心<br>④ 接入 nginx（13a）后若发现重复头 → 明确「谁负责 500 的头」（本项目选应用层，nginx 不再加） |
 
 ---
 
