@@ -59,7 +59,13 @@ LlmClientDep = Annotated[LlmClient, Depends(get_llm_client)]
 
 async def get_db() -> AsyncIterator[AsyncSession]:
     """
-    一次请求一个数据库会话：正常结束自动提交，出异常自动回滚
+    一次请求一个数据库会话：写路由自己 commit，这里只做「收尾兜底提交 + 异常回滚」
+
+    【注意】：这里的 commit 跑在【响应已经发出去之后】，保证不了状态码正确 ——
+        所以普通写路由必须在 return 之前自己 commit
+        （#54 实测：只在收尾提交时，回 201 但库里没有那一行）。
+    【注意】：但它也【不能删】—— 流式收尾（no_content / aborted）的写入发生在响应开始之后，
+        且取消路径上不允许 await（见 app.py 的 except BaseException），只能靠这里落盘。
 
     为什么用 yield 而不是 return：
         会话和事务的生命周期必须【跨整个路由函数】—— 路由要先用会话查数据、
@@ -81,7 +87,9 @@ async def get_db() -> AsyncIterator[AsyncSession]:
             raise AppError("DB_UNAVAILABLE", "数据库不可用", headers={"Retry-After": "1"}) from exc
         try:
             yield session  # 路由在这里跑；路由抛异常时，异常会被"抛回"这一行
-            await session.commit()  # 只有正常路径才走到（事务边界收在这一处）
+            # 【注意】：正常路径的兜底提交：只为流式收尾那类「响应已开始后才写」的改动落盘；
+            #   普通写路由已在自己 return 前 commit 过，这里是一次空提交
+            await session.commit()
         except Exception:
             await session.rollback()  # 出错先回滚，再把异常重新抛出
             raise

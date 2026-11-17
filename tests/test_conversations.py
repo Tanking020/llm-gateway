@@ -1,9 +1,15 @@
 """对话接口的 HTTP 契约测试：断言状态码 / 响应形状 / 落库效果，不断言 SQL 细节"""
 
-from typing import cast
+import sqlite3
+from pathlib import Path
+from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.app import app
 
 
 def _create(client: TestClient, title: str) -> dict[str, object]:
@@ -88,3 +94,64 @@ def test_pagination_walks_two_pages(client: TestClient) -> None:
     assert [item["title"] for item in second["items"]] == ["c3"]
     assert second["has_more"] is False
     assert second["next_cursor"] is None
+
+
+def _boom_commit(*args: Any, **kwargs: Any) -> Any:
+    """模拟「提交那一刻失败」：磁盘满 / 连接被掐 / 唯一约束冲突"""
+    raise RuntimeError("模拟提交失败")
+
+
+def test_create_does_not_report_success_before_commit(client: TestClient, db_path: Path) -> None:
+    """回归 #54：提交失败时绝不能已经回过 201 —— 客户端会以为存住了"""
+    # 用 client fixture 只为它的清表副作用（下面的断言依赖「库里没有这一行」）
+    with patch.object(AsyncSession, "commit", _boom_commit):
+        with TestClient(app, raise_server_exceptions=False) as raw:
+            r = raw.post("/v1/conversations", json={"title": "不该存在"})
+
+    assert r.status_code >= 500, f"提交失败却回了 {r.status_code}（#54 复现）"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM conversations WHERE title = ?", ("不该存在",)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert rows == 0, "提交失败后库里不应有这一行"
+
+
+def test_update_does_not_report_success_before_commit(client: TestClient, db_path: Path) -> None:
+    """PATCH 同理：提交失败不能回 200"""
+    created = client.post("/v1/conversations", json={"title": "原始标题"}).json()
+
+    with patch.object(AsyncSession, "commit", _boom_commit):
+        with TestClient(app, raise_server_exceptions=False) as raw:
+            r = raw.patch(f"/v1/conversations/{created['id']}", json={"title": "改过的标题"})
+
+    assert r.status_code >= 500, f"提交失败却回了 {r.status_code}（#54 复现）"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        title = conn.execute(
+            "SELECT title FROM conversations WHERE id = ?", (created["id"],)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert title == "原始标题", "提交失败后标题不应被改掉"
+
+
+def test_delete_does_not_report_success_before_commit(client: TestClient, db_path: Path) -> None:
+    """DELETE 同理：提交失败不能回 204"""
+    created = client.post("/v1/conversations", json={"title": "别删我"}).json()
+
+    with patch.object(AsyncSession, "commit", _boom_commit):
+        with TestClient(app, raise_server_exceptions=False) as raw:
+            r = raw.delete(f"/v1/conversations/{created['id']}")
+
+    assert r.status_code >= 500, f"提交失败却回了 {r.status_code}（#54 复现）"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM conversations WHERE id = ?", (created["id"],)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert rows == 1, "提交失败后这一行不应被删掉"
