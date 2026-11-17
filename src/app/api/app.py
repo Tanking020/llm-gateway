@@ -652,10 +652,17 @@ async def chat_stream(
             # 【注意】：commit 而不是 flush —— 同上，flush 会把写锁一直持有到请求结束
             await db.commit()
 
+        # 【注意】：request_timeout 只是【读取间隔】超时 —— 上游每 0.9s 滴一帧就能无限期挂着
+        #   （📎 #55 实测：read=1.0s 时请求跑满 4.95s 仍不超时）。这里给它一个【总时长】死线
+        deadline = time.perf_counter() + config.upstream_total_timeout
+
         try:
             # aiter_chunks 已经帮我们做完了：切行、跳空行、剥 data: 前缀、
             # 消化 [DONE]、json.loads —— 这里拿到的就是干净的 dict
             async for chunk in upstream.aiter_chunks():
+                # 死线只在【有帧到达时】检查就够了：完全没数据的情况由 request_timeout 兜
+                if time.perf_counter() > deadline:
+                    raise TimeoutError("上游总时长超出预算")
                 raw_chunks += 1
 
                 # 这里不用再检查 chunk 的类型：aiter_chunks 的契约就是「只吐 dict」，
@@ -816,12 +823,13 @@ async def chat_stream(
                 call.status = LlmCallStatus.ABORTED
 
             logger.exception("流式过程中失败：%s", type(exc).__name__)
+            # 【注意】：超时用独立错误码 —— 前端要能区分「上游太慢」和「中途断了」
+            #   （两者的用户处置完全不同：前者缩短问题重试，后者直接重试）
+            code = "STREAM_TIMEOUT" if isinstance(exc, TimeoutError) else "STREAM_FAILED"
+            message = "上游响应超时" if isinstance(exc, TimeoutError) else "生成过程中中断"
             yield (
                 "data: "
-                + json.dumps(
-                    {"error": {"code": "STREAM_FAILED", "message": "生成过程中中断"}},
-                    ensure_ascii=False,
-                )
+                + json.dumps({"error": {"code": code, "message": message}}, ensure_ascii=False)
                 + "\n\n"
             )
             yield "data: [DONE]\n\n"

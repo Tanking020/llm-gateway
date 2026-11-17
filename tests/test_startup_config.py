@@ -12,6 +12,7 @@ _WHITELIST = {
     "upstream_queue_timeout",
     "max_tokens_ceiling",
     "request_timeout",
+    "upstream_total_timeout",
 }
 
 # 每个「故意不打」的字段都必须写理由：写不出理由的，就该进摘要（#85）
