@@ -151,6 +151,7 @@ uv run alembic downgrade base && uv run alembic upgrade head
 | 发现新缺陷 | 先在 [docs/todos.md](docs/todos.md) 登记编号，**编号永不重用** |
 | 做了一个取舍 | [docs/decisions.md](docs/decisions.md) 加一条 ADR（五段：背景 → 方案对比 → 决定 → **代价** → 重审条件） |
 | 改了接口形状 / 中间件 / 状态机 | [docs/architecture.md](docs/architecture.md) + [docs/api.md](docs/api.md) |
+| ↳ 其中**「接口形状」包括**：端点增删、**新增必填请求头 / 请求体字段**、**新增错误码或状态码**、响应字段增删 | 同上（📎 2026-11-17 教训：13d-2 加了 `X-API-Key` + 401，`architecture.md` 改了，`api.md` 漏了 → 文档里的 curl 示例全部会 401） |
 | 踩了一个可复现的坑 | [docs/DEVLOG.md](docs/DEVLOG.md) §三 加一行（`K<n>`），**写出复现方式** |
 | 学到一条跨项目结论或原理 | [notes/](notes/) 的对应文件（不要写进 `docs/`） |
 | 改了阶段进度 | [docs/roadmap.md](docs/roadmap.md) |
