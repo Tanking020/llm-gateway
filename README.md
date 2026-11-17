@@ -3,8 +3,8 @@
 [![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-115%20passed-success)
-![Coverage](https://img.shields.io/badge/branch%20coverage-92%25-success)
+![Tests](https://img.shields.io/badge/tests-131%20passed-success)
+![Coverage](https://img.shields.io/badge/branch%20coverage-93%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 > **An async backend for LLM applications, built around three invariants.**
@@ -17,7 +17,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 115 tests · 92% branch coverage · 51 mutation test runs (46 caught) · CI on every push.
+> 131 tests · 93% branch coverage · CI on every push.
 
 ---
 
@@ -45,8 +45,10 @@ pydantic-settings · uv（锁文件 + 独立解释器）· ruff · mypy `--stric
 | **流式失败的完整表意** | ✅ | 状态码层（pre-flight → 502）/ 协议层（坏帧跳过或中止 + WARNING）/ 业务层（`STREAM_NO_CONTENT`、`STREAM_FAILED` 帧） |
 | **上游故障三档翻译** | ✅ | L1 连不上 / L2 状态码不对 / L3 结构不可信，全部在适配器内分类 |
 | **会话增删改查** | ✅ | 游标分页；账单统计用 `outerjoin + group` 聚合，语句数与条目数无关（📎 N=100 时 2 条，朴素写法 101 条） |
+| **多租户鉴权** | ✅ | `X-API-Key` → sha256 → 用户（库里只有 hash）；每次查询带 `owner_id`；越权一律 **404**（不泄露存在性）；静态检查兜住「新增路由忘挂鉴权」 |
 | **可对账账单** | ✅ | `completed` / `aborted` / `no_content` / `pending` 四态（`StrEnum`） |
-| **并发与成本护栏** | ✅ | 上游信号量（超限 **503 + `Retry-After`**）+ `max_tokens` 上限 + 输入三上限 |
+| **并发与成本护栏** | ✅ | 上游信号量（超限 **503 + `Retry-After`**）+ `max_tokens` 上限 + 输入三上限 + 上游**总时长**上限（流式发 `STREAM_TIMEOUT` 帧） |
+| **优雅停机** | ✅ | `timeout_graceful_shutdown`（默认 30 s）：窗口内跑完 / 超窗口明确切断；📎 有**真信号**验收脚本 `scripts/probe_graceful_shutdown.py` |
 | **统一错误形状** | ✅ | `{"error": {code, message, request_id}}`，422 附加 `details` |
 | **生产环境防护** | ✅ | `prod` + `DEBUG=true` 启动即失败；`/docs`、`/redoc`、`/openapi.json` 一并关闭 |
 | **可观测性** | 🟡 部分 | 结构化访问日志（请求 ID / 耗时 / 状态）；指标与告警见 Roadmap |
@@ -203,15 +205,15 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
-uv run pytest -q        # 115 个用例，约 9 s
+uv run pytest -q        # 131 个用例，约 12 s
 ```
 
 | | 结果 |
 |---|---|
-| `ruff check` / `format --check` | 全绿（34 files） |
+| `ruff check` / `format --check` | 全绿（39 files） |
 | `mypy --strict` | 全绿（42 source files，含 `tests/`、`scripts/` 与 `playground/`） |
-| `pytest -q` | **115 passed** |
-| 分支覆盖 | **92%**（`llm_client.py` 100%） |
+| `pytest -q` | **131 passed** |
+| 分支覆盖 | **93%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
 
 测试策略有三条判据（细节见 [tests/README.md](tests/README.md)）：
@@ -221,11 +223,11 @@ uv run pytest -q        # 115 个用例，约 9 s
 | **不碰真上游** | `dependency_overrides` 注入假对象；假对象**继承真类**，签名漂移由 mypy 抓 | 测试要能离线跑、可重复、不花钱 |
 | **不碰开发库** | `conftest.py` 在 `import app` 之前把 `DATABASE_URL` 指到临时库；每个用例清表 | 「测了一下，开发库空了」是可以避免的事故 |
 | **必须走 HTTP** | 测试不 import 路由函数，只认 URL | 中间件、异常处理器、依赖注入才会真实经过 |
-| **DDL 归迁移独占** | `tests/test_migrations.py`：`alembic check` 无漂移 + 迁移建出的 DDL 与 `create_all` 逐字一致 | 模型改了忘生成迁移时，其余用例全绿（它们跑在 `create_all` 建的表上） |
+| **DDL 归迁移独占** | `tests/test_migrations.py`：`alembic check` 无漂移 + 迁移建出的**结构**（列 / 外键 / 索引 / 唯一约束，用 `PRAGMA` 读）与 `create_all` 一致 | 模型改了忘生成迁移时，其余用例全绿；而比「SQL 文本」会在 SQLite 的 batch 重建表后误报（表名带引号、列挪到末尾） |
+| **鉴权不靠自觉** | `tests/test_source_rules.py`：`ast` 断言「除白名单外每个路由都声明了 `CurrentUserDep`」+「每个写路由都有 `await db.commit()`」 | 「按路由挂依赖」是显式写法 —— 新增路由忘写就是**任何人可调**，只能靠静态检查兜 |
 
-**「全绿」不等于「断言有牙」。** 每批用例写完抽 3 ~ 5 处做变异测试（故意改坏一行源码，看它红不红）：
-累计 **50 次、45 次被抓到**，5 次抓不到的（等价变异、只在时序上才成立的变异）全部记了原因。
-
+**「全绿」不等于「断言有牙」。** 每批用例写完抽 3 ~ 5 处做变异测试（故意改坏一行源码，看它红不红）。
+📌 **次数与成败不在这里累计**（两处维护必然漂）：逐条证据在 [docs/DEVLOG.md](docs/DEVLOG.md) §二 各条流水的 📎 段。
 其中一次失败直接暴露了方法论问题：把枚举值拼成 `"pengding"` 时**四道门全绿** ——
 `mypy` 只检查成员名，`ruff` 只看格式。于是补了一条「值必须被断言钉住」的守卫用例。
 
@@ -256,12 +258,13 @@ uv run pytest -q        # 115 个用例，约 9 s
 │   ├── database.py         # engine / session factory / 外键 PRAGMA
 │   ├── config.py           # 全部可调参数 + 跨字段校验
 │   ├── logging_setup.py    # dictConfig 单一出口
-│   ├── constants.py        # 跨模块必须一致的常量（如头名）
+│   ├── constants.py        # 跨模块必须一致的常量（如头名 X-Request-ID / X-API-Key）
+│   ├── auth.py             # API key 生成 / sha256 哈希 / 查属主（只存 hash，明文只给一次）
 │   ├── __main__.py         # 启动入口（让 settings.host/port/debug 生效）
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 115 个用例，按「测哪一层」分为 13 个文件
+├── tests/                  # 131 个用例，按「测哪一层」分为 14 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── playground/             # 一次性实验脚本（不参与交付）
@@ -275,10 +278,10 @@ uv run pytest -q        # 115 个用例，约 9 s
 | 状态 | 内容 |
 |---|---|
 | ✅ **已完成** | HTTP/ASGI 地基 → 参数与契约 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式 → 上游适配器封层 → 持久化与账单 → 配置 / 日志 / 安全 → 回归测试 → CI |
-| 🔜 **进行中（P1，上线前）** | 容器化与反向代理（[#49](docs/todos.md)）· 鉴权与 `owner_id`（[#36](docs/todos.md)）· 速率限制（[#37](docs/todos.md)）· 请求总时长上限（[#55](docs/todos.md)）· 500 的 CORS 头（[#57](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)） |
-| 📋 **规划中** | 消息持久化（`messages` 表）· 指标与告警 · 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
+| 🔜 **进行中（P1，上线前）** | 容器化与反向代理（[#49](docs/todos.md)）· 速率限制（[#37](docs/todos.md)）· 签发 CLI（13d-5）· 池参数按压测定（[#59](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)）· 指标与告警（[#66](docs/todos.md)） |
+| 📋 **规划中** | 消息持久化（`messages` 表）· 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
-完整的 85 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
+完整的 87 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 文档
 

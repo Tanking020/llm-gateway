@@ -10,23 +10,48 @@
 
 ---
 
+## 鉴权（13d-2 起，**每个业务端点都必须带**）
+
+```text
+X-API-Key: sk_<43 个字符>
+```
+
+| 项 | 规则 |
+|---|---|
+| 头名 | `X-API-Key`（常量在 `constants.HEADER_API_KEY`） |
+| 库里存什么 | **只存 `sha256` 十六进制（64 位）**；明文只在签发时出现一次 |
+| 怎么判定有效 | `sha256(明文)` 命中 `api_keys.key_hash` **且** `revoked_at IS NULL` |
+| 失败返回 | **401** `{"error": {"code": "UNAUTHORIZED", …}}` + 响应头 `WWW-Authenticate: ApiKey` |
+| 没带 / 无效 / 已撤销 | **同一句话同一个码** —— 不告诉你「这把曾经有效」 |
+| 越权访问别人的对话 | **404 `CONVERSATION_NOT_FOUND`**（不是 403）—— 不确认资源存在性 |
+| 为什么不用 Cookie | 自定义头会触发预检，跨站页面发不出 → **顺带免疫 CSRF**（[决策 40](decisions.md)） |
+
+**免鉴权端点**（否则负载均衡探测与前端取模型清单会挂）：`/health`、`/health/ready`、`/v1/models*`。
+
+```powershell
+# 本地签发（浏览器 / curl 自测用）—— 13d-5 之前暂时手写库，见 decisions 41 的「代价」
+curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
+```
+
+---
+
 ## 端点总表
 
-| 方法 | 路径 | 说明 | 主要状态码 |
-|---|---|---|---|
-| GET | `/health` | **liveness**：只证明进程活着，**不检查外部依赖**（编排系统据此决定要不要重启） | 200 |
-| GET | `/health/ready` | **readiness**：探数据库（`SELECT 1`）；失败 → **503** `DB_UNAVAILABLE`，编排系统据此摘流量但不重启 | 200 / 503 |
-| GET | `/v1/models` | 硬编码的模型清单；支持 `?prefix=` / `?limit=`（1 ~ 100） | 200 / 422 |
-| GET | `/v1/models/latest` | 默认模型 | 200 |
-| GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 |
-| POST | `/v1/chat` | 聊天；⚠️ **业务逻辑仍为 `echo` 占位**（待办 #46）；最后一条消息必须是 `user`；可选 `conversation_id`（不存在 → 404） | 200 / 400 / 404 / 422 |
-| GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse` | 200 / 502 / **504**（超出 `upstream_total_timeout`） |
-| POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；可选 `conversation_id`（不存在 → 404，**在流开始前拦**）；每次调用落一行账单 | 200 / 404 / 422 |
-| POST | `/v1/conversations` | 新建对话（落库）；`title` 长度 1~100 | 201 / 422 |
-| GET | `/v1/conversations` | **游标分页**列出对话（`?limit=1~100&after_id=N`），含账单统计；响应 `{items, total, limit, next_cursor, has_more}` | 200 / 422 |
-| GET | `/v1/conversations/{conv_id}` | 单个对话；不存在 → 404；`conv_id` 非整数 → 422 | 200 / 404 / 422 |
-| DELETE | `/v1/conversations/{conv_id}` | 删除对话（204 无内容）；不存在 → 404；⚠️ 计费记录 `SET NULL` 保留 | 204 / 404 / 422 |
-| PATCH | `/v1/conversations/{conv_id}` | 修改标题（部分更新）；不存在 → 404；空 body / null / 空串 → 422 | 200 / 404 / 422 |
+| 方法 | 路径 | 说明 | 主要状态码 | 鉴权 |
+|---|---|---|---|---|
+| GET | `/health` | **liveness**：只证明进程活着，**不检查外部依赖**（编排系统据此决定要不要重启） | 200 | **公开** |
+| GET | `/health/ready` | **readiness**：探数据库（`SELECT 1`）；失败 → **503** `DB_UNAVAILABLE`，编排系统据此摘流量但不重启 | 200 / 503 | **公开** |
+| GET | `/v1/models` | 硬编码的模型清单；支持 `?prefix=` / `?limit=`（1 ~ 100） | 200 / 422 | **公开** |
+| GET | `/v1/models/latest` | 默认模型 | 200 | **公开** |
+| GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 | **公开** |
+| POST | `/v1/chat` | 聊天；⚠️ **业务逻辑仍为 `echo` 占位**（待办 #46）；最后一条消息必须是 `user`；可选 `conversation_id`（不存在**或不属于本人** → 404） | 200 / **401** / 400 / 404 / 422 | key |
+| GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse`（**它花钱，所以必须鉴权**） | 200 / **401** / 502 / **504**（超出 `upstream_total_timeout`） | key |
+| POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；可选 `conversation_id`（不存在**或不属于本人** → 404，**在流开始前拦**）；每次调用落一行账单 | 200 / **401** / 404 / 422 | key |
+| POST | `/v1/conversations` | 新建对话（落库，**归属当前 key**）；`title` 长度 1~100 | 201 / **401** / 422 | key |
+| GET | `/v1/conversations` | **游标分页**列出**自己的**对话（`?limit=1~100&after_id=N`），含账单统计；响应 `{items, total, limit, next_cursor, has_more}`，`total` 也只数自己的 | 200 / **401** / 422 | key |
+| GET | `/v1/conversations/{conv_id}` | 单个对话；不存在**或不属于本人** → 404；`conv_id` 非整数 → 422 | 200 / **401** / 404 / 422 | key |
+| DELETE | `/v1/conversations/{conv_id}` | 删除对话（204 无内容）；不存在**或不属于本人** → 404；⚠️ 计费记录 `SET NULL` 保留 | 204 / **401** / 404 / 422 | key |
+| PATCH | `/v1/conversations/{conv_id}` | 修改标题（部分更新）；不存在**或不属于本人** → 404；空 body / null / 空串 → 422 | 200 / **401** / 404 / 422 | key |
 
 **成功响应形状**（Step 4 起，`schemas.py` 定义，可在 `/docs` 展开）：
 
@@ -40,9 +65,10 @@
   {"id": "deepseek-v4-pro", "name": "DeepSeek-V4-Pro", "context_window": 1048576}
 ]}
 
-// GET /v1/conversations —— 含账单统计（join + group_by，1 条 SQL）
-[{"id": 1, "title": "有账单", "created_at": "...", "updated_at": "...",
-  "call_count": 2, "total_tokens": 175}]
+// GET /v1/conversations —— ConversationPageOut（含账单统计，join + group_by，1 条 SQL）
+{"items": [{"id": 1, "title": "有账单", "created_at": "...", "updated_at": "...",
+            "call_count": 2, "total_tokens": 175}],
+ "total": 1, "limit": 20, "next_cursor": null, "has_more": false}
 ```
 
 ⚠️ **已知形状问题**（剩余待办 #39）：`/v1/models` 与 `/v1/upstream/models` 形状不一致。
@@ -53,9 +79,16 @@
 **错误响应形状**（Step 11d 起，**任何**错误都是同一种形状）：
 
 ```jsonc
+// 鉴权失败（401）：没带 / 无效 / 已撤销 —— 三种情况同一句话同一个码
+//   响应头额外带 WWW-Authenticate: ApiKey（RFC 9110 §15.5.2 要求）
+{"error": {"code": "UNAUTHORIZED", "message": "缺少 X-API-Key 请求头", "request_id": "58d3b6cbcc94"}}
+
 // 业务错误（400 / 404 …）：code 给机器判断（稳定不变），message 给人看（可改文案）
 {"error": {"code": "LAST_MESSAGE_NOT_USER", "message": "最后一条消息必须是 user，当前是 assistant",
            "request_id": "1b085bd5c5b3"}}
+
+// 越权访问别人的对话 → 404（与"真不存在"完全同形，不确认资源存在性）
+{"error": {"code": "CONVERSATION_NOT_FOUND", "message": "对话不存在：7", "request_id": "b12bb5a33d63"}}
 
 // 框架错误：路由不存在 / 方法不允许 —— code 由状态码兜底
 {"error": {"code": "NOT_FOUND", "message": "Not Found", "request_id": "a4175e01d830"}}
@@ -143,12 +176,13 @@ $body = '{"messages":[{"role":"user","content":"从1数到5，只输出数字，
 [IO.File]::WriteAllText("$env:TEMP\chat_stream.json", $body, (New-Object System.Text.UTF8Encoding($false)))
 
 # 逐帧看内容（-N = 关掉 curl 自己的输出缓冲，否则看不到"逐字"）
+# 【注意】：13d-2 起必须带 X-API-Key，否则 401
 curl.exe -N -s -X POST http://127.0.0.1:8000/v1/chat/stream `
-  -H "Content-Type: application/json" --data-binary "@$env:TEMP\chat_stream.json"
+  -H "Content-Type: application/json" -H "X-API-Key: $env:API_KEY" --data-binary "@$env:TEMP\chat_stream.json"
 
 # 只看响应头，丢弃 body
 curl.exe -s -D - -o NUL -X POST http://127.0.0.1:8000/v1/chat/stream `
-  -H "Content-Type: application/json" --data-binary "@$env:TEMP\chat_stream.json"
+  -H "Content-Type: application/json" -H "X-API-Key: $env:API_KEY" --data-binary "@$env:TEMP\chat_stream.json"
 
 Remove-Item "$env:TEMP\chat_stream.json"
 ```
@@ -167,12 +201,13 @@ Remove-Item "$env:TEMP\chat_stream.json"
 | 9b-2（无状态帧） | 845.8ms | 905.7ms | **93%** |
 | **9b-3（加 `thinking` 帧）** | **60.0ms** | 906ms | **6.6%** |
 
-**流式的已知限制**（下一步要补）：
+**流式的已知限制**（已补齐的两条保留在此，作为「原样记录」）：
 
-| 限制 | 表现 | 归属 |
+| 限制 | 表现 | 现状 |
 |---|---|---|
-| 上游报错时状态码改不了 | 客户端看到 `200` + 断连（头早已发出） | 9b-4：在开始流**之前**判断上游状态 |
-| 客户端断开未处理 | 用户走了仍在烧 token | 9b-4 |
+| 上游报错时状态码改不了 | 客户端看到 `200` + 断连（头早已发出） | ✅ 已补（9b-4）：**pre-flight** 在开流前先探上游，L1/L2 → **502**；流内错误用 `error` 帧表达 |
+| 客户端断开未处理 | 用户走了仍在烧 token | ✅ 已补（9b-4）：📎 实测 `aclose()` 让上游 **4ms 内停止生成**（40 帧只发出 3 帧）；账单落 `aborted` |
+| 窗口外的在途流会被切断 | 发版时若 30s 内没跑完 | ✅ 已表达（13c-5，决策 39）：连接关闭、**无 `[DONE]`**，前端必须按「流断了」处理 |
 
 **请求追踪**（Step 7a 起）：每个响应都带 `X-Request-ID` 头。
 
@@ -190,13 +225,19 @@ curl.exe -i http://127.0.0.1:8000/health -H "X-Request-ID: my-trace-001"
 **手工验证**（PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名，必须写 `curl.exe`）：
 
 ```powershell
-curl.exe -s -i http://127.0.0.1:8000/v1/models/deepseek-flash          # 200
-curl.exe -s -i http://127.0.0.1:8000/v1/models/does-not-exist          # 404
+# 【注意】：13d-2 起业务端点必须带 X-API-Key（否则 401）；/health 与 /v1/models* 免鉴权
+$env:API_KEY = "sk_xxx"   # 当前只能手写库造（签发 CLI 见待办 13d-5）
+
+curl.exe -s -i http://127.0.0.1:8000/health                                        # 200（免鉴权）
+curl.exe -s -i http://127.0.0.1:8000/v1/models/deepseek-flash                       # 200（免鉴权）
+curl.exe -s -i http://127.0.0.1:8000/v1/models/does-not-exist                       # 404
+curl.exe -s -i http://127.0.0.1:8000/v1/conversations                               # 401（没带 key）
+curl.exe -s -i http://127.0.0.1:8000/v1/conversations -H "X-API-Key: $env:API_KEY"  # 200
 
 # 请求体含中文时写进临时文件，避免 PowerShell 转义把 JSON 弄坏
 $body = '{"messages":[{"role":"user","content":"你好"}]}'
 [IO.File]::WriteAllText("$env:TEMP\chat.json", $body, (New-Object System.Text.UTF8Encoding($false)))
-curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: application/json" --data-binary "@$env:TEMP\chat.json"
+curl.exe -s -i -X POST http://127.0.0.1:8000/v1/chat -H "Content-Type: application/json" -H "X-API-Key: $env:API_KEY" --data-binary "@$env:TEMP\chat.json"
 ```
 
 ---
