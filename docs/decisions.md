@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-17 · 共 39 条
+**最后更新**：2026-11-17 · 共 40 条
 
 ---
 
@@ -60,6 +60,7 @@
 | [37](#37-上游总时长上限用应用层死线而不是-httpx-超时参数) | 上游「太慢」怎么掐 | **应用层总时长死线**（httpx 没有 total） | 2026-11-17 |
 | [38](#38-写路由自己-commitget_db-只做收尾兜底) | 事务提交放在哪 | **写路由 return 前 commit；`get_db` 只兜底**（两层职责） | 2026-11-17 |
 | [39](#39-优雅停机用-uvicorn-内置窗口默认-30s而-不自己实现) | 优雅停机怎么做 | **用 uvicorn 的 `timeout_graceful_shutdown`，窗口 30s** | 2026-11-17 |
+| [40](#40-身份与凭据存两张表密钥只存-sha256) | 身份与凭据怎么存 | **`users` + `api_keys`（只存 sha256）；CASCADE 只给凭据** | 2026-11-17 |
 
 ---
 
@@ -773,6 +774,18 @@
 | **决定** | **D**。新增 `graceful_shutdown_timeout: int = Field(default=30, gt=0, le=300)`（**必须 int** —— 📎 uvicorn 的注解是 `int \| None`，传 float 过不了 mypy，实测报 `arg-type`），在 `__main__.py` 传给 `uvicorn.run(timeout_graceful_shutdown=...)`，并进启动摘要（#85 的守卫强制）。默认 **30s = k8s `terminationGracePeriodSeconds` 默认值**；**验收脚本** = `scripts/probe_graceful_shutdown.py`（13c-6，子进程 + 真信号 → `PASS/FAIL` + 退出码） |
 | **代价** ⚠️ | ① **部署最坏多等 30s**（这正是「让在途流跑完」的代价）<br>② 窗口内跑不完的流**一定**被切断（连接关闭、**无 `[DONE]`**）→ 前端要按「流断了」处理<br>③ **只在 `python -m app` 下生效**：直接 `uvicorn app.api.app:app` 必须带 `--timeout-graceful-shutdown`（13a 的 Dockerfile CMD 必须带）<br>④ 📎 Windows 上 Ctrl+Break 的退出码是 **3**（uvicorn 优雅关闭后**重新 raise 信号**的固有行为，Linux 是 143），与配置无关 |
 | **重审条件** | ① **13a `docker stop` 实测**：拿到 Linux SIGTERM 的真实退出码与耗时；若「最坏 30s 才退出」影响发版节奏 → 调小或按 `upstream_total_timeout` 分层。⚠️ **`docker stop` 默认只等 10s 就 SIGKILL**（compose 的 `stop_grace_period` 默认同为 10s），比本窗口 30s **小** → 13a 必须显式写 `stop_grace_period`（如 `40s`）或把窗口降到 10s 以内，否则窗口永远走不完<br>② 13f 压测后若发现长回答占比高 → 重新评估窗口（可能需要 >30s，同时调大编排宽限期）<br>③ 若编排系统改为「先摘流量、等待 N 秒再发 SIGTERM」（preStop hook）→ 窗口可显著调小<br>④ 若要做「零中断发版」（双版本并存）→ 这套单进程优雅停机不够，需要滚动 + 就绪探针配合 |
+
+---
+
+## 40. 身份与凭据存两张表密钥只存 sha256
+
+| 项 | 内容 |
+|---|---|
+| **背景** | #36：所有 `/v1/conversations` 端点零鉴权，且没有「对话属于谁」的字段 —— 任何人知道 URL 就能删任何对话。要加归属就必须先有「人」这个概念；而 `#36` 自己写明「`owner_id` 越晚加越贵 —— 现在只有 1 张业务表、5 个端点」 |
+| **方案对比** | **A 两张表 + sha256**：`users(id, name, created_at)` + `api_keys(id, user_id, key_hash UNIQUE, label, created_at, revoked_at)`<br>**B 单表 `api_keys.owner_id` 存字符串**：少一张表，但「人」散落在字符串里 —— 加任何用户级属性（邮箱 / 配额 / 停用）都要再来一次迁移<br>**C key 放 `.env`**：只挡路人，`owner_id` 照样要加，等于白做一次<br>**D 明文存 key**：泄露即全部失守 |
+| **决定** | **A + 只存 sha256**。凭据走请求头 `X-API-Key`（遵守 #36 的硬约束：不用 Cookie → 无 CSRF 面）；**不做 bcrypt** —— key 是 32 字节随机串（高熵），慢哈希只给每个请求加几十毫秒 CPU；**CASCADE 只给 `api_keys`**（凭据是附属品），`conversations` 将来挂 `owner_id` 时**不写** CASCADE（对话与账单是资产，删人不能连账一起消失） |
+| **代价** ⚠️ | ① 多两张表 + 一个 `owner_id` 迁移；② **撤销后仍有延迟**（若将来加缓存，键失效需等 TTL）；③ **sha256 无盐**：彩虹表对 32 字节随机串无效，但对**人手输入的弱 key** 无效力 —— 所以生成必须 `secrets.token_urlsafe(32)`，**不许**让用户自选；④ 单进程内存限流（13d-4）在 `--workers 4` 下是 4 倍，真正多实例要放网关 / Redis |
+| **重审条件** | ① 要做「邮箱 + 口令登录」→ 口令**必须** bcrypt/argon2（人选的低熵值），与本条的 sha256 并存但用途不同；② 出现第二个服务要验同一批 key → 加 `scopes` 列或换 OAuth2 / JWT；③ 需要审计「谁在什么时候用了哪把 key」→ 加 `last_used_at`（每请求一次写，先想清楚是不是放日志更划算） |
 
 ---
 

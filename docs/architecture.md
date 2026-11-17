@@ -362,6 +362,19 @@ uvicorn 启动
                                                         ▲
                                                         │ index=True
                                           ix_llm_calls_conversation_id
+
+┌──────────────────────────┐            ┌────────────────────────────────────────┐
+│ users                    │  1      *  │ api_keys                               │
+├──────────────────────────┤◄───────────├────────────────────────────────────────┤
+│ id          INTEGER  PK  │  ondelete= │ id          INTEGER  PK                │
+│ name        VARCHAR(50)  │   CASCADE  │ user_id     INTEGER  NN  (index)       │
+│ created_at  DATETIME  NN │  UNIQUE    │ key_hash    VARCHAR(64) NN UNIQUE      │
+└──────────────────────────┘  (name)    │ label       VARCHAR(50)  NN            │
+                                        │ created_at  DATETIME     NN            │
+   relationship: User.api_keys          │ revoked_at  DATETIME     NULL          │
+                 ApiKey.user            └────────────────────────────────────────┘
+
+   ⚠️ conversations 还没有 owner_id —— 13d-2 加（NOT NULL，必须与鉴权同一步）
 ```
 
 ### 4.2 📎 真实 DDL（SQLite 建出来的）
@@ -389,15 +402,38 @@ CREATE TABLE llm_calls (
 );
 
 CREATE INDEX ix_llm_calls_conversation_id ON llm_calls (conversation_id);
+
+CREATE TABLE users (
+    id          INTEGER     NOT NULL,
+    name        VARCHAR(50) NOT NULL,
+    created_at  DATETIME    NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE (name)
+);
+
+CREATE TABLE api_keys (
+    id          INTEGER     NOT NULL,
+    user_id     INTEGER     NOT NULL,
+    key_hash    VARCHAR(64) NOT NULL,
+    label       VARCHAR(50) NOT NULL,
+    created_at  DATETIME    NOT NULL,
+    revoked_at  DATETIME,
+    PRIMARY KEY (id),
+    FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE,
+    UNIQUE (key_hash)
+);
+
+CREATE INDEX ix_api_keys_user_id ON api_keys (user_id);
 ```
 
-### 4.3 三个「不这么写就会错」的点
+### 4.3 四个「不这么写就会错」的点
 
 | 设定 | 不这样会怎样 |
 |---|---|
 | `ondelete="SET NULL"`（**不是 CASCADE**） | 📎 写 CASCADE 时删 1 个对话会连带删掉 900 token 的账 |
 | `conversation_id` 可空（`int \| None`） | 📎 写成 `int` 就是 500（单次调用可以不属于任何对话） |
 | `relationship` 上**故意不写** `cascade="all, delete-orphan"` | 写了 ORM 会先把外键置 NULL 再删，等于绕过数据库层的 `SET NULL` |
+| `api_keys` 存 **sha256**（`key_hash`，UNIQUE）、**CASCADE 只给它** | 存明文 = 库/备份泄露即可直接调用；给 `conversations` 写 CASCADE = 删人连账单一起消失（资产不能随人蒸发） |
 
 > 📌 副作用要知道：被删对话的账单 `conversation_id = NULL`，**无法区分「从没属于过」和「父行被删」**。
 
@@ -1446,6 +1482,7 @@ POST /v1/conversations
 | 28 | 两次写入都用 `commit` | [app.py](../src/app/api/app.py) `record_usage` | `test_concurrency.py`（4，串行化回归） |
 | 32 | 测试跑真实迁移，不跑 `create_all` | ✅ [tests/conftest.py](../tests/conftest.py) `migrated`（session 级）+ `lifespan` 已不建表（13b-2b-2） | ✅ `test_smoke.py`（2 条 ready 用例）+ `test_migrations.py` |
 | 33 | 迁移守卫用子进程跑 alembic CLI | [tests/test_migrations.py](../tests/test_migrations.py) `_run_alembic` | 它自己就是守卫（📎 3 个变异 6 条全红） |
+| 40 | 身份与凭据存两张表，密钥只存 sha256 | [models.py](../src/app/models.py) `User` / `ApiKey` | ⚠️ **无**（13d-2 加 `owner_id` 后由「A 访问 B 的对话 → 404」用例钉住） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
@@ -1462,7 +1499,7 @@ POST /v1/conversations
 |---|---|---|
 | `HEADER_REQUEST_ID` | `X-Request-ID` | [constants.py](../src/app/constants.py) |
 | `KNOWN_MODELS` | `["deepseek-flash", "deepseek-v4-pro"]` | [app.py](../src/app/api/app.py) |
-| `ALLOWED_ORIGINS` | `["http://localhost:5173", "http://127.0.0.1:5173"]` | [app.py](../src/app/api/app.py) |
+| `ALLOWED_ORIGINS` | `["http://localhost:5173", "http://127.0.0.1:5173"]` | [constants.py](../src/app/constants.py)（13c-1 从 `api/app.py` 搬来，供 500 处理器复用） |
 | `MAX_ERROR_BODY_CHARS` | `500` | [llm_client.py](../src/app/llm_client.py) |
 
 ### 15.2 文件职责一句话

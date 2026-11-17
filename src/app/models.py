@@ -114,3 +114,50 @@ class LlmCall(Base):
 
     # 反向导航：call.conversation 拿到那条对话
     conversation: Mapped["Conversation | None"] = relationship(back_populates="calls")
+
+
+class User(Base):
+    """
+    一个「拥有资源的人」—— 目前只有名字，将来放邮箱 / 配额
+
+    【注意】：删用户【不】连带删对话（owner_id 外键不写 CASCADE）——
+        对话与账单是资产，删人必须先处理归属，让数据库替我们拒绝
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+    # 删用户时凭据一起删（凭据是附属品，不是资产）
+    api_keys: Mapped[list["ApiKey"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class ApiKey(Base):
+    """
+    一把可用于调用 API 的钥匙 —— 库里只存 sha256，明文只在生成时给一次
+
+    【注意】：存 hash 不存明文：库或备份泄露都不泄露可用凭据。
+        不用 bcrypt：key 是 32 字节随机串（高熵），慢哈希只增加每个请求的 CPU
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+
+    # unique=True：一把 key 不可能属于两个人；unique 自带索引，鉴权每次走它查
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+
+    # 人看的标签（"笔记本" / "CI"），不参与鉴权
+    label: Mapped[str] = mapped_column(String(50), default="")
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+    # 撤销时间：非空 = 已停用。不删行是为了留审计痕迹
+    revoked_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    user: Mapped["User"] = relationship(back_populates="api_keys")

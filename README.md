@@ -209,7 +209,7 @@ uv run pytest -q        # 115 个用例，约 9 s
 | | 结果 |
 |---|---|
 | `ruff check` / `format --check` | 全绿（34 files） |
-| `mypy --strict` | 全绿（38 source files，含 `tests/`、`scripts/` 与 `playground/`） |
+| `mypy --strict` | 全绿（39 source files，含 `tests/`、`scripts/` 与 `playground/`） |
 | `pytest -q` | **115 passed** |
 | 分支覆盖 | **92%**（`llm_client.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
