@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from conftest import AUTH_HEADERS
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -105,7 +106,7 @@ def test_create_does_not_report_success_before_commit(client: TestClient, db_pat
     """回归 #54：提交失败时绝不能已经回过 201 —— 客户端会以为存住了"""
     # 用 client fixture 只为它的清表副作用（下面的断言依赖「库里没有这一行」）
     with patch.object(AsyncSession, "commit", _boom_commit):
-        with TestClient(app, raise_server_exceptions=False) as raw:
+        with TestClient(app, headers=AUTH_HEADERS, raise_server_exceptions=False) as raw:
             r = raw.post("/v1/conversations", json={"title": "不该存在"})
 
     assert r.status_code >= 500, f"提交失败却回了 {r.status_code}（#54 复现）"
@@ -124,7 +125,7 @@ def test_update_does_not_report_success_before_commit(client: TestClient, db_pat
     created = client.post("/v1/conversations", json={"title": "原始标题"}).json()
 
     with patch.object(AsyncSession, "commit", _boom_commit):
-        with TestClient(app, raise_server_exceptions=False) as raw:
+        with TestClient(app, headers=AUTH_HEADERS, raise_server_exceptions=False) as raw:
             r = raw.patch(f"/v1/conversations/{created['id']}", json={"title": "改过的标题"})
 
     assert r.status_code >= 500, f"提交失败却回了 {r.status_code}（#54 复现）"
@@ -143,7 +144,7 @@ def test_delete_does_not_report_success_before_commit(client: TestClient, db_pat
     created = client.post("/v1/conversations", json={"title": "别删我"}).json()
 
     with patch.object(AsyncSession, "commit", _boom_commit):
-        with TestClient(app, raise_server_exceptions=False) as raw:
+        with TestClient(app, headers=AUTH_HEADERS, raise_server_exceptions=False) as raw:
             r = raw.delete(f"/v1/conversations/{created['id']}")
 
     assert r.status_code >= 500, f"提交失败却回了 {r.status_code}（#54 复现）"

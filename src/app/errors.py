@@ -69,6 +69,8 @@ _STATUS_BY_CODE: dict[str, int] = {
     # 客户端的错，且它自己修得好（把要求生成的输出的 token 调小再发）：400 而不是 5xx
     # 【注意】：不登记也会落到 400 兜底 —— 但那是"漏登记"的兜底，不是"这个码治 400"
     "INVALID_MAX_TOKENS": status.HTTP_400_BAD_REQUEST,
+    # 401：没带凭据 / 凭据无效或已撤销。响应带 WWW-Authenticate，符合 RFC 9110 的要求
+    "UNAUTHORIZED": status.HTTP_401_UNAUTHORIZED,
     # 404 有两种来源、两种含义：客户端据此能区分"模型名打错"和"对话 id 不存在"
     "MODEL_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "CONVERSATION_NOT_FOUND": status.HTTP_404_NOT_FOUND,

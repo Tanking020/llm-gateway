@@ -20,10 +20,13 @@ from fastapi import Depends, Request
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import find_user_by_key
 from app.config import Settings, settings
+from app.constants import HEADER_API_KEY
 from app.database import SessionMaker
 from app.errors import AppError
 from app.llm_client import LlmClient
+from app.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,37 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
+
+
+def _unauthorized(message: str) -> AppError:
+    """401 的唯一来源：两种情况（没带 / 无效或撤销）用同一份形状
+
+    【注意】：无效与"已撤销"共用一句话 —— 否则等于告诉持钥人"这把曾经有效"
+    """
+    return AppError(
+        "UNAUTHORIZED",
+        message,
+        # RFC 9110 §15.5.2 要求 401 带 WWW-Authenticate；值写方案名（这里是自定义的 ApiKey）
+        headers={"WWW-Authenticate": "ApiKey"},
+    )
+
+
+async def require_user(request: Request, db: DbDep) -> User:
+    """鉴权依赖：把 X-API-Key 换成「当前用户」，换不到就 401
+
+    【注意】：它复用同一个 get_db 会话（FastAPI 按依赖函数缓存结果）——
+        所以这里不需要再开一个 session，也不会和路由的事务边界打架
+    """
+    raw = request.headers.get(HEADER_API_KEY)
+    if not raw:
+        raise _unauthorized("缺少 X-API-Key 请求头")
+    user = await find_user_by_key(db, raw)
+    if user is None:
+        raise _unauthorized("API key 无效或已撤销")
+    return user
+
+
+CurrentUserDep = Annotated[User, Depends(require_user)]
 
 
 async def get_upstream_slot(request: Request, config: SettingsDep) -> AsyncIterator[None]:

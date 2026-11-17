@@ -35,7 +35,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import DbDep, LlmClientDep, SettingsDep, UpstreamSlotDep
+from app.api.deps import CurrentUserDep, DbDep, LlmClientDep, SettingsDep, UpstreamSlotDep
 from app.config import Settings, settings, startup_config_summary
 from app.constants import ALLOWED_ORIGINS, HEADER_REQUEST_ID
 from app.database import engine
@@ -351,16 +351,24 @@ def _row_to_stats(row: Any) -> ConversationStatsOut:
     )
 
 
-async def _fetch_conversation_stats(db: AsyncSession, conv_id: int) -> ConversationStatsOut:
-    """按 id 取【对话 + 账单统计】：不存在就抛 404"""
-    stmt = _conversation_stats_stmt().where(Conversation.id == conv_id)
+async def _fetch_conversation_stats(
+    db: AsyncSession, conv_id: int, owner_id: int
+) -> ConversationStatsOut:
+    """按 id 取【对话 + 账单统计】：不存在【或不属于本人】都抛 404
+
+    【注意】：必须在这里就带上 owner_id 过滤，而不是取出来再判 ——
+        否则"别人的对话"会先被读进内存，任何一个后续忘记判空的分支都会泄露它的标题与用量
+    """
+    stmt = _conversation_stats_stmt().where(
+        Conversation.id == conv_id, Conversation.owner_id == owner_id
+    )
     row = (await db.execute(stmt)).first()
     if row is None:
         raise _conversation_not_found(conv_id)
     return _row_to_stats(row)
 
 
-async def require_conversation(db: AsyncSession, conv_id: int) -> Conversation:
+async def require_conversation(db: AsyncSession, conv_id: int, owner_id: int) -> Conversation:
     """
     按 id 取对话：不存在就抛 404
 
@@ -371,8 +379,11 @@ async def require_conversation(db: AsyncSession, conv_id: int) -> Conversation:
     【注意】：五处路由共用这一份实现（两条 chat + GET/PATCH/DELETE），
         改文案或改状态码只改这里 —— 否则一定会漏
     """
-    conv = await db.get(Conversation, conv_id)
+    stmt = select(Conversation).where(Conversation.id == conv_id, Conversation.owner_id == owner_id)
+    conv = (await db.execute(stmt)).scalar_one_or_none()
     if conv is None:
+        # 【注意】：越权与不存在共用 404 —— 403 等于告诉对方"这个 id 存在，只是不是你的"，
+        #   配合自增 id 就是免费的枚举接口
         raise _conversation_not_found(conv_id)
     return conv
 
@@ -397,7 +408,9 @@ def _as_int(value: object) -> int:
 
 
 @app.post("/v1/chat")
-async def chat(request: ChatRequest, config: SettingsDep, db: DbDep) -> ChatResponse:
+async def chat(
+    request: ChatRequest, config: SettingsDep, user: CurrentUserDep, db: DbDep
+) -> ChatResponse:
     """
     request 是【请求体】—— 类型是 pydantic 模型，所以 FastAPI 从 JSON body 里面取；
     config 是【依赖】—— FastAPI 调 get_settings() 后注入
@@ -406,7 +419,7 @@ async def chat(request: ChatRequest, config: SettingsDep, db: DbDep) -> ChatResp
     ensure_max_tokens_within_ceiling(request, config)
 
     if request.conversation_id is not None:
-        await require_conversation(db, request.conversation_id)
+        await require_conversation(db, request.conversation_id, user.id)
 
     last = request.messages[-1]
     return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
@@ -415,7 +428,7 @@ async def chat(request: ChatRequest, config: SettingsDep, db: DbDep) -> ChatResp
 # FastAPI 构建路由时会检查：有显式 response_model 就用它，没有就用【返回注解】
 # 两者相同时只需写返回注解 —— 这里故意不写 response_model=，避免同一件事写两遍
 @app.get("/v1/upstream/models")
-async def upstream_models(client: LlmClientDep) -> ModelListResponse:
+async def upstream_models(_user: CurrentUserDep, client: LlmClientDep) -> ModelListResponse:
     """
     真实调用上游 /models。与 /v1/models（硬编码）对照用。
 
@@ -435,7 +448,9 @@ async def upstream_models(client: LlmClientDep) -> ModelListResponse:
 
 
 @app.post("/v1/conversations", response_model=ConversationStatsOut, status_code=201)
-async def create_conversation(payload: ConversationIn, db: DbDep) -> ConversationStatsOut:
+async def create_conversation(
+    payload: ConversationIn, user: CurrentUserDep, db: DbDep
+) -> ConversationStatsOut:
     """
     新建一个对话，返回带 id 的完整对象（含账单统计）
 
@@ -448,26 +463,26 @@ async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversatio
     """
     # payload 是 pydantic 对象，不是字符串 —— 必须取 .title
     #   写 Conversation(title=payload) 会 500：数据库绑不了 ConversationIn 这个类型
-    conv = Conversation(title=payload.title)
+    conv = Conversation(title=payload.title, owner_id=user.id)
     # add 只登记（一个 SQL 都没发）；commit 会先 flush（发出 INSERT 并拿回自增 id）再提交
     db.add(conv)
     # 【注意】：必须是 commit 且必须在 return 之前 —— 提交失败要让客户端看到 5xx
     await db.commit()
-    return await _fetch_conversation_stats(db, conv.id)
+    return await _fetch_conversation_stats(db, conv.id, user.id)
 
 
 @app.get("/v1/conversations/{conv_id}", response_model=ConversationStatsOut)
-async def get_conversation(conv_id: int, db: DbDep) -> ConversationStatsOut:
+async def get_conversation(conv_id: int, user: CurrentUserDep, db: DbDep) -> ConversationStatsOut:
     """
     按 id 查一个对话（含账单统计）：不存在返回 404
 
     与列表返回【同一种形状】—— 同一个资源两种形状，前端点进详情就会丢字段
     """
-    return await _fetch_conversation_stats(db, conv_id)
+    return await _fetch_conversation_stats(db, conv_id, user.id)
 
 
 @app.delete("/v1/conversations/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_conversation(conv_id: int, db: DbDep) -> None:
+async def delete_conversation(conv_id: int, user: CurrentUserDep, db: DbDep) -> None:
     """
     删除一个对话：不存在返回 404
 
@@ -477,7 +492,7 @@ async def delete_conversation(conv_id: int, db: DbDep) -> None:
     AssertionError: Status code 204 must not have a response body
     （服务根本起不来，不是运行时才报）
     """
-    conv = await require_conversation(db, conv_id)
+    conv = await require_conversation(db, conv_id, user.id)
     await db.delete(conv)  # AsyncSession.delete 是异步方法，必须 await
     # 【注意】：commit 必须在 return 之前 —— 否则 204 发出去之后才发现没删掉（#54）
     await db.commit()
@@ -488,6 +503,7 @@ async def delete_conversation(conv_id: int, db: DbDep) -> None:
 async def update_conversation(
     conv_id: int,
     payload: ConversationPatch,
+    user: CurrentUserDep,
     db: DbDep,
 ) -> ConversationStatsOut:
     """
@@ -499,18 +515,19 @@ async def update_conversation(
     本项目只有 title 一个可改字段，所以两者行为暂时相同
     接口名写 PATCH 是为将来加字段时留的余地
     """
-    conv = await require_conversation(db, conv_id)
+    conv = await require_conversation(db, conv_id, user.id)
     conv.title = payload.title
     # 【注意】：commit 会先 flush —— updated_at 的 onupdate 在生成 UPDATE 时才求值，
     #   少这一步会让响应带着改动前的旧时间
     # 【注意】：必须在 return 之前 commit —— 提交失败要让客户端看到 5xx（#54）
     await db.commit()
     # 与列表 / 详情返回同一种形状：否则前端拿 PATCH 响应刷新缓存会丢掉统计字段
-    return await _fetch_conversation_stats(db, conv_id)
+    return await _fetch_conversation_stats(db, conv_id, user.id)
 
 
 @app.get("/v1/conversations", response_model=ConversationPageOut)
 async def list_conversations(
+    user: CurrentUserDep,
     db: DbDep,
     limit: Annotated[int, Query(ge=1, le=100, description="这一页最多几条")] = 20,
     after_id: Annotated[int | None, Query(ge=0, description="游标：只返回 id 比它大的")] = None,
@@ -525,7 +542,7 @@ async def list_conversations(
     【注意】：必须 outerjoin —— 用 join 会让没有账单的对话整行消失
     【注意】：必须 coalesce —— SUM 遇到空集返回 NULL，响应里就变成 null 而不是 0
     """
-    stmt = _conversation_stats_stmt()
+    stmt = _conversation_stats_stmt().where(Conversation.owner_id == user.id)
     if after_id is not None:
         stmt = stmt.where(Conversation.id > after_id)
 
@@ -534,7 +551,13 @@ async def list_conversations(
     has_more = len(rows) > limit
     rows = rows[:limit]
 
-    total = (await db.execute(select(func.count(Conversation.id)))).scalar_one()
+    # 【注意】：total 也必须带 owner_id 过滤 —— 否则列表里没有别人的对话，
+    #   却把总数透出去了（前端会显示"共 42 条"而只有 1 条）
+    total = (
+        await db.execute(
+            select(func.count(Conversation.id)).where(Conversation.owner_id == user.id)
+        )
+    ).scalar_one()
 
     return ConversationPageOut(
         items=[_row_to_stats(r) for r in rows],
@@ -563,6 +586,7 @@ async def chat_stream(
     # 【注意】：放在最前面 —— 依赖按参数顺序解析、按【反序】收尾，
     #   所以闸门是最后一个释放的：它覆盖到下面 db 的 commit 也做完
     _slot: UpstreamSlotDep,
+    user: CurrentUserDep,
     client: LlmClientDep,
     config: SettingsDep,
     db: DbDep,
@@ -577,7 +601,7 @@ async def chat_stream(
     # pre-flight：对话存在性必须在【打开上游流之前】查。放后面的话
     #   会白花一次上游调用，而且响应头已经发出，改不了 404
     if request.conversation_id is not None:
-        await require_conversation(db, request.conversation_id)
+        await require_conversation(db, request.conversation_id, user.id)
 
     actual_model = request.model or config.llm_model
 

@@ -166,7 +166,8 @@ raise RuntimeError      → 一路冒到 ① ServerErrorMiddleware → _unhandle
 |---|---|
 | `__main__.py` | `config`, `logging_setup` |
 | `api/app.py` | `api/deps`, `config`, `constants`, `database`, `errors`, `llm_client`, `logging_setup`, `models`, `schemas` |
-| `api/deps.py` | `config`, `database`, `llm_client` |
+| `api/deps.py` | `auth`, `config`, `constants`, `database`, `errors`, `llm_client`, `models` |
+| `auth.py` | `models` |
 | `database.py` | `config` |
 | `errors.py` | `constants` |
 | `llm_client.py` | `config`, `errors`, `schemas` |
@@ -351,42 +352,62 @@ uvicorn 启动
 │ conversations                 │              │ llm_calls                        │
 ├───────────────────────────────┤              ├──────────────────────────────────┤
 │ id            INTEGER  PK     │ 1          * │ id                 INTEGER  PK   │
-│ title         VARCHAR(100) NN │◄─────────────│ conversation_id    INTEGER  NULL │
-│ created_at    DATETIME   NN   │  ondelete=   │ model              VARCHAR(100)  │
-│ updated_at    DATETIME   NN   │   SET NULL   │ prompt_tokens      INTEGER  NN   │
-└───────────────────────────────┘              │ completion_tokens  INTEGER  NN   │
-                                               │ total_tokens       INTEGER  NN   │
-   relationship: Conversation.calls            │ status             VARCHAR(20)   │
-                 LlmCall.conversation          │ created_at         DATETIME  NN  │
-                                               └──────────────────────────────────┘
-                                                        ▲
-                                                        │ index=True
-                                          ix_llm_calls_conversation_id
+│ owner_id      INTEGER  NN FK  │◄─────────────│ conversation_id    INTEGER  NULL │
+│ title         VARCHAR(100) NN │  ondelete=   │ model              VARCHAR(100)  │
+│ created_at    DATETIME   NN   │   SET NULL   │ prompt_tokens      INTEGER  NN   │
+│ updated_at    DATETIME   NN   │              │ completion_tokens  INTEGER  NN   │
+└───────────────────────────────┘              │ total_tokens       INTEGER  NN   │
+        │                                      │ status             VARCHAR(20)   │
+        │ owner_id → users.id                  │ created_at         DATETIME  NN  │
+        │ （NO ACTION：删人有对话会被拒）        └──────────────────────────────────┘
+        │                                               ▲
+        │                                               │ index=True
+        │                                 ix_llm_calls_conversation_id
+        │
+        │  1                    *
+        └──────────────►┌──────────────────────────────────────────┐
+                        │ users                                    │
+                        ├──────────────────────────────────────────┤
+                        │ id          INTEGER     PK               │
+                        │ name        VARCHAR(50) NN  UNIQUE       │
+                        │ created_at  DATETIME    NN               │
+                        └──────────────────────────────────────────┘
+                                        ▲ 1
+                                        │ ondelete=CASCADE（凭据是附属品）
+                                        │ *
+                        ┌──────────────────────────────────────────┐
+                        │ api_keys                                 │
+                        ├──────────────────────────────────────────┤
+                        │ id          INTEGER     PK               │
+                        │ user_id     INTEGER     NN (index)       │
+                        │ key_hash    VARCHAR(64) NN  UNIQUE       │
+                        │ label       VARCHAR(50) NN               │
+                        │ created_at  DATETIME    NN               │
+                        │ revoked_at  DATETIME    NULL             │
+                        └──────────────────────────────────────────┘
 
-┌──────────────────────────┐            ┌────────────────────────────────────────┐
-│ users                    │  1      *  │ api_keys                               │
-├──────────────────────────┤◄───────────├────────────────────────────────────────┤
-│ id          INTEGER  PK  │  ondelete= │ id          INTEGER  PK                │
-│ name        VARCHAR(50)  │   CASCADE  │ user_id     INTEGER  NN  (index)       │
-│ created_at  DATETIME  NN │  UNIQUE    │ key_hash    VARCHAR(64) NN UNIQUE      │
-└──────────────────────────┘  (name)    │ label       VARCHAR(50)  NN            │
-                                        │ created_at  DATETIME     NN            │
-   relationship: User.api_keys          │ revoked_at  DATETIME     NULL          │
-                 ApiKey.user            └────────────────────────────────────────┘
-
-   ⚠️ conversations 还没有 owner_id —— 13d-2 加（NOT NULL，必须与鉴权同一步）
+   relationship: Conversation.calls / LlmCall.conversation
+                 User.api_keys    / ApiKey.user
+                 Conversation.owner（单向，User 那边不需要）
 ```
 
 ### 4.2 📎 真实 DDL（SQLite 建出来的）
 
 ```sql
-CREATE TABLE conversations (
+-- ⚠️ 这张表是 batch 模式（建新表 → 拷数据 → 改名）重建出来的，
+--    所以 sqlite_master 里的语句带双引号表名、owner_id 在末尾、外键带 CONSTRAINT 名。
+--    语义与 models.py 一致（守卫按【结构】比对，不按文本，见 tests/test_migrations.py）
+CREATE TABLE "conversations" (
     id          INTEGER      NOT NULL,
     title       VARCHAR(100) NOT NULL,
     created_at  DATETIME     NOT NULL,
     updated_at  DATETIME     NOT NULL,
-    PRIMARY KEY (id)
+    owner_id    INTEGER      NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_conversations_owner_id_users FOREIGN KEY(owner_id) REFERENCES users (id)
 );
+
+CREATE INDEX ix_conversations_owner_id ON conversations (owner_id);
 
 CREATE TABLE llm_calls (
     id                INTEGER      NOT NULL,
@@ -426,7 +447,7 @@ CREATE TABLE api_keys (
 CREATE INDEX ix_api_keys_user_id ON api_keys (user_id);
 ```
 
-### 4.3 四个「不这么写就会错」的点
+### 4.3 五个「不这么写就会错」的点
 
 | 设定 | 不这样会怎样 |
 |---|---|
@@ -434,6 +455,7 @@ CREATE INDEX ix_api_keys_user_id ON api_keys (user_id);
 | `conversation_id` 可空（`int \| None`） | 📎 写成 `int` 就是 500（单次调用可以不属于任何对话） |
 | `relationship` 上**故意不写** `cascade="all, delete-orphan"` | 写了 ORM 会先把外键置 NULL 再删，等于绕过数据库层的 `SET NULL` |
 | `api_keys` 存 **sha256**（`key_hash`，UNIQUE）、**CASCADE 只给它** | 存明文 = 库/备份泄露即可直接调用；给 `conversations` 写 CASCADE = 删人连账单一起消失（资产不能随人蒸发） |
+| `owner_id` **NOT NULL + 索引，且不写 CASCADE** | 可空 → 过滤条件到处变成 `or owner_id is null`，永远清不掉；漏索引 → 列表每页全表扫；写 CASCADE → 删人连对话带账单蒸发 |
 
 > 📌 副作用要知道：被删对话的账单 `conversation_id = NULL`，**无法区分「从没属于过」和「父行被删」**。
 
@@ -443,22 +465,26 @@ CREATE INDEX ix_api_keys_user_id ON api_keys (user_id);
 
 📎 由 `app.routes` 实读。共 **17 条**：13 条业务 + 4 条文档。
 
-| 方法 | 路径 | 请求体 / 参数 | 响应模型 | 成功码 | 主要错误 |
-|---|---|---|---|---|---|
-| GET | `/health` | — | `{"status": "ok"}` | 200 | — |
-| GET | `/health/ready` | — | `{"status": "ready"}` | 200 | 503 `DB_UNAVAILABLE` |
-| GET | `/v1/models` | `?prefix=&limit=`(1..100, 默认 20) | `{"total", "items": [str]}` | 200 | 422 |
-| GET | `/v1/models/latest` | — | `{"model_name"}` | 200 | — |
-| GET | `/v1/models/{model_name}` | 路径参数 | `{"model_name"}` | 200 | 404 `MODEL_NOT_FOUND` |
-| POST | `/v1/chat` | `ChatRequest` | `ChatResponse` | 200 | 400 / 404 / 422 |
-| GET | `/v1/upstream/models` | — | `ModelListResponse` | 200 | 502 `UPSTREAM_*` |
-| POST | `/v1/conversations` | `ConversationIn` | `ConversationStatsOut` | **201** | 422 |
-| GET | `/v1/conversations/{conv_id}` | 路径参数 | `ConversationStatsOut` | 200 | 404 `CONVERSATION_NOT_FOUND` / 422 |
-| PATCH | `/v1/conversations/{conv_id}` | `ConversationPatch` | `ConversationStatsOut` | 200 | 404 / 422 |
-| DELETE | `/v1/conversations/{conv_id}` | 路径参数 | **无 body** | **204** | 404 / 422 |
-| GET | `/v1/conversations` | `?limit=`(1..100, 默认 20) `&after_id=`(≥0) | `ConversationPageOut` | 200 | 422 |
-| POST | `/v1/chat/stream` | `ChatRequest` | **SSE**（`text/event-stream`） | 200 | **502（pre-flight）** / 400 / 404 / 422 |
-| GET | `/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` | — | — | 200 | **prod 下全 404** |
+| 方法 | 路径 | 请求体 / 参数 | 响应模型 | 成功码 | 主要错误 | 鉴权 |
+|---|---|---|---|---|---|---|
+| GET | `/health` | — | `{"status": "ok"}` | 200 | — | **公开** |
+| GET | `/health/ready` | — | `{"status": "ready"}` | 200 | 503 `DB_UNAVAILABLE` | **公开** |
+| GET | `/v1/models` | `?prefix=&limit=`(1..100, 默认 20) | `{"total", "items": [str]}` | 200 | 422 | **公开** |
+| GET | `/v1/models/latest` | — | `{"model_name"}` | 200 | — | **公开** |
+| GET | `/v1/models/{model_name}` | 路径参数 | `{"model_name"}` | 200 | 404 `MODEL_NOT_FOUND` | **公开** |
+| POST | `/v1/chat` | `ChatRequest` | `ChatResponse` | 200 | 401 / 400 / 404 / 422 | key |
+| GET | `/v1/upstream/models` | — | `ModelListResponse` | 200 | 401 / 502 `UPSTREAM_*` | key |
+| POST | `/v1/conversations` | `ConversationIn` | `ConversationStatsOut` | **201** | 401 / 422 | key |
+| GET | `/v1/conversations/{conv_id}` | 路径参数 | `ConversationStatsOut` | 200 | 401 / 404 / 422 | key |
+| PATCH | `/v1/conversations/{conv_id}` | `ConversationPatch` | `ConversationStatsOut` | 200 | 401 / 404 / 422 | key |
+| DELETE | `/v1/conversations/{conv_id}` | 路径参数 | **无 body** | **204** | 401 / 404 / 422 | key |
+| GET | `/v1/conversations` | `?limit=`(1..100, 默认 20) `&after_id=`(≥0) | `ConversationPageOut` | 200 | 401 / 422 | key |
+| POST | `/v1/chat/stream` | `ChatRequest` | **SSE**（`text/event-stream`） | 200 | 401 / **502（pre-flight）** / 400 / 404 / 422 | key |
+| GET | `/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` | — | — | 200 | **prod 下全 404** | **公开** |
+
+> **鉴权**：请求头 `X-API-Key: sk_…`（13d-2）。库里只存 `sha256`，明文只在签发时给一次。
+> 401 形状 `{"error": {"code": "UNAUTHORIZED", …}}` + 响应头 `WWW-Authenticate: ApiKey`。
+> **越权与不存在共用 404**（403 会泄露"这个 id 存在"）。守卫：`tests/test_source_rules.py` 断言"除白名单外每个路由都必须声明 `CurrentUserDep`"。
 
 ### 5.1 两个容易混的点
 
@@ -1482,7 +1508,8 @@ POST /v1/conversations
 | 28 | 两次写入都用 `commit` | [app.py](../src/app/api/app.py) `record_usage` | `test_concurrency.py`（4，串行化回归） |
 | 32 | 测试跑真实迁移，不跑 `create_all` | ✅ [tests/conftest.py](../tests/conftest.py) `migrated`（session 级）+ `lifespan` 已不建表（13b-2b-2） | ✅ `test_smoke.py`（2 条 ready 用例）+ `test_migrations.py` |
 | 33 | 迁移守卫用子进程跑 alembic CLI | [tests/test_migrations.py](../tests/test_migrations.py) `_run_alembic` | 它自己就是守卫（📎 3 个变异 6 条全红） |
-| 40 | 身份与凭据存两张表，密钥只存 sha256 | [models.py](../src/app/models.py) `User` / `ApiKey` | ⚠️ **无**（13d-2 加 `owner_id` 后由「A 访问 B 的对话 → 404」用例钉住） |
+| 40 | 身份与凭据存两张表，密钥只存 sha256 | [models.py](../src/app/models.py) `User` / `ApiKey`、[auth.py](../src/app/auth.py) `hash_api_key` / `find_user_by_key` | ✅ `test_auth.py::test_key_is_stored_as_sha256_not_plaintext` |
+| 41 | 鉴权做成**依赖**（`CurrentUserDep`）而不是中间件；越权一律 **404** | [deps.py](../src/app/api/deps.py) `require_user` / `CurrentUserDep`、[app.py](../src/app/api/app.py) `require_conversation` / `_fetch_conversation_stats` / `list_conversations` | ✅ `test_auth.py`（13 条）+ `test_source_rules.py::test_every_non_public_route_requires_a_user`（📎 变异：删掉某路由的 `CurrentUserDep` → 点名 `DELETE /v1/conversations/{conv_id}`） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
@@ -1498,6 +1525,7 @@ POST /v1/conversations
 | 常量 | 值 | 位置 |
 |---|---|---|
 | `HEADER_REQUEST_ID` | `X-Request-ID` | [constants.py](../src/app/constants.py) |
+| `HEADER_API_KEY` | `X-API-Key` | [constants.py](../src/app/constants.py) |
 | `KNOWN_MODELS` | `["deepseek-flash", "deepseek-v4-pro"]` | [app.py](../src/app/api/app.py) |
 | `ALLOWED_ORIGINS` | `["http://localhost:5173", "http://127.0.0.1:5173"]` | [constants.py](../src/app/constants.py)（13c-1 从 `api/app.py` 搬来，供 500 处理器复用） |
 | `MAX_ERROR_BODY_CHARS` | `500` | [llm_client.py](../src/app/llm_client.py) |
@@ -1514,7 +1542,8 @@ POST /v1/conversations
 | `errors.py` | `AppError` + 码↔状态码 + 4 个处理器 + 单一出口 | 不认识具体业务 |
 | `llm_client.py` | 唯一 import `httpx`、唯一翻译上游故障 | 不 import `fastapi` |
 | `logging_setup.py` | 日志配置唯一一处 | — |
-| `api/deps.py` | 依赖的集中地（可替换的接缝） | 不含路由 |
+| `api/deps.py` | 依赖的集中地（可替换的接缝）：含 `get_db` / `get_llm_client` / `get_upstream_slot` / **`require_user`** | 不含路由 |
+| `auth.py` | API key 的生成 / 哈希 / 查人（请求鉴权与将来的签发 CLI 共用） | 不认识 HTTP 头（只吃明文字符串） |
 | `api/app.py` | FastAPI 对象 + lifespan + 全部路由 | 不写上游协议细节 |
 | `main.py` | 命令行 demo / ping | 不是 HTTP 入口 |
 | `__main__.py` | `python -m app` 的 HTTP 入口 | 不直接建 app |

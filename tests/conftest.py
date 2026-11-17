@@ -28,7 +28,15 @@ from alembic.config import Config  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.api.app import app  # noqa: E402
+from app.auth import hash_api_key  # noqa: E402
+from app.constants import HEADER_API_KEY  # noqa: E402
 from app.models import Base  # noqa: E402
+
+# 测试套件固定使用的两把 key（明文只在这里出现；库里存的是它的 sha256）
+TEST_API_KEY = "sk-test-alice"
+OTHER_API_KEY = "sk-test-bob"
+AUTH_HEADERS = {HEADER_API_KEY: TEST_API_KEY}
+OTHER_HEADERS = {HEADER_API_KEY: OTHER_API_KEY}
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,6 +81,35 @@ def _truncate_all() -> None:
         conn.close()
 
 
+def _seed_identities() -> None:
+    """写入两个测试用户 + 两把 key
+
+    【注意】：13d-2 起所有业务端点都要 X-API-Key —— 这里直接写库（不走 HTTP），
+        因为签发接口本身也需要鉴权，用它准备测试数据会绕成一个圈
+    """
+    conn = sqlite3.connect(str(_TEST_DB))
+    try:
+        for user_id, name, raw in ((1, "alice", TEST_API_KEY), (2, "bob", OTHER_API_KEY)):
+            conn.execute(
+                "INSERT INTO users (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (user_id, name),
+            )
+            conn.execute(
+                "INSERT INTO api_keys (user_id, key_hash, label, created_at)"
+                " VALUES (?, ?, 'suite', CURRENT_TIMESTAMP)",
+                (user_id, hash_api_key(raw)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_db() -> None:
+    """清空业务表并写入测试身份 —— client 与 live_server 两类 fixture 共用"""
+    _truncate_all()
+    _seed_identities()
+
+
 # @pytest.fixture 的三种常见用法: 返回数据，创建对象，清理资源，这里是返回数据（依赖注入）
 @pytest.fixture
 def db_path() -> Path:
@@ -82,7 +119,21 @@ def db_path() -> Path:
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    """每个测试一份客户端：with 用来触发 lifespan"""
+    """每个测试一份客户端：with 用来触发 lifespan；默认带上 alice 的 key"""
+    with TestClient(app, headers=AUTH_HEADERS) as c:
+        reset_db()
+        yield c
+
+
+@pytest.fixture
+def other_client(client: TestClient) -> Iterator[TestClient]:
+    """bob 的客户端（依赖 client 保证库已清空并写好身份）"""
+    with TestClient(app, headers=OTHER_HEADERS) as c:
+        yield c
+
+
+@pytest.fixture
+def anon_client(client: TestClient) -> Iterator[TestClient]:
+    """不带任何凭据的客户端：测 401 用"""
     with TestClient(app) as c:
-        _truncate_all()
         yield c
