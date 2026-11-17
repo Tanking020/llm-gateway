@@ -1130,6 +1130,7 @@ tests/
       ├─ 适配器协议层 ──────── stream_adapter / adapter_http ← 唯一允许 import httpx 的测试
       ├─ 并发与连接池 ──────── concurrency ← 唯一真起 uvicorn 的测试
       ├─ 迁移层 ────────────── migrations ← 唯一【起子进程】的测试（跑 alembic CLI）
+      ├─ 源码约定 ──────────── source_rules ← 唯一【只读源码不跑应用】的静态检查（AST）
       └─ 护栏上限 ──────────── limits（闸门 503 / 槽位归还 / max_tokens / 输入长度）
 ```
 
