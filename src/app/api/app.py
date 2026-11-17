@@ -439,9 +439,9 @@ async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversatio
     """
     新建一个对话，返回带 id 的完整对象（含账单统计）
 
-    为什么必须 flush 而不是只 add：
-        id 由数据库生成，不把 INSERT 打下去就不知道是几，没法返回给客户端。
-        flush 只发 SQL、不提交 —— 提交由 get_db 在路由返回后统一做。
+    为什么必须 commit 而不是只 add：
+        id 由数据库生成，不提交就不知道是几，也没法保证这一行真的落盘。
+    【注意】：commit 必须在 return 之前 —— 响应一旦发出就改不了状态码（#54）
 
     【注意】：刚建的对话统计必然是 0 / 0，但形状必须与列表 / 详情 / PATCH 一致 ——
         否则前端把 POST 返回值塞进列表缓存时，那条数据会缺两个字段
@@ -449,12 +449,10 @@ async def create_conversation(payload: ConversationIn, db: DbDep) -> Conversatio
     # payload 是 pydantic 对象，不是字符串 —— 必须取 .title
     #   写 Conversation(title=payload) 会 500：数据库绑不了 ConversationIn 这个类型
     conv = Conversation(title=payload.title)
-    # add 只登记（一个 SQL 都没发）；flush 才真的发 INSERT，
-    # 并把数据库分配的自增 id 填回 conv 对象 —— 所以后面能拿 conv.id 再查一次
+    # add 只登记（一个 SQL 都没发）；commit 会先 flush（发出 INSERT 并拿回自增 id）再提交
     db.add(conv)
-    await db.flush()
-    # 提交不在这里：get_db 会在路由函数返回之后统一 commit
-    #   flush 已在同一事务内发出 INSERT，所以接下来这次查询能看到刚写入的行
+    # 【注意】：必须是 commit 且必须在 return 之前 —— 提交失败要让客户端看到 5xx
+    await db.commit()
     return await _fetch_conversation_stats(db, conv.id)
 
 
@@ -481,6 +479,8 @@ async def delete_conversation(conv_id: int, db: DbDep) -> None:
     """
     conv = await require_conversation(db, conv_id)
     await db.delete(conv)  # AsyncSession.delete 是异步方法，必须 await
+    # 【注意】：commit 必须在 return 之前 —— 否则 204 发出去之后才发现没删掉（#54）
+    await db.commit()
     # 不写 return: -> None 的函数隐式返回 None
 
 
@@ -501,10 +501,10 @@ async def update_conversation(
     """
     conv = await require_conversation(db, conv_id)
     conv.title = payload.title
-    # 【注意】：必须 flush —— updated_at 的 onupdate 在 flush 生成 UPDATE 时才求值，
-    # 少这一行会让响应带着改动前的旧时间（此时 SQL 也还没发出去）
-    await db.flush()
-    # 不写 commit: 由 get_db 依赖统一提交（事务边界只在一处）
+    # 【注意】：commit 会先 flush —— updated_at 的 onupdate 在生成 UPDATE 时才求值，
+    #   少这一步会让响应带着改动前的旧时间
+    # 【注意】：必须在 return 之前 commit —— 提交失败要让客户端看到 5xx（#54）
+    await db.commit()
     # 与列表 / 详情返回同一种形状：否则前端拿 PATCH 响应刷新缓存会丢掉统计字段
     return await _fetch_conversation_stats(db, conv_id)
 

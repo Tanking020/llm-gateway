@@ -1250,6 +1250,15 @@ POST /v1/conversations
       └─ 它名下的 llm_calls：conversation_id 被置 NULL，**行保留**（账不能丢）
 ```
 
+**谁负责提交**（2026-11-17，[决策 38](decisions.md)）：
+
+| 写路径 | 提交位置 | 为什么 |
+|---|---|---|
+| `POST` / `PATCH` / `DELETE` 对话 | **路由内**，`return` 之前 | 状态码一旦发出就改不了：提交失败必须让客户端看到 **5xx**（📎 `test_conversations.py` 3 条回归钉住） |
+| 流式账单（`pending → completed/aborted/no_content`） | 前段在路由内 commit；**末段靠 `get_db` 收尾 commit** | 收尾写在响应开始之后，且取消路径禁止 await（📎 删掉兜底 → 3 条账单用例红；失败时只降级为 `pending`） |
+
+⚠️ 兜底 commit 有个副作用：**将来某个写路由忘了 commit 会被它悄悄救回来**（📎 探针实测：201 且行真的存了，漏写看不出来）→ 待办 [#86](../docs/todos.md)（AST 静态检查）。
+
 ---
 
 ## 13. 运行形态：一个进程、两个外部依赖
