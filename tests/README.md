@@ -378,7 +378,7 @@ httpx.AsyncClient
 | 9 | **不写 `with TestClient(app)` → 表不存在** | `/health`·`/v1/models`·`/health/ready` 全 200，`POST /v1/conversations` 炸 `no such table` | **「某个接口 200」完全不能证明 lifespan 跑过** —— 只有用到 lifespan 那份资源的接口才验得出来 |
 | 10 | **`lambda f=fake: f` 当依赖覆盖会炸** | FastAPI 把参数当查询参数 → `TypeError: AppError.__init__() missing 1 required positional argument` | 覆盖值必须是**不接收参数**的可调用对象 |
 | 11 | **断言工具退出码写死 `== 1`，守卫会永远绿** | 📎 Windows 上 `alembic check` 检测到漂移时 `sys.exit(-1)` → `subprocess` 拿到 **`4294967295`**（Python 里是 `-1`），断言 `== 1` 就永远不成立 | 断言**只写「成功是 0」**（`returncode == 0`），失败一律按 `<成功条件之外>` 处理，并检查输出里的关键字（坑 K92） |
-| 12 | **测试库是固定文件名，两个 pytest 同时跑会互相踩** | 📎 2026-11-17 复核覆盖率时连跑两次：第二次出现 `ERROR tests/test_limits.py::… - sqlite3.OperationalError`，覆盖率 **93% → 64%**、`app.py` **89% → 29%**；重跑一次即 131 passed / 93% | **「偶发失败」最贵**：它会被误读成「代码有 bug」。**别在 pytest 还在跑时再起一个**（IDE 测试面板 + 命令行同时点是最常见的触发方式）。根治见 **#87**（`_TEST_DB` 加进程号），坑 K94 |
+| 12 | ~~**测试库是固定文件名，两个 pytest 同时跑会互相踩**~~ | 📎 2026-11-17 复核覆盖率时连跑两次：第二次出现 `ERROR tests/test_limits.py::… - sqlite3.OperationalError`，覆盖率 **93% → 64%**、`app.py` **89% → 29%**；另一次 `55 passed, 76 errors` | ✅ **已修（#87 / 坑 K94）**：库名带 `os.getpid()` → 一进程一个库。📎 修后：**两个 pytest 并行**跑都 `132 passed`；**连跑三次**全绿。⭐ 记住成本：**偶发失败会被误读成「代码有 bug」**，它比稳定失败贵得多 |
 
 ---
 
