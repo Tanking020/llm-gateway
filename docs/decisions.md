@@ -770,7 +770,7 @@
 |---|---|
 | **背景** | uvicorn 的 `timeout_graceful_shutdown` **默认 `None` = 无限等**。发版 / 扩容时，一条慢速滴答的 SSE 就能把 `docker stop` 挂住，最后被 SIGKILL 硬杀：在途流半截消失、`lifespan` 关闭段（`client.aclose()` → `engine.dispose()`）不执行 |
 | **方案对比** | **A 什么都不做**：❌ 无限等，被编排系统强杀<br>**B 只靠 nginx / 编排系统**：❌ 它们只负责「等多久就杀」，不会让我们的进程优雅收尾<br>**C 自己实现信号处理 + 自己管连接**：❌ uvicorn 已内建（停 accept → 对空闲连接发 `ConnectionClosed` → 等 tasks → 超时 `t.cancel()` → 跑 lifespan shutdown），重写等于重造轮子<br>**D 暴露配置 + 交给 uvicorn**：✅ 3 行代码 |
-| **决定** | **D**。新增 `graceful_shutdown_timeout: int = Field(default=30, gt=0, le=300)`（**必须 int** —— 📎 uvicorn 的注解是 `int \| None`，传 float 过不了 mypy，实测报 `arg-type`），在 `__main__.py` 传给 `uvicorn.run(timeout_graceful_shutdown=...)`，并进启动摘要（#85 的守卫强制）。默认 **30s = k8s `terminationGracePeriodSeconds` 默认值** |
+| **决定** | **D**。新增 `graceful_shutdown_timeout: int = Field(default=30, gt=0, le=300)`（**必须 int** —— 📎 uvicorn 的注解是 `int \| None`，传 float 过不了 mypy，实测报 `arg-type`），在 `__main__.py` 传给 `uvicorn.run(timeout_graceful_shutdown=...)`，并进启动摘要（#85 的守卫强制）。默认 **30s = k8s `terminationGracePeriodSeconds` 默认值**；**验收脚本** = `scripts/probe_graceful_shutdown.py`（13c-6，子进程 + 真信号 → `PASS/FAIL` + 退出码） |
 | **代价** ⚠️ | ① **部署最坏多等 30s**（这正是「让在途流跑完」的代价）<br>② 窗口内跑不完的流**一定**被切断（连接关闭、**无 `[DONE]`**）→ 前端要按「流断了」处理<br>③ **只在 `python -m app` 下生效**：直接 `uvicorn app.api.app:app` 必须带 `--timeout-graceful-shutdown`（13a 的 Dockerfile CMD 必须带）<br>④ 📎 Windows 上 Ctrl+Break 的退出码是 **3**（uvicorn 优雅关闭后**重新 raise 信号**的固有行为，Linux 是 143），与配置无关 |
 | **重审条件** | ① **13a `docker stop` 实测**：拿到 Linux SIGTERM 的真实退出码与耗时；若「最坏 30s 才退出」影响发版节奏 → 调小或按 `upstream_total_timeout` 分层<br>② 13f 压测后若发现长回答占比高 → 重新评估窗口（可能需要 >30s，同时调大编排宽限期）<br>③ 若编排系统改为「先摘流量、等待 N 秒再发 SIGTERM」（preStop hook）→ 窗口可显著调小<br>④ 若要做「零中断发版」（双版本并存）→ 这套单进程优雅停机不够，需要滚动 + 就绪探针配合 |
 

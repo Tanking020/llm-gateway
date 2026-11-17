@@ -61,6 +61,7 @@ uv 报 `warning: Ignoring unsupported Python request ﻿3.12 in version file`，
 | 检查 lock 同步 | `uv lock --check` |
 | 逐帧看 SSE | `curl.exe -N -s -X POST …`（`-N` 关掉 curl 自己的缓冲，否则看不到"逐字"） |
 | **建表 / 升级本地库** | `uv run alembic upgrade head` —— ⚠️ **2026-11-16 起应用启动不再建表**（13b-2b-2），新 clone 或删过 `app.db` 之后必须先跑这一条，否则接口报 `no such table`（#50 / #84） |
+| **验优雅停机窗口** | `uv run python scripts/probe_graceful_shutdown.py` —— 起真子进程 + 投真信号，打印 `PASS/FAIL` 并给出退出码（升级 uvicorn / 改停机逻辑 / 发版前跑一次；决策 39） |
 
 > ⚠️ PowerShell 里 `curl` 是 `Invoke-WebRequest` 的**别名**，必须写 `curl.exe`。
 > 请求体含中文时写进 `$env:TEMP\chat.json`，用 `--data-binary "@$env:TEMP\chat.json"`，避免转义把 JSON 弄坏。
