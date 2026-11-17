@@ -1,8 +1,10 @@
 """测「启动配置摘要」这一层：该打什么、绝不能打什么（#77）"""
 
 import pytest
+import uvicorn
 
-from app.config import Settings, startup_config_summary
+from app import __main__ as main_module
+from app.config import Settings, settings, startup_config_summary
 
 _WHITELIST = {
     "app_env",
@@ -13,6 +15,7 @@ _WHITELIST = {
     "max_tokens_ceiling",
     "request_timeout",
     "upstream_total_timeout",
+    "graceful_shutdown_timeout",
 }
 
 # 每个「故意不打」的字段都必须写理由：写不出理由的，就该进摘要（#85）
@@ -69,3 +72,22 @@ def test_secrets_never_reach_the_summary() -> None:
     assert "sk-secret-123" not in text
     assert "u:p" not in text
     assert "db.local" not in text
+
+
+def test_main_passes_graceful_shutdown_timeout_to_uvicorn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归 13c-5：优雅窗口必须真的传给 uvicorn —— 否则默认 None = 无限等，发版会挂住"""
+    captured: dict[str, object] = {}
+
+    # 替换 uvicorn.run：只记录参数，不真的起服务
+    def fake_run(app: str, **kwargs: object) -> None:
+        captured["app"] = app
+        captured.update(kwargs)
+
+    # 【注意】：patch uvicorn.run（模块属性）而不是 main_module.uvicorn —— 后者 mypy strict 会报
+    #   "does not explicitly export attribute"，且两者指向同一个模块对象，效果相同
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    main_module.main()
+
+    assert captured["timeout_graceful_shutdown"] == settings.graceful_shutdown_timeout

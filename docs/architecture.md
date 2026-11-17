@@ -322,6 +322,8 @@ uvicorn 启动
    ├─ lifespan.shutdown ←─────────────────────────────────────────┘   │
    │     ③ 退出 async with → client.aclose()                          │
    │     ④ await engine.dispose()  释放连接池                          │
+   │        （uvicorn 收到 SIGTERM 后先停 accept、等在途请求最多                │
+   │          graceful_shutdown_timeout 秒，再取消并走到这里 —— 决策 39）      │
    └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1000,6 +1002,7 @@ recorded = True; call.status = "completed"
 | `llm_base_url` | str | `https://api.deepseek.com` | 末尾不带斜杠 |
 | `llm_model` | str | `deepseek-flash` | 客户端没指定时兜底 |
 | `request_timeout` | float | `30.0` | httpx 默认只有 5 秒，LLM 不够；⚠️ 只是**读取间隔**，不是总时长 |
+| `graceful_shutdown_timeout` | **int** | `30`（`gt=0, le=300`） | **优雅停机窗口**：收到 SIGINT/SIGTERM 后最多再等多久（决策 39）；⚠️ 必须小于编排宽限期；⚠️ 只在 `python -m app` 生效 |
 | `upstream_total_timeout` | float | `120.0`（`gt=0, le=600`） | **单次上游调用的总时长预算** —— 慢速滴答的唯一防线（决策 37）；超时非流式 504 / 流式 `STREAM_TIMEOUT` 帧 |
 | `max_concurrent_upstream_calls` | int | `4` | `ge=1, le=100`。**进程级**闸门，`--workers N` 就是 N 倍 |
 | `upstream_queue_timeout` | float | `1.0` | `gt=0, le=30`。抢不到槽位最多等这么久，超时 503 + `Retry-After` |
@@ -1022,6 +1025,7 @@ lifespan 启动段[1]
    └─ logger.info("生效配置：%s", startup_config_summary(settings))
         └─ 白名单 7 项：app_env / debug / database / max_concurrent_upstream_calls
                         / upstream_queue_timeout / max_tokens_ceiling / request_timeout / upstream_total_timeout
+                        / graceful_shutdown_timeout
         └─ 📎 database 只打「方言://…/库名」—— 不出现 用户名:密码@主机
 ```
 
@@ -1031,7 +1035,7 @@ lifespan 启动段[1]
 INFO    app.api.app | 生效配置：{'app_env': 'dev', 'debug': False, 'database': 'sqlite+aiosqlite://…/x.db',
                                 'max_concurrent_upstream_calls': 7, 'upstream_queue_timeout': 1.0,
                                 'max_tokens_ceiling': 4096, 'request_timeout': 30.0,
-                                'upstream_total_timeout': 120.0}
+                                'upstream_total_timeout': 120.0, 'graceful_shutdown_timeout': 30}
 ```
 
 ⚠️ 白名单的「漏项」目前没有机械兜底（见 [#85](../docs/todos.md)）：`Settings` 新增字段而忘了加进摘要，测试不会红。
@@ -1044,7 +1048,7 @@ INFO    app.api.app | 生效配置：{'app_env': 'dev', 'debug': False, 'databas
 |---|---|---|---|
 | `app_env` | [api/app.py](../src/app/api/app.py)（`_DOCS_ENABLED`） | 模块级直读 | **import 时**（决定 `/docs` 开不开） |
 | `debug` | [api/app.py](../src/app/api/app.py)（`FastAPI(debug=…)`）、[__main__.py](../src/app/__main__.py)（`reload=`） | 直读 | import 时 / 启动时 |
-| `host` / `port` | [__main__.py](../src/app/__main__.py) | 直读 | **只走 `python -m app` 才生效**（`uvicorn app.api.app:app` 会绕过） |
+| `host` / `port` / `graceful_shutdown_timeout` | [__main__.py](../src/app/__main__.py) | 直读 | **只走 `python -m app` 才生效**（`uvicorn app.api.app:app` 会绕过） |
 | `database_url` | [database.py](../src/app/database.py) | 直读（建 engine） | import 时；**一个进程只能绑一个库** |
 | `llm_base_url` / `request_timeout` / `upstream_total_timeout` / `llm_api_key` | [llm_client.py](../src/app/llm_client.py)（`create_llm_client`） | 直读 | lifespan 启动段造 client |
 | `llm_model` | `chat` / `chat_stream` | ⭐ **经 `SettingsDep` 注入**（`config.llm_model`） | 每请求，且**可被 `dependency_overrides` 换掉** |
