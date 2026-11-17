@@ -37,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DbDep, LlmClientDep, SettingsDep, UpstreamSlotDep
 from app.config import Settings, settings, startup_config_summary
-from app.constants import HEADER_REQUEST_ID
+from app.constants import ALLOWED_ORIGINS, HEADER_REQUEST_ID
 from app.database import engine
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
@@ -118,15 +118,10 @@ app = FastAPI(
 )
 
 
-# 允许跨域的前端来源（浏览器里的"源" = 协议 + 域名 + 端口，三者全同才算同源）
-# 【注意】：必须写完整 origin，末尾不带斜杠；
-#   "http://localhost:5173/" 与 "http://localhost:5173" 不算同一个
-# 【注意】：这里故意【不写 "*"】：配 allow_credentials=True 时写 "*" 等于对任何网站开放凭证访问
 # 【注意】：allow_methods 必须与【实际注册的路由】保持一致。2026-10-25 实测事故：
 #   加了 PATCH / DELETE 路由但忘了加到这个列表 -> 浏览器预检 OPTIONS 直接 400，
 #   前端完全无法调用这两个接口；而 curl 测不出来（CORS 只在浏览器生效）。
 #   判据：新增一个非 GET/POST 的路由时，必须回头检查这里。
-ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
 # CORS 中间件：给响应补 Access-Control-Allow-* 头，并直接答复浏览器的预检 OPTIONS

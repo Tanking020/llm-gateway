@@ -653,15 +653,27 @@ content-type: application/json
 
 我们只留 `loc` / `msg` / `type`。📎 且原始 `loc` 是 `["messages"]`，我们的是 `["body","messages"]`。
 
-### 7.6 🔴 500 是唯一没有 CORS 头的响应
+### 7.6 500 的 CORS 头：只能由处理器自己补（✅ 2026-11-17 已修，#57）
 
-| 响应 | `Access-Control-Allow-Origin` |
-|---|---|
-| 404（或其他经 ⑤ 的） | ✅ `http://localhost:5173`，另有 `vary: Origin` |
-| **500** | ❌ **一个 CORS 头都没有** |
+📎 **根因（读源码 + 打印构建出来的栈，2026-11-17）**：`@app.exception_handler(Exception)` 被 FastAPI **挂到最外层的 `ServerErrorMiddleware` 上**，而它**永远在 `CORSMiddleware` 之外**；且它发完响应后还会 `raise exc`（给服务器日志）。所以「把 CORS 挪到更外层」这条路**不存在**。
 
-原因：500 由 **① ServerErrorMiddleware** 产出，**不经过 ④ CORSMiddleware**。
-后果：浏览器里前端拿 500 是**网络错误**，读不到 body、读不到 `request_id`。→ 待办 **#57**。
+```text
+ServerErrorMiddleware          ← 这里跑 500 处理器（📎 打印到 handler=<function h500>）
+  └ ExceptionTelemetryMiddleware
+      └ CORSMiddleware         ← 500 的响应在它【里面】就已经发出去了
+          └ ExceptionMiddleware  ← 只登记 HTTPException / WebSocketException / 422
+              └ 路由
+```
+
+**修法**：`errors._cors_headers(request)` 按**同一份** `constants.ALLOWED_ORIGINS` 补 3 个头（`Access-Control-Allow-Origin` 回显源 / `-Allow-Credentials` / `Vary: Origin`），只用在 500 上（404/422 已经过 `CORSMiddleware`，再补会出现重复头）。
+
+| 响应 | `Access-Control-Allow-Origin` | |
+|---|---|---|
+| 404 / 422 / 2xx（经 `CORSMiddleware`） | ✅ 回显源 + `vary: Origin` | |
+| **500** | ✅ **与 404 完全一致** | 📎 `test_500_carries_the_same_cors_headers_as_other_errors` 断言两者头的 **集合相等** |
+| 500 + 白名单外的源 | ❌ 无头（**绝不回落 `*`**） | 📎 `test_500_does_not_echo_a_foreign_origin` |
+
+⚠️ 代价：CORS 策略现在有**两个出口**（中间件配置 + 处理器补头），共享的是白名单常量而非逻辑本身 → [决策 35](decisions.md)。
 
 ### 7.7 错误码有**两个出口**：HTTP envelope 和流内帧
 

@@ -9,3 +9,10 @@
 # 请求 ID 的 HTTP 头名
 # 用它的三处：app.py 读请求头、app.py 回写响应头、errors.py 给 500 补响应头
 HEADER_REQUEST_ID = "X-Request-ID"
+
+# 允许跨域的前端来源（浏览器里的"源" = 协议 + 域名 + 端口，三者全同才算同源）
+# 【注意】：必须写完整 origin，末尾不带斜杠；故意不写 "*" —— allow_credentials=True 时
+#   写 "*" 等于对任何网站开放凭证访问
+# 【注意】：放这里而不是 api/app.py —— errors.py 也要用它（500 由最外层
+#   ServerErrorMiddleware 产出，不经过 CORSMiddleware，只能由处理器自己补头）
+ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]

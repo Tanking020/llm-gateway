@@ -103,3 +103,52 @@ def test_500_hides_internals() -> None:
     assert error["message"] == "服务内部错误"
     assert "RuntimeError" not in response.text
     assert "内部细节" not in response.text
+
+
+def test_500_carries_the_same_cors_headers_as_other_errors() -> None:
+    """回归 #57：500 由最外层 ServerErrorMiddleware 产出，不经过 CORSMiddleware ——
+    浏览器里前端会只看到「网络错误」，连 request_id 都读不到"""
+
+    def boom() -> Any:
+        raise RuntimeError("boom")
+
+    app.dependency_overrides[get_settings] = boom
+    try:
+        with TestClient(app, raise_server_exceptions=False) as raw:
+            origin = {"Origin": "http://localhost:5173"}
+            r500 = raw.post(
+                "/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=origin
+            )
+            r404 = raw.get("/v1/conversations/999999", headers=origin)
+    finally:
+        app.dependency_overrides.clear()
+
+    def cors(response: Any) -> dict[str, str]:
+        return {
+            k.lower(): v
+            for k, v in response.headers.items()
+            if k.lower().startswith(("access-control", "vary"))
+        }
+
+    assert r500.status_code == 500
+    assert cors(r500) == cors(r404), "500 的 CORS 头必须与普通错误响应一致"
+    assert cors(r500)["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_500_does_not_echo_a_foreign_origin() -> None:
+    def boom() -> Any:
+        raise RuntimeError("boom")
+
+    app.dependency_overrides[get_settings] = boom
+    try:
+        with TestClient(app, raise_server_exceptions=False) as raw:
+            r = raw.post(
+                "/v1/chat",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+                headers={"Origin": "http://evil.example"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert r.status_code == 500
+    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
