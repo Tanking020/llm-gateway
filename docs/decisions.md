@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-17 · 共 35 条
+**最后更新**：2026-11-17 · 共 36 条
 
 ---
 
@@ -56,6 +56,7 @@
 | [33](#33-迁移守卫用子进程跑-alembic-cli而不是进程内调用) | 迁移守卫怎么跑 alembic | **子进程 + 换环境变量**（进程内被 `settings` 单例锁死） | 2026-11-16 |
 | [34](#34-启动只打印生效配置的白名单而不是打印整个-settings) | 启动第一屏打什么配置 | **白名单 7 项 + 连接串脱敏** | 2026-11-16 |
 | [35](#35-500-的-cors-头由处理器自己补而不是调整中间件顺序) | 500 的 CORS 头怎么补 | **处理器补头 + 共享白名单常量**（挪顺序不可能） | 2026-11-17 |
+| [36](#36-数据库连不上映射成-503-按抛出阶段区分而不是按异常类型) | DB 不可用怎么映射 | **`get_db` 先探连接 → 503；SQL 错仍是 500** | 2026-11-17 |
 
 ---
 
@@ -721,6 +722,18 @@
 | **决定** | **B**。`errors._cors_headers(request)` 只给 500 用；白名单从 `api/app.py` 搬到 `constants.ALLOWED_ORIGINS`（`errors.py` 是下层，下层要用的常量必须放上层）。三个头与 `CORSMiddleware` 输出对齐：`Access-Control-Allow-Origin`（**回显**源）、`Access-Control-Allow-Credentials: true`、`Vary: Origin`；**白名单外的源不写头，绝不回落 `*`** |
 | **代价** ⚠️ | ① **CORS 策略有两个出口**：中间件的 `allow_headers` / `expose_headers` 等改动不会同步到 500 那份（那份只发 3 个头）<br>② 白名单字面量从 `app.py` 搬家 → 文档里引用 `api/app.py` 的旧行号全部失效（已改为符号名定位）<br>③ 新增「绕过 CORS 的响应」时必须记得也补头（目前只有 500）<br>④ `test_500_carries_the_same_cors_headers_as_other_errors` 断言的是**集合相等** —— 如果将来给 404 加了新 CORS 头，这条会红（**这是故意的**，逼你同步） |
 | **重审条件** | ① Starlette / FastAPI 改成把 Exception 处理器放回 `ExceptionMiddleware`（或提供「CORS 包住 ServerErrorMiddleware」的官方开关）→ 改回 A，删掉 `_cors_headers`<br>② 出现第二个绕过 CORS 的响应类型（例如自建 ASGI 中间件直接发响应）→ 把补头提到「统一出口」，而不是再多一处<br>③ 需要 `Access-Control-Expose-Headers` 等更复杂的 CORS 策略 → 评估 D（复制 Starlette 栈）是否更省心<br>④ 接入 nginx（13a）后若发现重复头 → 明确「谁负责 500 的头」（本项目选应用层，nginx 不再加） |
+
+---
+
+## 36. 数据库连不上映射成 503：按抛出阶段区分，而不是按异常类型
+
+| 项 | 内容 |
+|---|---|
+| **背景** | [#83](todos.md)：DB 不可用时业务端点返回 **500 `INTERNAL_ERROR`**，而 `/health/ready` 返回 **503 `DB_UNAVAILABLE`** —— 语义自相矛盾；编排系统会把「依赖挂了」当「我们的 bug」报警，客户端也分不清「重试有用/没用」 |
+| **方案对比** | **A 在 `errors.py` 注册 `OperationalError` 处理器统一映射 503**：改动最小，但 📎 **会把 `no such table` 也变成 503** —— 那是「迁移没跑」（我们的 bug，[#84](todos.md)），伪装成依赖故障会让真故障沉底<br>**B 按 `exc.orig` 的文本/SQLSTATE 区分**：SQLite 两种错都是 `sqlite3.OperationalError`，只能靠字符串匹配；换 PostgreSQL 后全部失效<br>**C `get_db` 在 `yield` 之前先 `await session.connection()`**：连不上时**在这里**抛（📎 实测），SQL 错要等 `execute()` 才抛 → 用**抛出阶段**天然区分两类故障<br>**D 只靠 `/health/ready`，业务端点仍 500**：等于把「依赖不可用」的责任推给探针，业务调用方仍看到 500 |
+| **决定** | **C**。`get_db` 里 `try: await session.connection() except OperationalError → logger.warning(只记类型) + AppError("DB_UNAVAILABLE", headers={"Retry-After": "1"})`；`yield` 之后的原有 `commit/rollback` 逻辑一字不改。`Retry-After: 1` 与 `SERVER_BUSY` 的约定一致 |
+| **代价** ⚠️ | ① 每请求多一次 `session.connection()`（取连接，不跑 SQL）—— 📎 全量测试 9.16s → 9.36s<br>② DB 长时间挂掉时每请求一条 `WARNING`（只有类型名，无路径）→ 真正的收敛手段是 13e 的指标，不是日志采样<br>③ **只覆盖「连不上」**：连得上但极慢（锁等待）仍是 500 → 那是「慢」，归 13c-3 的总时长上限<br>④ 它不修 #84：没跑迁移仍报 500（**故意的**，那是我们的 bug） |
+| **重审条件** | ① 换 PostgreSQL（#13）后如果「实例不存在」与「schema 不对」在 `connection()` 阶段都能抛 → 重新评估「阶段区分」是否还成立（📎 届时必须实测，不能推断）<br>② 出现「连得上但连接已失效」（连接被中间设备掐断）的真实事故 → 需要考虑在 `execute` 失败后**重试一次**而不是直接 503<br>③ 13e 有了指标后，如果 503 的报警噪音过大 → 把 503 从「告警」降成「面板 + 阈值」<br>④ 若把 `get_db` 改成「请求级事务 + 手动 commit」（#54）→ 这条探连接要跟着搬到新的会话工厂里 |
 
 ---
 

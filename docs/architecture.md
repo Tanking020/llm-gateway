@@ -653,6 +653,24 @@ content-type: application/json
 
 我们只留 `loc` / `msg` / `type`。📎 且原始 `loc` 是 `["messages"]`，我们的是 `["body","messages"]`。
 
+### 7.5b 🔑 「DB 不可用」的判定点只有一个：`get_db` 里探连接那一步
+
+```text
+get_db
+  ├─ await session.connection()   ← 【连不上】在这里抛 OperationalError → 503 DB_UNAVAILABLE
+  └─ yield session
+        └─ 路由执行 SQL            ← 【SQL/表结构错】(no such table) 在这里抛 → 500 INTERNAL_ERROR
+```
+
+📎 两类故障**抛出的异常类型完全相同**（都是 `sqlalchemy.exc.OperationalError`），所以只能按**抛出阶段**分辨。
+统一在异常处理器里映射 503 会把「迁移没跑」（#84）伪装成「依赖挂了」。[决策 36](decisions.md)。
+
+| 现象 | 判定点 | 结果 | 证据 |
+|---|---|---|---|
+| 库目录/实例不存在 | `connection()` | **503** + `Retry-After: 1` | 📎 真 uvicorn 实测 |
+| 连得上但没跑迁移 | `execute()` | **500** | 📎 `test_sql_level_failure_stays_500` |
+| 连得上但很慢（锁等待） | `execute()` | **500**（→ 13c-3 的总时长上限处理） | 未实测 |
+
 ### 7.6 500 的 CORS 头：只能由处理器自己补（✅ 2026-11-17 已修，#57）
 
 📎 **根因（读源码 + 打印构建出来的栈，2026-11-17）**：`@app.exception_handler(Exception)` 被 FastAPI **挂到最外层的 `ServerErrorMiddleware` 上**，而它**永远在 `CORSMiddleware` 之外**；且它发完响应后还会 `raise exc`（给服务器日志）。所以「把 CORS 挪到更外层」这条路**不存在**。
