@@ -24,6 +24,7 @@
     关闭责任不变：CLI 与 lifespan 都用 async with 自己管。
 """
 
+import asyncio
 import json
 import logging
 
@@ -164,7 +165,13 @@ class LlmClient:
         上游返回 10 个键，我们只用 3 个 —— model_validate 把原始 dict 转成
         ModelItem: 多余的键被忽略（白名单），缺 id 会立刻报错
         """
-        response = await self._request("GET", "/models")
+        # 【注意】：request_timeout 只管【读取间隔】，管不到总时长（上游滴答式慢响应会一直挂着）
+        #   所以这里给整次调用一个总预算；超时翻译成本项目自己的错误码（封层：路由里看不到 httpx）
+        try:
+            async with asyncio.timeout(settings.upstream_total_timeout):
+                response = await self._request("GET", "/models")
+        except TimeoutError as exc:
+            raise AppError(code="UPSTREAM_TIMEOUT", message="上游响应超时") from exc
 
         # L3：状态码 2xx，但 body 不一定是我们以为的结构
         #   ValueError -> body 不是 JSON（网关 HTML 错误页 / 空 body）

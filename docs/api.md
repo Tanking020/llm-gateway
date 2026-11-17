@@ -20,7 +20,7 @@
 | GET | `/v1/models/latest` | 默认模型 | 200 |
 | GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 |
 | POST | `/v1/chat` | 聊天；⚠️ **业务逻辑仍为 `echo` 占位**（待办 #46）；最后一条消息必须是 `user`；可选 `conversation_id`（不存在 → 404） | 200 / 400 / 404 / 422 |
-| GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse` | 200 / 502 |
+| GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse` | 200 / 502 / **504**（超出 `upstream_total_timeout`） |
 | POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；可选 `conversation_id`（不存在 → 404，**在流开始前拦**）；每次调用落一行账单 | 200 / 404 / 422 |
 | POST | `/v1/conversations` | 新建对话（落库）；`title` 长度 1~100 | 201 / 422 |
 | GET | `/v1/conversations` | **游标分页**列出对话（`?limit=1~100&after_id=N`），含账单统计；响应 `{items, total, limit, next_cursor, has_more}` | 200 / 422 |
@@ -115,6 +115,7 @@ data: [DONE]
 | `{"finish_reason": "..."}` | 上游最后一帧 | 区分正常结束 / 被截断（`length`） |
 | `{"usage": {...}}` | 上游最后一帧 | 成本计量（含思维链 token） |
 | **`{"error": {"code": "STREAM_NO_CONTENT", ...}}`** | 上游**一帧内容都没给**（200 + HTML / 空 body / 忽略 `stream`） | 区分「模型说了空」与「上游没给」——**`response.ok` 是 `true`，前端必须识别这一帧** |
+| **`{"error": {"code": "STREAM_TIMEOUT", ...}}`** | 超出 `upstream_total_timeout`（上游「慢速滴答」被掐断） | 提示「上游太慢」；建议缩短问题后重试（不是简单重发） |
 | **`{"error": {"code": "STREAM_FAILED", ...}}`** | 流**中途**出错（坏 JSON / 不可预期的结构） | 同上；**已收到的 `DELTA` 要保留**，但要提示「回答可能不完整」 |
 | `[DONE]` | 我方在流末尾**统一发一次** | 前端据此关闭连接 |
 

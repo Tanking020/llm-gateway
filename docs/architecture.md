@@ -740,7 +740,7 @@ x-accel-buffering: no                 ← 让 nginx 不要缓冲
 transfer-encoding: chunked
 ```
 
-### 8.2 七种帧（📎 全部来自源码里的 `yield`）
+### 8.2 八种帧（📎 全部来自源码里的 `yield`）
 
 | # | 帧体 | 什么时候发 | 前端怎么用 |
 |---|---|---|---|
@@ -750,6 +750,7 @@ transfer-encoding: chunked
 | 4 | `{"usage": {…}}` | 上游给 usage 时（可能在纯用量帧，也可能和 finish 挤一帧） | 显示 token 用量 |
 | 5 | `{"error": {"code": "STREAM_NO_CONTENT", …}}` | 上游 200 但**一帧内容都没有** | 明确告知"这次空" |
 | 6 | `{"error": {"code": "STREAM_FAILED", …}}` | 流**已开始后**出异常 | 提示中断 |
+| 6b | `{"error": {"code": "STREAM_TIMEOUT", …}}` | 超出 `upstream_total_timeout`（📎 2026-11-17 / 决策 37） | 提示「上游太慢」，建议缩短问题重试 |
 | 7 | `[DONE]` | **正常 / 异常两条路都发** | 结束标记 |
 
 ### 8.3 正常路径的帧序列
@@ -998,7 +999,8 @@ recorded = True; call.status = "completed"
 | `llm_api_key` | `str \| None` | `None` | 缺了不报错，但会拼出假 token → 401（所以 `ping` 先查它） |
 | `llm_base_url` | str | `https://api.deepseek.com` | 末尾不带斜杠 |
 | `llm_model` | str | `deepseek-flash` | 客户端没指定时兜底 |
-| `request_timeout` | float | `30.0` | httpx 默认只有 5 秒，LLM 不够 |
+| `request_timeout` | float | `30.0` | httpx 默认只有 5 秒，LLM 不够；⚠️ 只是**读取间隔**，不是总时长 |
+| `upstream_total_timeout` | float | `120.0`（`gt=0, le=600`） | **单次上游调用的总时长预算** —— 慢速滴答的唯一防线（决策 37）；超时非流式 504 / 流式 `STREAM_TIMEOUT` 帧 |
 | `max_concurrent_upstream_calls` | int | `4` | `ge=1, le=100`。**进程级**闸门，`--workers N` 就是 N 倍 |
 | `upstream_queue_timeout` | float | `1.0` | `gt=0, le=30`。抢不到槽位最多等这么久，超时 503 + `Retry-After` |
 | `max_tokens_ceiling` | int | `4096` | `ge=1, le=32768`。客户端要更多 → **400 拒绝**；没指定 → 用它当默认值。📎 上界是**成本预算**（$0.039/请求），不是模型上限（393216） |
@@ -1019,7 +1021,7 @@ APP_ENV=prod + DEBUG=true
 lifespan 启动段[1]
    └─ logger.info("生效配置：%s", startup_config_summary(settings))
         └─ 白名单 7 项：app_env / debug / database / max_concurrent_upstream_calls
-                        / upstream_queue_timeout / max_tokens_ceiling / request_timeout
+                        / upstream_queue_timeout / max_tokens_ceiling / request_timeout / upstream_total_timeout
         └─ 📎 database 只打「方言://…/库名」—— 不出现 用户名:密码@主机
 ```
 
@@ -1028,7 +1030,8 @@ lifespan 启动段[1]
 ```text
 INFO    app.api.app | 生效配置：{'app_env': 'dev', 'debug': False, 'database': 'sqlite+aiosqlite://…/x.db',
                                 'max_concurrent_upstream_calls': 7, 'upstream_queue_timeout': 1.0,
-                                'max_tokens_ceiling': 4096, 'request_timeout': 30.0}
+                                'max_tokens_ceiling': 4096, 'request_timeout': 30.0,
+                                'upstream_total_timeout': 120.0}
 ```
 
 ⚠️ 白名单的「漏项」目前没有机械兜底（见 [#85](../docs/todos.md)）：`Settings` 新增字段而忘了加进摘要，测试不会红。
@@ -1043,7 +1046,7 @@ INFO    app.api.app | 生效配置：{'app_env': 'dev', 'debug': False, 'databas
 | `debug` | [api/app.py](../src/app/api/app.py)（`FastAPI(debug=…)`）、[__main__.py](../src/app/__main__.py)（`reload=`） | 直读 | import 时 / 启动时 |
 | `host` / `port` | [__main__.py](../src/app/__main__.py) | 直读 | **只走 `python -m app` 才生效**（`uvicorn app.api.app:app` 会绕过） |
 | `database_url` | [database.py](../src/app/database.py) | 直读（建 engine） | import 时；**一个进程只能绑一个库** |
-| `llm_base_url` / `request_timeout` / `llm_api_key` | [llm_client.py](../src/app/llm_client.py)（`create_llm_client`） | 直读 | lifespan 启动段造 client |
+| `llm_base_url` / `request_timeout` / `upstream_total_timeout` / `llm_api_key` | [llm_client.py](../src/app/llm_client.py)（`create_llm_client`） | 直读 | lifespan 启动段造 client |
 | `llm_model` | `chat` / `chat_stream` | ⭐ **经 `SettingsDep` 注入**（`config.llm_model`） | 每请求，且**可被 `dependency_overrides` 换掉** |
 | `app_name` | 只有 [main.py](../src/app/main.py) 打印 | 直读 | ⚠️ 服务自己的 `FastAPI(title=…)` 是**硬编码**，不读这个字段 |
 | `max_concurrent_upstream_calls` / `upstream_queue_timeout` | 🟡 [api/deps.py](../src/app/api/deps.py)（`get_upstream_slot`，**12g-2 才落地**） | 直读 | 每请求 |

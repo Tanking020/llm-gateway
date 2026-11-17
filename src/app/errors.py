@@ -46,6 +46,10 @@ _STATUS_BY_CODE: dict[str, int] = {
     # 以下三个都属于【上游的错】，必须与 500（我方的错）区分开
     # L1: 上游根本没回应（DNS / TCP / TLS 失败 / 超时）
     "UPSTREAM_UNREACHABLE": status.HTTP_502_BAD_GATEWAY,
+    # L1 的「太慢」分支：连得上、也在吐数据，但超出我们的【总时长】预算
+    # 【注意】：504 而不是 502 —— 网关超时的标准语义是「上游没在期限内答完」，
+    #   与「上游坏了」(502) 分开，客户端/编排系统的处置也不同
+    "UPSTREAM_TIMEOUT": status.HTTP_504_GATEWAY_TIMEOUT,
     # L2：按【客户端能不能靠自己修好】细分 —— 能修的透传 4xx，修不了的给 502 + 细分码
     #   能修：限流（等一等）/ 内容过长（缩短）-> 客户端知道该做什么
     "UPSTREAM_RATE_LIMITED": status.HTTP_429_TOO_MANY_REQUESTS,

@@ -11,6 +11,8 @@ from collections.abc import AsyncIterator, Callable
 import httpx
 import pytest
 
+from app import llm_client
+from app.config import Settings
 from app.errors import AppError
 from app.llm_client import MAX_ERROR_BODY_CHARS, LlmClient
 
@@ -224,3 +226,26 @@ def test_error_body_is_truncated(caplog: pytest.LogCaptureFixture) -> None:
     _raise_from(handler)
     assert "x" * MAX_ERROR_BODY_CHARS in caplog.text
     assert "x" * (MAX_ERROR_BODY_CHARS + 1) not in caplog.text
+
+
+async def _slow_models(request: httpx.Request) -> httpx.Response:
+    """上游「太慢」：连得上、也在回包，但超出我们的总预算"""
+    await asyncio.sleep(0.3)
+    return httpx.Response(200, json={"data": []})
+
+
+def test_list_models_is_cut_by_total_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归 #55：总时长超预算 → UPSTREAM_TIMEOUT（504），不是无限期挂着
+
+    【注意】：预算读的是适配器里的【模块级 settings】（与 request_timeout 同一来源）
+    """
+    monkeypatch.setattr(llm_client, "settings", Settings(upstream_total_timeout=0.05))
+
+    async def scenario() -> AppError:
+        transport = httpx.MockTransport(_slow_models)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE) as http:
+            with pytest.raises(AppError) as exc_info:
+                await LlmClient(http).list_models()
+        return exc_info.value
+
+    assert asyncio.run(scenario()).code == "UPSTREAM_TIMEOUT"

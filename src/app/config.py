@@ -74,9 +74,15 @@ class Settings(BaseSettings):
     # 默认模型名：客户端没在请求里指定 model 时用它兜底
     llm_model: str = "deepseek-flash"
 
-    # 单次上游请求的超时时间（秒）
-    # httpx 默认只有 5 秒，LLM 生成动辄十几秒
+    # 单次上游【读取间隔】的超时时间（秒）：httpx 默认只有 5 秒，LLM 生成动辄十几秒
+    # 【注意】：它【不是】请求总时长 —— 上游每 0.9s 滴一帧就能无限期挂着（实测见 #55）
     request_timeout: float = 30.0
+
+    # 单次上游调用的【总时长】预算（秒）：从开始消费到结束，超过就掐断
+    # 【注意】：这是「慢速滴答」的唯一防线（request_timeout 管不到总时长）
+    # 数值依据：max_tokens_ceiling=4096，慢模型约 30 tok/s → 上限 ≈ 137s，留余量取 120s；
+    #   压测（13f）后再按实测 p99 校准
+    upstream_total_timeout: float = Field(default=120.0, gt=0.0, le=600.0)
 
     # ===== 容量与成本护栏（不是调优参数，是防止一个用户拖垮所有人）=====
 
@@ -126,6 +132,7 @@ def startup_config_summary(config: Settings) -> dict[str, object]:
         "upstream_queue_timeout": config.upstream_queue_timeout,
         "max_tokens_ceiling": config.max_tokens_ceiling,
         "request_timeout": config.request_timeout,
+        "upstream_total_timeout": config.upstream_total_timeout,
     }
 
 
