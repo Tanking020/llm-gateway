@@ -209,7 +209,7 @@ uv run pytest -q        # 115 个用例，约 9 s
 | | 结果 |
 |---|---|
 | `ruff check` / `format --check` | 全绿（34 files） |
-| `mypy --strict` | 全绿（35 source files，含 `tests/` 与 `playground/`） |
+| `mypy --strict` | 全绿（38 source files，含 `tests/`、`scripts/` 与 `playground/`） |
 | `pytest -q` | **115 passed** |
 | 分支覆盖 | **92%**（`llm_client.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
@@ -265,6 +265,7 @@ uv run pytest -q        # 115 个用例，约 9 s
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── playground/             # 一次性实验脚本（不参与交付）
+├── scripts/                # 验收探针（手工跑、不进 CI）：如 probe_graceful_shutdown.py（决策 39）
 ├── pyproject.toml          # 依赖、工具配置、lint 边界的唯一来源
 └── .github/workflows/ci.yml
 ```

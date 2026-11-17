@@ -162,3 +162,6 @@ select = ["E", "F", "I", "UP", "B", "TID"]
 "tests/test_concurrency.py" = ["TID251"]
 # playground/ 是学习实验脚本，刻意直接写 httpx（不经过适配器），不是业务代码
 "playground/*.py" = ["TID251"]
+# scripts/ 是【验收探针】：它必须当 HTTP 客户端去敲【本项目的服务】，与 playground 同型
+#   判据：不绕过适配器调上游，而是从外面连自己的 127.0.0.1
+"scripts/*.py" = ["TID251"]
