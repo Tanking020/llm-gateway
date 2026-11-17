@@ -1,9 +1,12 @@
 """错误响应契约测试：任何错误都必须是同一种形状"""
 
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.app import app
 from app.api.deps import get_settings
@@ -152,3 +155,42 @@ def test_500_does_not_echo_a_foreign_origin() -> None:
 
     assert r.status_code == 500
     assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+
+
+def test_db_unavailable_returns_503(client: TestClient) -> None:
+    """回归 #83：连不上库是【依赖不可用】→ 503 + Retry-After，不是 500"""
+
+    async def no_connection(*args: Any, **kwargs: Any) -> Any:
+        raise OperationalError(
+            "PRAGMA foreign_keys=ON", {}, Exception("unable to open database file")
+        )
+
+    with patch.object(AsyncSession, "connection", no_connection):
+        response = client.post(
+            "/v1/conversations",
+            json={"title": "x"},
+            headers={"Origin": "http://localhost:5173"},
+        )
+
+    error = _assert_error_envelope(response, 503, "DB_UNAVAILABLE")
+    assert response.headers["Retry-After"] == "1"
+    # 503 走的是 AppError 处理器（在 CORSMiddleware 里面），所以 CORS 头必须在
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert error["message"] == "数据库不可用"
+
+
+def test_sql_level_failure_stays_500() -> None:
+    """反向守卫：SQL/表结构错了（同样是 OperationalError）不能被误判成「依赖不可用」
+
+    📎 判据就是【抛出阶段】：connection() 抛 = 连不上（503）；execute() 抛 = 我们的代码有问题（500）
+    不用 client fixture：要拿 500 的响应体必须 raise_server_exceptions=False
+    """
+
+    async def broken_sql(*args: Any, **kwargs: Any) -> Any:
+        raise OperationalError("INSERT INTO conversations ...", {}, Exception("no such table"))
+
+    with patch.object(AsyncSession, "execute", broken_sql):
+        with TestClient(app, raise_server_exceptions=False) as raw:
+            response = raw.post("/v1/conversations", json={"title": "x"})
+
+    _assert_error_envelope(response, 500, "INTERNAL_ERROR")

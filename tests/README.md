@@ -26,14 +26,14 @@
 
 ## 1. 十二个文件各测什么
 
-**104 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+**106 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
 
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
 | `test_smoke.py` | 4 | 地基：应用能起、lifespan 跑过、独立临时库生效、**健康检查两态**（`/health/ready` 200 / DB 挂时 503） | 不涉及 | ❌ |
 | `test_conversations.py` | 9 | 对话 CRUD 契约：全生命周期 / 游标分页 / 422 校验 / 404 语义 | 不涉及 | ❌ |
 | `test_upstream.py` | 7 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、**上游 429 → 429 + `Retry-After`**、pre-flight 能改状态码 | `FakeLlm` | ❌ |
-| `test_errors.py` | 9 | **错误形状契约**：envelope 三键 / 三种 404 靠业务码分 / 422 的 `details` 只留三键 / 500 不泄漏 / **500 的 CORS 头与 404 一致且不外泄给外来源** | `FakeLlm` | ❌ |
+| `test_errors.py` | 11 | **错误形状契约**：envelope 三键 / 三种 404 靠业务码分 / 422 的 `details` 只留三键 / 500 不泄漏 / **500 的 CORS 头与 404 一致且不外泄给外来源** / **DB 连不上 → 503（SQL 错仍 500）** | `FakeLlm` | ❌ |
 | `test_stream_frames.py` | 12 | **路由层**字段守卫：7 种怪 chunk + 帧序 + 终止条件（用假 chunk，不经 SSE 文本） | `FakeLlm` | ❌ |
 | `test_stream_adapter.py` | 11 | **适配器协议层**：原始 SSE 字节 → `aiter_chunks()`，`data:{` 无空格 / 空 data / 非 dict / `[DONE]` 之后 | **直接喂 `httpx.Response`** | ❌ |
 | `test_stream_accounting.py` | 10 | **账单四态**：completed / aborted / no_content / pending + 枚举值守卫 | `FakeLlm` | ❌ |
@@ -63,7 +63,7 @@
 | `create_all` 建同样 3 个对象 | **18 ms** | 快 9 倍，但它**不读迁移文件** → 迁移写错测不出来 |
 
 ⚠️ 关键：这个成本按 **pytest 会话**（一次 `uv run pytest`）付，**不是按用例**付 ——
-104 个用例共用同一个库，每个用例前只 `DELETE` 清表。**也不要**在应用启动时跑迁移（多副本会 DDL 竞态）。
+106 个用例共用同一个库，每个用例前只 `DELETE` 清表。**也不要**在应用启动时跑迁移（多副本会 DDL 竞态）。
 
 ---
 

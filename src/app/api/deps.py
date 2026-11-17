@@ -12,16 +12,20 @@
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Request
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, settings
 from app.database import SessionMaker
 from app.errors import AppError
 from app.llm_client import LlmClient
+
+logger = logging.getLogger(__name__)
 
 
 def get_settings() -> Settings:
@@ -66,6 +70,15 @@ async def get_db() -> AsyncIterator[AsyncSession]:
        但日志里原始异常会被 FastAPIError 顶替 —— 根因、类型、行号全丢
     """
     async with SessionMaker() as session:
+        # 【注意】：先单独探一次「连得上吗」—— 连不上是【依赖不可用】(503)，
+        #   SQL/表结构写错（no such table）必须留在 500。两者都是 OperationalError，
+        #   只能靠【抛出阶段】区分：connection() 在建立连接时抛，execute() 在跑 SQL 时抛
+        try:
+            await session.connection()
+        except OperationalError as exc:
+            # 只记类型：连接串 / 库路径可能出现在 str(exc) 里
+            logger.warning("数据库连接失败：%s", type(exc).__name__)
+            raise AppError("DB_UNAVAILABLE", "数据库不可用", headers={"Retry-After": "1"}) from exc
         try:
             yield session  # 路由在这里跑；路由抛异常时，异常会被"抛回"这一行
             await session.commit()  # 只有正常路径才走到（事务边界收在这一处）
