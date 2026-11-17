@@ -58,9 +58,9 @@ Step 13 已经补掉了原评审里最要命的一半：**谁都不能白用**�
 —— 说明**测试数量不等于覆盖**，值域这类「常量内容」必须专门钉。
 📌 **变异测试的次数与成败不在这里累计**（两处维护必然漂）：唯一事实来源是 [DEVLOG.md](DEVLOG.md) §二 各条流水的 📎 段。
 
-🔴 **本门有一个未修的裂缝**：测试套件会**偶发**大面积 error（📎 2026-11-17 三次实测，`55 passed, 76 errors` 到 `93% → 64%` 不等，重跑即恢复）——
-根因是 `conftest.py` 的测试库用**固定文件名**，连续/并发跑会互相踩。**一个会偶发红的套件，其红灯不携带信息**，
-所以这条 `P1`（**#87** / 坑 K94）修之前，本门的 ✅ 要带着这句警告读。
+🔴 **本门曾经有一个裂缝，2026-11-17 已补**：测试套件会**偶发**大面积 error（📎 三次实测，`55 passed, 76 errors` 到 `93% → 64%` 不等）——
+根因是 `conftest.py` 的测试库用**固定文件名**，连续/并发跑会互相踩。**一个会偶发红的套件，其红灯不携带信息**。
+现库名带进程号（**#87** 关闭 / 坑 K94），📎 修后验证：**两个 pytest 并行** + **连跑三次** 全绿。
 
 - [x] `tests/` 存在，`pytest` 一条命令跑完全部 · `P0` · 关联 **#40**（12a）
   - 📎 2026-11-17：`uv run pytest -q` → **131 passed / 11 s**（含真 uvicorn 与两个子进程用例）；`app.db` 的 mtime 前后不变（测试落 `%TEMP%`）
@@ -78,7 +78,7 @@ Step 13 已经补掉了原评审里最要命的一半：**谁都不能白用**�
   - 📎 `app.py` 缺的那几处：分页 `has_more`/`next_cursor`、`max_tokens` 分支、`except BaseException` 取消分支、`/v1/chat` pre-flight
   - ⚠️ **工具坑**：`465`（`await db.delete`）与 `485`（`conv.title = ...`）报「未覆盖」，但 📎 实测 DELETE 后库里 `1 → 0` 行 —— 是 **coverage 少报**（与 SQLAlchemy 的 greenlet 切换有关），不是真缺口。**判据：覆盖率要和行为断言交叉验证**
   - ⚠️ **而且数字会抖**：📎 2026-11-03 同一命令连跑 4 次，`TOTAL Miss` 在 **66/67** 之间跳（`Cover` 84%/85%）。→ **不设 `--cov-fail-under`**；覆盖率只用于找缺口，守行为靠断言。详见 [tests/README.md](../tests/README.md) §3.5
-- [ ] **测试库一进程一个**（现在固定 `%TEMP%\llm-app-test.db`，连跑/并发跑会互相踩 → 偶发 `76 errors`） · `P1` · 关联 **#87** · 坑 K94
+- [x] **测试库一进程一个**（原固定 `%TEMP%\llm-app-test.db`，连跑/并发跑会互相踩 → 偶发 `76 errors`） · `P1` · 关联 **#87** · 坑 K94 —— ✅ **2026-11-17 完成**：库名带 `os.getpid()`；守卫 `test_test_db_path_is_per_process` 真起子进程比对（📎 变异「改回固定文件名」→ 红）；📎 修后**两个 pytest 并行**与**连跑三次**全绿
 - [x] 推送即跑 `ruff + mypy + pytest` · `P1` · 关联 **#62**（✅ 2026-11-14 关闭）
   - 📎 `.github/workflows/ci.yml`：`push`(main) + `pull_request`；`uv sync --locked` → format `--check` → ruff → mypy → pytest；`permissions: contents: read`、`timeout-minutes: 10`
   - ⚠️ 覆盖率**故意不上 CI**：数字会抖（本文件上一条）且不设阈值 —— 覆盖率是找缺口的探照灯，守行为靠断言

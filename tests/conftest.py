@@ -9,13 +9,17 @@ import os
 import sqlite3
 import tempfile
 from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 
 # 在测试启动前，先把环境变量设好，再 import app:
 #   原因：settings 是模块级单例，import 那一刻就定死了
 # 设置测试数据库路径
-_TEST_DB = Path(tempfile.gettempdir()) / "llm-app-test.db"
-# 删除旧的测试数据库文件
+# 【注意】：文件名必须带进程号（#87 / 坑 K94）—— 固定文件名时，两个 pytest
+#   （或「刚跑完紧接着再跑」）会互相 DELETE 对方的表，表现为偶发 `76 errors`，
+#   而偶发红比稳定红更贵：它让人学会「重跑一次」，真 bug 也会被重跑掉
+_TEST_DB = Path(tempfile.gettempdir()) / f"llm-app-test-{os.getpid()}.db"
+# 删除旧的测试数据库文件（只可能是【本进程】上一次残留，pid 被复用时才会命中）
 for _suffix in ("", "-wal", "-shm"):
     Path(str(_TEST_DB) + _suffix).unlink(missing_ok=True)
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///" + _TEST_DB.as_posix()
@@ -42,7 +46,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="session", autouse=True)
-def migrated() -> None:
+def migrated() -> Iterator[None]:
     """整个会话只建一次表：跑真实迁移，让「迁移文件写错」在这里就炸"""
     # 【注意】：ini 用绝对路径 —— alembic 内部的 script_location 是相对 ini 所在目录解析的；
     # 写死路径后从任何工作目录跑 pytest 都能找到 alembic/
@@ -61,6 +65,12 @@ def migrated() -> None:
     assert not missing, (
         f"迁移没有建出这些表：{sorted(missing)} —— alembic/versions/ 的迁移文件提交了吗？"
     )
+    yield
+    # 会话结束删掉本进程的库（尽力而为）：Windows 上连接没完全释放时会报 PermissionError，
+    # 忽略即可 —— 下次是另一个文件名，不会打架
+    for _suffix in ("", "-wal", "-shm"):
+        with suppress(OSError):
+            Path(str(_TEST_DB) + _suffix).unlink(missing_ok=True)
 
 
 def _truncate_all() -> None:
