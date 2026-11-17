@@ -758,7 +758,7 @@
 | **背景** | [决策 9](#9-请求级数据库会话由依赖统一提交) 把事务边界收在 `get_db`（「只在一处」）。但 FastAPI 的 `yield` 依赖在**响应发出之后**才继续执行 → [#54](todos.md)：📎 patch `commit` 抛异常时，`POST /v1/conversations` 回 **201 + 完整 body**，而库里**没有那一行**。状态码已经发出去，任何处理器都救不了 |
 | **方案对比** | **A 删掉 `get_db` 的 commit，只保留路由内 commit**（事务边界回到「一处」的另一种解释）：📎 **实测不可行** —— `test_stream_accounting` **3 条红**（`no_content` / `aborted` 变回 `pending`）。原因：流式收尾的写入发生在响应开始之后，而**取消路径（`except BaseException`）里不允许 await**（实测 `asyncio.shield` 也挡不住），只能靠 `get_db` 收尾<br>**B 保持现状 + 文档说明**：不解决数据正确性<br>**C 引入 UnitOfWork / 事务装饰器框架**：3 个写路由不值得（§14.3 防过度设计）<br>**D 两层职责**：路由内 commit（保证状态码真实）+ `get_db` 收尾 commit（保证流式收尾能落盘） |
 | **决定** | **D**。三个写路由（create / patch / delete）在 `return` **之前** `await db.commit()`；`get_db` 的收尾 commit **保留**，docstring 写明它的唯一用途是「响应已开始后才写的改动」。`tests/test_conversations.py` 加 3 条回归：提交被打成必失败 → 三个接口都必须 5xx，且库状态不变 |
-| **代价** ⚠️ | ① 每次写请求多一次**空提交**（路由提交 + 兜底提交），SQLite 上 <1 ms<br>② **「忘了写 commit」会被兜底悄悄掩盖**：📎 探针实测 —— 只 `db.add` 不 commit 的临时路由回 201，兜底**真的把行写进去了**（漏写看不出来）；兜底再失败时 201 + 行数 0（老问题复现）。→ 已登记 [#86](todos.md)（AST 静态检查：写路由必须含 `await db.commit()`）<br>③ 两条提交路径让「事务边界」这个概念不再单一，读代码时要看 docstring 才懂 |
+| **代价** ⚠️ | ① 每次写请求多一次**空提交**（路由提交 + 兜底提交），SQLite 上 <1 ms<br>② **「忘了写 commit」会被兜底悄悄掩盖**：📎 探针实测 —— 只 `db.add` 不 commit 的临时路由回 201，兜底**真的把行写进去了**（漏写看不出来）；兜底再失败时 201 + 行数 0（老问题复现）。→ 已落地 [#86](todos.md)：`tests/test_source_rules.py`（AST 静态检查：写路由必须含 `await db.commit()`；📎 3 个变异全红）<br>③ 两条提交路径让「事务边界」这个概念不再单一，读代码时要看 docstring 才懂 |
 | **重审条件** | ① #86 落地后若静态检查维护成本高于收益 → 改成「`get_db` 只在流式标记 `request.state.legacy_commit = True` 时才提交」，其余情况漏写直接 raise<br>② 接入 PostgreSQL（#13）后如果「提交失败」多为可重试错误（序列化冲突）→ 需要考虑提交重试而不是直接 5xx<br>③ 若将来引入后台任务（写库不在请求路径）→ 事务边界要重新设计，这条决策不覆盖它 |
 
 ---
