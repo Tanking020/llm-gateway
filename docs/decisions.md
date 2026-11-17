@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-17 · 共 38 条
+**最后更新**：2026-11-17 · 共 39 条
 
 ---
 
@@ -59,6 +59,7 @@
 | [36](#36-数据库连不上映射成-503-按抛出阶段区分而不是按异常类型) | DB 不可用怎么映射 | **`get_db` 先探连接 → 503；SQL 错仍是 500** | 2026-11-17 |
 | [37](#37-上游总时长上限用应用层死线而不是-httpx-超时参数) | 上游「太慢」怎么掐 | **应用层总时长死线**（httpx 没有 total） | 2026-11-17 |
 | [38](#38-写路由自己-commitget_db-只做收尾兜底) | 事务提交放在哪 | **写路由 return 前 commit；`get_db` 只兜底**（两层职责） | 2026-11-17 |
+| [39](#39-优雅停机用-uvicorn-内置窗口默认-30s而-不自己实现) | 优雅停机怎么做 | **用 uvicorn 的 `timeout_graceful_shutdown`，窗口 30s** | 2026-11-17 |
 
 ---
 
@@ -760,6 +761,18 @@
 | **决定** | **D**。三个写路由（create / patch / delete）在 `return` **之前** `await db.commit()`；`get_db` 的收尾 commit **保留**，docstring 写明它的唯一用途是「响应已开始后才写的改动」。`tests/test_conversations.py` 加 3 条回归：提交被打成必失败 → 三个接口都必须 5xx，且库状态不变 |
 | **代价** ⚠️ | ① 每次写请求多一次**空提交**（路由提交 + 兜底提交），SQLite 上 <1 ms<br>② **「忘了写 commit」会被兜底悄悄掩盖**：📎 探针实测 —— 只 `db.add` 不 commit 的临时路由回 201，兜底**真的把行写进去了**（漏写看不出来）；兜底再失败时 201 + 行数 0（老问题复现）。→ 已落地 [#86](todos.md)：`tests/test_source_rules.py`（AST 静态检查：写路由必须含 `await db.commit()`；📎 3 个变异全红）<br>③ 两条提交路径让「事务边界」这个概念不再单一，读代码时要看 docstring 才懂 |
 | **重审条件** | ① #86 落地后若静态检查维护成本高于收益 → 改成「`get_db` 只在流式标记 `request.state.legacy_commit = True` 时才提交」，其余情况漏写直接 raise<br>② 接入 PostgreSQL（#13）后如果「提交失败」多为可重试错误（序列化冲突）→ 需要考虑提交重试而不是直接 5xx<br>③ 若将来引入后台任务（写库不在请求路径）→ 事务边界要重新设计，这条决策不覆盖它 |
+
+---
+
+## 39. 优雅停机用 uvicorn 内置窗口（默认 30s），而不自己实现
+
+| 项 | 内容 |
+|---|---|
+| **背景** | uvicorn 的 `timeout_graceful_shutdown` **默认 `None` = 无限等**。发版 / 扩容时，一条慢速滴答的 SSE 就能把 `docker stop` 挂住，最后被 SIGKILL 硬杀：在途流半截消失、`lifespan` 关闭段（`client.aclose()` → `engine.dispose()`）不执行 |
+| **方案对比** | **A 什么都不做**：❌ 无限等，被编排系统强杀<br>**B 只靠 nginx / 编排系统**：❌ 它们只负责「等多久就杀」，不会让我们的进程优雅收尾<br>**C 自己实现信号处理 + 自己管连接**：❌ uvicorn 已内建（停 accept → 对空闲连接发 `ConnectionClosed` → 等 tasks → 超时 `t.cancel()` → 跑 lifespan shutdown），重写等于重造轮子<br>**D 暴露配置 + 交给 uvicorn**：✅ 3 行代码 |
+| **决定** | **D**。新增 `graceful_shutdown_timeout: int = Field(default=30, gt=0, le=300)`（**必须 int** —— 📎 uvicorn 的注解是 `int \| None`，传 float 过不了 mypy，实测报 `arg-type`），在 `__main__.py` 传给 `uvicorn.run(timeout_graceful_shutdown=...)`，并进启动摘要（#85 的守卫强制）。默认 **30s = k8s `terminationGracePeriodSeconds` 默认值** |
+| **代价** ⚠️ | ① **部署最坏多等 30s**（这正是「让在途流跑完」的代价）<br>② 窗口内跑不完的流**一定**被切断（连接关闭、**无 `[DONE]`**）→ 前端要按「流断了」处理<br>③ **只在 `python -m app` 下生效**：直接 `uvicorn app.api.app:app` 必须带 `--timeout-graceful-shutdown`（13a 的 Dockerfile CMD 必须带）<br>④ 📎 Windows 上 Ctrl+Break 的退出码是 **3**（uvicorn 优雅关闭后**重新 raise 信号**的固有行为，Linux 是 143），与配置无关 |
+| **重审条件** | ① **13a `docker stop` 实测**：拿到 Linux SIGTERM 的真实退出码与耗时；若「最坏 30s 才退出」影响发版节奏 → 调小或按 `upstream_total_timeout` 分层<br>② 13f 压测后若发现长回答占比高 → 重新评估窗口（可能需要 >30s，同时调大编排宽限期）<br>③ 若编排系统改为「先摘流量、等待 N 秒再发 SIGTERM」（preStop hook）→ 窗口可显著调小<br>④ 若要做「零中断发版」（双版本并存）→ 这套单进程优雅停机不够，需要滚动 + 就绪探针配合 |
 
 ---
 

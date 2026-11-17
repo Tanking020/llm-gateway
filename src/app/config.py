@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     #   压测（13f）后再按实测 p99 校准
     upstream_total_timeout: float = Field(default=120.0, gt=0.0, le=600.0)
 
+    # 优雅停机窗口（秒）：收到停止信号后，最多再等这么久让在途请求跑完
+    # 【注意】：必须【小于】编排系统的宽限期（k8s terminationGracePeriodSeconds 默认 30s、
+    #   docker stop 默认 10s 后 SIGKILL），否则 SIGKILL 先到、优雅窗口形同虚设
+    # 【注意】：本配置只在 `python -m app` 下生效；直接 `uvicorn app.api.app:app` 时
+    #   要用命令行参数 --timeout-graceful-shutdown（见架构 §9.5）
+    # 【注意】：类型是 int 不是 float —— uvicorn 的 Config 注解写的是 `int | None`，
+    #   传 float 过不了 mypy（实测报 arg-type）
+    graceful_shutdown_timeout: int = Field(default=30, gt=0, le=300)
+
     # ===== 容量与成本护栏（不是调优参数，是防止一个用户拖垮所有人）=====
 
     # 同一时刻最多允许多少个上游调用在飞
@@ -133,6 +142,7 @@ def startup_config_summary(config: Settings) -> dict[str, object]:
         "max_tokens_ceiling": config.max_tokens_ceiling,
         "request_timeout": config.request_timeout,
         "upstream_total_timeout": config.upstream_total_timeout,
+        "graceful_shutdown_timeout": config.graceful_shutdown_timeout,
     }
 
 

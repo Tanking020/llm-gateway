@@ -22,6 +22,9 @@ def main() -> None:
         reload=settings.debug,
         # 【注意】：必须 None。默认 uvicorn 会装它自己那套格式，日志就变成两种样式
         log_config=None,
+        # 【注意】：窗口内跑完的流正常收尾；超窗口的流被明确切断（连接关闭、无 [DONE]）
+        #   不传就是 None = 无限等 —— 一条慢流就能把 docker stop 挂住
+        timeout_graceful_shutdown=settings.graceful_shutdown_timeout,
     )
 
 
