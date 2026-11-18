@@ -2,25 +2,30 @@
 #
 # 判据不是「这个文件重要吗」，而是「镜像里需要它吗」：
 #   运行时只需要 pyproject.toml / uv.lock / src/ / alembic/ / alembic.ini
+#
+# 【注意】：BuildKit 的 `.dockerignore` **只匹配根层**，不做「任意层」匹配 —— 要排掉 3 层深的
+#   `src/app/__pycache__` 必须写 `**/__pycache__`（实测：裸 `__pycache__` 只排掉顶层）。
+#   规则：**任意层都不要 → `**/` 前缀；只要仓库根层 → 不带前缀**
+#   （切回经典 builder 时 `**/` 会过度排除 —— 方向安全，不会漏密钥）
 
 # ============ 体积大户（本地环境与 VCS 历史）============
-.venv/
-.git/
+**/.venv
+**/.git
 .github/
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
-htmlcov/
-.coverage
-dist/
-build/
-*.egg-info/
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/htmlcov
+**/.coverage
+**/dist
+**/build
+**/*.egg-info
 
 # ============ 密钥红线 ============
 # 【注意】：.env 里是真实密钥。绝不进镜像 —— 镜像层可以被任何人 pull 后查看
 #   连 .env.example 也不带：运行时不读它，文档不属于运行时镜像
-.env
-.env.*
+**/.env
+**/.env.*
 
 # ============ 不是运行时依赖（占体积 / 拖慢上下文传输）============
 docs/
@@ -37,18 +42,15 @@ LICENSE
 
 # ============ 本地数据库与临时产物 ============
 # 容器用 .env 的 DATABASE_URL（/app/data/app.db），宿主机上的库不能带进去
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-app.db
+**/*.db*
 
 # ============ 其他 ============
 Dockerfile
 .dockerignore
 
 # 【注意】：字节码缓存必须排掉 —— 否则本机（甚至另一个 Python 版本）的 .pyc 会被打进镜像，
-#   既占体积又可能和目标解释器不匹配（实测上下文里混进了 cpython-314 的 .pyc）
-__pycache__/
-*.py[cod]
-*.log
+#   既占体积又可能和目标解释器不匹配（📎 实测上下文里混进过 cpython-314 的 .pyc，
+#   共 23 个 .pyc / 上下文 49 个文件，而守卫当时报绿）
+**/__pycache__
+**/*.py[cod]
+**/*.log

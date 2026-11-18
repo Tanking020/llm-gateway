@@ -6,7 +6,6 @@
   ② 构建失败 —— Dockerfile `COPY` 的东西被 .dockerignore 排掉了（写代码时看不出来）
 """
 
-import fnmatch
 import re
 from pathlib import Path
 
@@ -24,11 +23,18 @@ _REQUIRED_IN_CONTEXT = [
 ]
 
 # 镜像里【绝不能】有的路径：进去就等于把密钥打进可被 pull 的层里
+# 【注意】：必须包含**嵌套**路径 —— 📎 实测 `src/app/__pycache__/*.pyc` 真的进过镜像
+#   （23 个 .pyc，还混着 cpython-314），而当时的守卫报绿。只查根层等于没查
 _FORBIDDEN_IN_CONTEXT = [
     ".env",
+    ".env.production",
     ".venv",
     ".git",
     "src/app/__pycache__",
+    "src/app/__pycache__/x.cpython-312.pyc",
+    "alembic/versions/__pycache__/y.pyc",
+    "data/app.db",
+    "logs/app.log",
 ]
 
 
@@ -47,30 +53,104 @@ def _patterns() -> list[tuple[str, bool]]:
     return result
 
 
-def _is_excluded(path: str) -> bool:
-    """按 .dockerignore 判断某个仓库相对路径会不会被排掉
+def _glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """把一个 .dockerignore 模式转成「匹配整条相对路径」的正则
 
-    【注意】：这是 Docker 语义的**近似实现**，但覆盖了本项目用到的两类规则：
-      ① 含 `/` 的模式 —— 对完整相对路径做匹配（如 `src/app/__pycache__`）
-      ② 不含 `/` 的模式 —— 匹配【任意一层】路径片段（如 `__pycache__` 要能命中
-         `src/app/__pycache__`）。📎 这正是我第一版写错的地方：只做整串
-         `fnmatch` 会认为 `__pycache__` 排不掉 `src/app/__pycache__`
+    【注意】：语义来自**实测**，不是文档推测。📎 同一棵树（顶层 / 一层嵌套 / 三层嵌套
+    各一个 `__pycache__`），只换模式，BuildKit 的结果是：
+
+        模式                顶层   一层   三层
+        `__pycache__`       排掉   留下   留下      ← 裸名字只匹配根层！
+        `__pycache__/`      排掉   留下   留下
+        `*.pyc`             留下   留下   留下      ← 不含 `/` 连嵌套都碰不到
+        `*.py[cod]`         留下   留下   留下
+        `**/__pycache__`    排掉   排掉   排掉      ← 正确写法
+        `**/*.pyc`          排掉   排掉   排掉
+
+    换句话说：`**/` 是「任意层（含零层）」，`*` 不跨 `/`，`?` 单字符，`[abc]` 字符集
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "*":
+            if pattern.startswith("**/", i):
+                out.append("(?:.*/)?")  # 零到多层目录
+                i += 3
+            elif pattern.startswith("**", i):
+                out.append(".*")
+                i += 2
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif ch == "?":
+            out.append("[^/]")
+            i += 1
+        elif ch == "[":
+            end = pattern.find("]", i + 1)
+            if end == -1:
+                out.append(re.escape(ch))
+                i += 1
+            else:
+                inner = pattern[i + 1 : end]
+                out.append("[" + ("^" + inner[1:] if inner.startswith("!") else inner) + "]")
+                i = end + 1
+        else:
+            out.append(re.escape(ch))
+            i += 1
+    return re.compile("".join(out))
+
+
+def _ancestors(path: str) -> list[str]:
+    """`a/b/c` → `['a', 'a/b', 'a/b/c']`（命中目录等于排掉其下全部）"""
+    parts = path.split("/")
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+def _matches(patterns: list[tuple[str, bool]], path: str) -> bool:
+    """按 .dockerignore 顺序判断 path 会不会被排掉
+
+    【注意】：Docker 的规则是「后匹配的覆盖先匹配的」，`!` 表示取反（重新包含）
     """
     excluded = False
-    for pattern, negated in _patterns():
-        normalized = pattern.rstrip("/")
-        if "/" in normalized:
-            hit = fnmatch.fnmatch(path, normalized) or path.startswith(normalized + "/")
-        else:
-            hit = any(fnmatch.fnmatch(part, normalized) for part in path.split("/"))
-        if hit:
+    for pattern, negated in patterns:
+        regex = _glob_to_regex(pattern.rstrip("/"))
+        if any(regex.fullmatch(ancestor) for ancestor in _ancestors(path)):
             excluded = not negated
     return excluded
+
+
+def _is_excluded(path: str) -> bool:
+    return _matches(_patterns(), path)
 
 
 def test_dockerfile_and_dockerignore_exist() -> None:
     assert _DOCKERFILE.is_file(), "缺 Dockerfile"
     assert _DOCKERIGNORE.is_file(), "缺 .dockerignore"
+
+
+def test_matcher_follows_measured_buildkit_semantics() -> None:
+    """回归：匹配器必须和真 Docker 一致 —— 这组期望值全部来自真 `docker build` 实测
+
+    📎 见 `_glob_to_regex` 的实测矩阵。这条测试保护的是「守卫本身」：
+        匹配器一旦退回「不含 `/` 就匹配任意层」的经典 builder 语义，这里会红
+    """
+    cases = [
+        ("__pycache__", "__pycache__/a.pyc", True),
+        ("__pycache__", "src/app/__pycache__/x.cpython-312.pyc", False),
+        ("__pycache__/", "src/app/__pycache__/x.cpython-312.pyc", False),
+        ("*.pyc", "__pycache__/a.pyc", False),
+        ("*.py[cod]", "__pycache__/a.pyc", False),
+        ("**/__pycache__", "__pycache__/a.pyc", True),
+        ("**/__pycache__", "src/app/__pycache__/x.cpython-312.pyc", True),
+        ("**/*.pyc", "src/app/__pycache__/x.cpython-312.pyc", True),
+        (".venv/", ".venv/lib/junk.py", True),
+    ]
+    for pattern, path, expected in cases:
+        actual = _matches([(pattern, False)], path)
+        assert actual is expected, (
+            f"模式 {pattern!r} 对 {path!r}：实测 {expected}，实现给了 {actual}"
+        )
 
 
 def test_secrets_and_bulk_are_excluded() -> None:
