@@ -28,8 +28,22 @@ X-API-Key: sk_<43 个字符>
 
 **免鉴权端点**（否则负载均衡探测与前端取模型清单会挂）：`/health`、`/health/ready`、`/v1/models*`。
 
+**怎么拿到一把 key（13d-5 起有 CLI，不用再手写 SQL）**：
+
 ```powershell
-# 本地签发（浏览器 / curl 自测用）—— 13d-5 之前暂时手写库，见 decisions 41 的「代价」
+uv run python -m app.keys create --user alice --label laptop   # 明文只显示这一次
+uv run python -m app.keys list                                 # 看 id / 用户 / 标签 / 状态 / hash 前缀
+uv run python -m app.keys revoke --id 1                        # 撤销 = 打时间戳，立刻 401
+```
+
+| 规则 | 理由 |
+|---|---|
+| **明文只显示一次** | 库里只有 sha256，**任何人（含我们）都还原不出来**；丢了就 `revoke` 再建 |
+| **`create` 找不到用户会自动建** | 13d-2 没有注册流程，key 必须挂到某个 `users` 行上 |
+| **`revoke` 打时间戳不删行** | 删了就没有审计痕迹（"谁在什么时候被停的"） |
+| **`revoke` 幂等、不存在的 id 退出码 1** | 脚本里重跑不该炸；但真错了必须能被 CI 看见 |
+
+```powershell
 curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
 ```
 
@@ -226,7 +240,7 @@ curl.exe -i http://127.0.0.1:8000/health -H "X-Request-ID: my-trace-001"
 
 ```powershell
 # 【注意】：13d-2 起业务端点必须带 X-API-Key（否则 401）；/health 与 /v1/models* 免鉴权
-$env:API_KEY = "sk_xxx"   # 当前只能手写库造（签发 CLI 见待办 13d-5）
+$env:API_KEY = "sk_xxx"   # 用 `uv run python -m app.keys create --user alice` 签发（明文只显示一次）
 
 curl.exe -s -i http://127.0.0.1:8000/health                                        # 200（免鉴权）
 curl.exe -s -i http://127.0.0.1:8000/v1/models/deepseek-flash                       # 200（免鉴权）

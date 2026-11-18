@@ -168,6 +168,7 @@ raise RuntimeError      → 一路冒到 ① ServerErrorMiddleware → _unhandle
 | `api/app.py` | `api/deps`, `config`, `constants`, `database`, `errors`, `llm_client`, `logging_setup`, `models`, `schemas` |
 | `api/deps.py` | `auth`, `config`, `constants`, `database`, `errors`, `llm_client`, `models` |
 | `auth.py` | `models` |
+| `keys.py` | `auth`, `database`, `models` |
 | `database.py` | `config` |
 | `errors.py` | `constants` |
 | `llm_client.py` | `config`, `errors`, `schemas` |
@@ -1543,7 +1544,8 @@ POST /v1/conversations
 | `llm_client.py` | 唯一 import `httpx`、唯一翻译上游故障 | 不 import `fastapi` |
 | `logging_setup.py` | 日志配置唯一一处 | — |
 | `api/deps.py` | 依赖的集中地（可替换的接缝）：含 `get_db` / `get_llm_client` / `get_upstream_slot` / **`require_user`** | 不含路由 |
-| `auth.py` | API key 的生成 / 哈希 / 查人（请求鉴权与将来的签发 CLI 共用） | 不认识 HTTP 头（只吃明文字符串） |
+| `auth.py` | API key 的生成 / 哈希 / 查人（请求鉴权与签发 CLI 共用） | 不认识 HTTP 头（只吃明文字符串） |
+| `keys.py` | API key 运维 CLI（`python -m app.keys create/list/revoke`） | 不含业务路由；不打印明文到日志 |
 | `api/app.py` | FastAPI 对象 + lifespan + 全部路由 | 不写上游协议细节 |
 | `main.py` | 命令行 demo / ping | 不是 HTTP 入口 |
 | `__main__.py` | `python -m app` 的 HTTP 入口 | 不直接建 app |
