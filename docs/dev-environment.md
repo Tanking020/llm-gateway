@@ -88,25 +88,32 @@ uv 报 `warning: Ignoring unsupported Python request ﻿3.12 in version file`，
 
 ## 8. 本机**没有**的工具（会卡住哪些工作）
 
-> 2026-11-16 实测。这一节的意义：**下次不要假设这些命令能用**。
+> 2026-11-16 建立，**2026-11-18 更新**（WSL 已装好）。这一节的意义：**下次不要假设这些命令能用**。
 
 | 工具 | 状态 | 怎么确认 | 卡住什么 |
 |---|---|---|---|
-| **Docker / Docker Desktop** | ❌ 未安装 | `docker --version` → 命令不存在；4 个常见安装路径全部 `Test-Path` = False | Step 13a（镜像 / compose / 非 root / SIGTERM）、13e（`X-Forwarded-For`）、13f（容器内压测） |
-| **WSL / WSL2** | ❌ 未安装 | `wsl --status` → 「未安装用于 Linux 的 Windows 子系统」 | Docker Desktop 的前置条件 |
-| 管理员权限 | ❌ 当前会话无 | `WindowsPrincipal.IsInRole(Administrator)` = False | 安装 Docker Desktop / `wsl --install` / 查 `Get-WindowsOptionalFeature` |
-| 虚拟化 | ✅ 已开启 | `Win32_ComputerSystem.HypervisorPresent` = True | — |
-| 磁盘 | ✅ 剩 169.8 GB | `Get-PSDrive C` | — |
-| 系统版本 | Windows 11 **家庭版** | `Win32_OperatingSystem.Caption` | 家庭版**只能**用 WSL2 后端（Hyper-V 后端要 Pro/Enterprise） |
+| **WSL / WSL2** | ✅ **3.0.5.0**（2026-11-18） | `wsl --version`；`Test-Path "$env:WINDIR\System32\vmcompute.exe"` = True | — |
+| **Docker / Docker Desktop** | 🟡 **安装中**（2026-11-18） | `docker --version` | 13a 的 `docker build` / `docker stop` 验 143、13e 的 `X-Forwarded-For`、13f 容器内压测 |
+| 管理员权限 | ❌ 助手会话里没有 | `WindowsPrincipal.IsInRole(Administrator)` = False | 只能由学习者本人在**管理员终端**操作 |
+| 虚拟化 | ✅ 已开启（VBS Running） | `Win32_ComputerSystem.HypervisorPresent` = True | — |
+| 磁盘 | ✅ C 剩 173 GB / D 剩 455 GB（**同一块 NVMe**） | `Get-CimInstance Win32_LogicalDisk` | 装 Docker 时把**镜像存储位置**指到 D |
+| 系统版本 | Windows 11 **家庭版** 26200 | `Win32_OperatingSystem.Caption` | 家庭版**只能**用 WSL2 后端 |
 
-**要装 Docker 的话，顺序固定**（在管理员终端里）：
+### 8.0 WSL 安装时踩到的坑（2026-11-18 真实经历）
+
+| 症状 | 根因 | 解法 |
+|---|---|---|
+| `wsl --install` 提示「请求的操作需要提升」，但**同时显示在下载 3.0.5** | 一条命令里有两半：**下载 MSIX 包**（不需要提权，成功了）与**启用可选功能**（要提权，被拒）。所以「看起来在装」其实只成功了一半 | 用**管理员终端**；或用「Windows 功能」窗口勾选 |
+| `wsl --status` 说「WSL2 无法启动，因为未启用虚拟化」，但**「虚拟机平台」已经显示已勾选** | 🔴 **功能标记 Enabled，但 FOD 载荷还没装完**：`vmcompute.exe` 不在 `System32`（在 `WinSxS` 里躺着），`CBS\RebootPending` = True | ①**先跑 Windows Update**（📎 这次就是它补齐的：系统版本从 `.9711` 变成 `.9974`）；②`dism /online /enable-feature /featurename:VirtualMachinePlatform /all`；③**从开始菜单「重启」**（`shutdown /s` 走快速启动，**不会**完成 CBS 安装） |
+| `wsl.exe` 输出在 PowerShell 里是乱码 | `wsl.exe` 输出是 **UTF-16LE** | `Start-Process ... -RedirectStandardOutput x.txt` 再 `[Text.Encoding]::Unicode.GetString(...)` |
+
+**装 Docker 的顺序**（在**管理员**终端里）：
 
 ```powershell
-wsl --install                 # 装 WSL2，完成后必须重启
-# ── 重启后，管理员终端 ──
-winget install --id Docker.DockerDesktop -e
-# 启动 Docker Desktop → Settings 确认 Use WSL 2 based engine
-docker run --rm hello-world   # 验证
+winget install --id Docker.DockerDesktop -e --accept-source-agreements
+# 启动 Docker Desktop → 接受协议 → 跳过登录
+# 设置 → Resources → Advanced → Disk image location 改到 D:\Docker\wsl（趁还是空的，迁移成本为 0）
+docker info --format '{{.OSType}}'   # 必须是 linux
 ```
 
 ### 8.1 与这条相关的排期决定

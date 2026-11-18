@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-18 · 共 42 条
+**最后更新**：2026-11-18 · 共 43 条
 
 ---
 
@@ -63,6 +63,7 @@
 | [40](#40-身份与凭据存两张表密钥只存-sha256) | 身份与凭据怎么存 | **`users` + `api_keys`（只存 sha256）；CASCADE 只给凭据** | 2026-11-17 |
 | [41](#41-鉴权做成-fastapi-依赖currentuserdep越权一律返回-404) | 鉴权在哪一层、越权返什么 | **依赖 + `Annotated` 别名 + AST 守卫；越权 404** | 2026-11-17 |
 | [42](#42-限流进程内令牌桶按用户计不按-key-计) | 限流算法与粒度 | **令牌桶（进程内）+ 按 user 计 + 429 `Retry-After`** | 2026-11-18 |
+| [43](#43-镜像用多阶段构建非-root-且-cmd-走-python--m-app) | 镜像长什么样 | **多阶段 + 非 root + `CMD python -m app`（不裸调 uvicorn）** | 2026-11-18 |
 
 ---
 
@@ -812,6 +813,19 @@
 | **决定** | **B + 按 user 计**，手写约 80 行（`src/app/ratelimit.py`）。限流**挂在 `require_user` 里**（不是独立依赖/中间件）→ 现有 AST 守卫「每条非公开路由必须声明 `CurrentUserDep`」**顺带保证限流覆盖率**。默认 **60 次/分钟 + 突发桶 20**；超限 **429 `RATE_LIMITED` + `Retry-After`（整数秒 ≥1）**。`monotonic()` 计时，`clock` 可注入（测试用假时钟，不 sleep） |
 | **代价** ⚠️ | ① **进程内计数**：`--workers 4` 时实际配额是 4 倍 —— 全局限流必须靠网关层（13a 的 nginx `limit_req`）；② **多实例部署时各进程各算**，用户会在实例间"漂移"地超额；③ 未登录请求**不受限**（因为限流在 `require_user` 之后）→ 将来要按 IP 兜底必须拆到中间件；④ 桶表内存增长：已加 `_MAX_BUCKETS=10_000` + 清满桶，但**大量一次性用户**时仍会短暂占用；⑤ 配额是**固定默认值**，没做「按套餐分档」 |
 | **重审条件** | ① 上多实例 / `--workers > 1` → 换 Redis 或交给网关（⚠️ **那时计时必须改墙钟**：跨进程对齐的是"现在几点"）；② 13f 压测后按实测定默认值（60/20 是估计）；③ 要做「免费/付费分档」→ 桶参数改为按 `users` 上的档位取；④ 需要「未登录也限」→ 拆出中间件 + 按 IP 桶 |
+
+
+---
+
+## 43. 镜像用多阶段构建，非 root，且 CMD 走 `python -m app`
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 门 6「一条命令能部署」一直是空的（#49）。要写 `Dockerfile` 就必须先定三件事：**几阶段**、**用什么用户**、**怎么启动**。第三件与决策 39（优雅停机窗口）直接耦合 —— 一旦启动方式变了，`timeout_graceful_shutdown` 可能静默失效 |
+| **方案对比** | 启动方式：**A `CMD ["python","-m","app"]`** ✅ / **B `CMD ["uvicorn","app.api.app:app"]`**（更像教科书，但**绕过 `__main__.py`** → `settings.host/port` 与 `timeout_graceful_shutdown` 全部失效，必须在命令行重复一遍参数，改一处漏一处）；**C shell 形式 `CMD python -m app`**（多一层 `sh` 当 PID 1，SIGTERM 可能到不了 python）<br>构建方式：**A 单阶段**（带上编译器与构建缓存，镜像大 ~200 MB）/ **B 多阶段**（builder 只交出 `/opt/venv`）<br>用户：**A root** / **B 非 root**（CIS Docker Benchmark 4.1） |
+| **决定** | 启动 **A（exec 形式 `python -m app`）**；构建 **B 多阶段**；用户 **B 非 root（uid/gid 10001）**。`HEALTHCHECK` 探 `/health`（liveness）而**不是** `/health/ready` —— 数据库没就绪不该让 Docker 反复重启容器。同时显式 `COPY alembic/ alembic.ini`（📎 实测 wheel 里没有它们，缺了就 `No 'script_location' key`） |
+| **代价** ⚠️ | ① 镜像里**没有 shell 工具**（无 curl / wget）→ HEALTHCHECK 只能用 `python -c`，失败时 `docker inspect` 里的 traceback 较长；② **非 root 让绑定宿主机目录变麻烦**：bind mount 会盖掉镜像里的 `chown`，SQLite 可能不可写 → 13a-2 的 compose 用**命名卷**而不是 bind mount；③ `python -m app` 的 `reload=settings.debug` 在容器里没意义（且 `--reload` 要装 watchfiles），所以**容器里 `DEBUG` 必须为 false**；④ builder 不落地 → 排错时不能进 builder 阶段看中间状态（要多写一个 `--target builder`） |
+| **重审条件** | ① 需要**多阶段变三阶段**（如加编译型依赖）→ 再拆；② 若编排系统要求**只读根文件系统** → 要给 `PYTHONDONTWRITEBYTECODE` + `/tmp` 挂 tmpfs 再验一遍；③ 若改用 `uvicorn --workers N` → 优雅停机与限流的「进程内」假设全部要重算（见决策 42 代价①）；④ 若换 distroless 基础镜像 → `HEALTHCHECK` 的 `python -c` 要确认解释器路径仍在 |
 
 
 ---
