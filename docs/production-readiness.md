@@ -131,13 +131,13 @@ Step 13 已经补掉了原评审里最要命的一半：**谁都不能白用**�
 
 判据：**一条命令能部署、能回滚、发版不断已有连接？** 「不断已有连接」现在✅（📎 真信号探针：窗口内跑完 / 超窗口明确切断）；「一条命令部署」和「回滚」都还没有 —— 因为没有镜像。
 
-- [ ] `Dockerfile` + `.dockerignore`（阶段 0 的交付物清单里写过，仍缺） · `P1` · 关联 **#49**
+- [ ] `Dockerfile` + `.dockerignore`（阶段 0 的交付物清单里写过，仍缺） · `P1` · 关联 **#49** —— 🟡 **文件已就绪（2026-11-18，13a-1 / 决策 43）**：多阶段 + 非 root + exec 形式 CMD；📎 等价环境（wheel-only + alembic）全链路已验；⚠️ **`docker build` 本身尚未跑**（本机 Docker 安装中）→ 这条保持 `[ ]` 直到镜像真构建出来
 - [x] Alembic 迁移；DDL 移出启动路径（现在 DB 没就绪就 crash loop） · `P1` · 关联 **#50** · 决策 13 / 32 —— ✅ **2026-11-16 完成**（13b-1/2a/2b-1/2b-2：迁移接管 DDL、`lifespan` 删掉 `create_all`；📎 真进程：DB 目录不存在时进程 ALIVE + `/health/ready` **503**，改前是 `Application startup failed. Exiting.`）
 - [x] 优雅停机：摘流量 → 等在途 SSE 结束或超时 → 再退出（现在发版会切断正在生成的回答） · `P1` · 部署流程项（不占待办编号）—— ✅ **2026-11-17 完成**（13c-5/13c-6，决策 39）：`timeout_graceful_shutdown=30s` 接上 + 验收脚本 `scripts/probe_graceful_shutdown.py`（📎 窗口 2s → 信号后 2.27s 切断 PASS；变异「删掉传参」→ FAIL）。⚠️ **仍缺 Linux 侧证据**：`docker stop` 的 SIGTERM 退出码 143 待 13a 复验，且 compose 的 `stop_grace_period` 必须 > 窗口
 - [x] 500 响应带 CORS 头（否则浏览器里前端连 `request_id` 都读不到） · `P1` · 关联 **#57** —— ✅ **2026-11-17 完成**（13c-1，决策 35；📎 500 的 CORS 头与 404 **集合相等**，外来源仍无头）
 - [x] 「返回 201/200 ≠ 已提交」修掉（`commit()` 在响应发出之后才执行，磁盘满会静默丢数据） · `P1` · 关联 **#54** —— ✅ **2026-11-17 完成**（13c-4，决策 38；📎 TDD 改前 3 红；patch `commit` 必失败 → POST/PATCH/DELETE 全 500 且库状态不变）。⚠️ 残余「忘写 commit 被兜底掩盖」→ **#86 已用 AST 静态检查兜住**
 - [ ] 灰度 + 回滚预案（哪怕只是「保留上一版镜像 + 一条回滚命令」） · `P2` · 部署流程项（不占待办编号）
-- [ ] **部署时谁跑迁移**（`docker-compose` 的 init/migrate 服务） · `P0` · 关联 **#84** —— 没有它，新库上线第一条请求就是 `no such table`，而 `/health/ready` 只 `SELECT 1` 发现不了
+- [ ] **部署时谁跑迁移**（`docker-compose` 的 init/migrate 服务） · `P0` · 关联 **#84** —— 没有它，新库上线第一条请求就是 `no such table`，而 `/health/ready` 只 `SELECT 1` 发现不了。📎 13a-1 已验证**镜像里跑得通**（`python -m alembic upgrade head` 在「只有 wheel + `COPY` 进去的 alembic」的目录下 exit 0，建出 5 张表） → 只剩 13a-2 把它接进 compose
 
 ### 门 7 · 数据治理与合规 🔴 **零**
 

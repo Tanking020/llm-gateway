@@ -1,0 +1,54 @@
+# .dockerignore —— 目标是让「构建上下文」里只剩镜像真正需要的东西
+#
+# 判据不是「这个文件重要吗」，而是「镜像里需要它吗」：
+#   运行时只需要 pyproject.toml / uv.lock / src/ / alembic/ / alembic.ini
+
+# ============ 体积大户（本地环境与 VCS 历史）============
+.venv/
+.git/
+.github/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+dist/
+build/
+*.egg-info/
+
+# ============ 密钥红线 ============
+# 【注意】：.env 里是真实密钥。绝不进镜像 —— 镜像层可以被任何人 pull 后查看
+#   连 .env.example 也不带：运行时不读它，文档不属于运行时镜像
+.env
+.env.*
+
+# ============ 不是运行时依赖（占体积 / 拖慢上下文传输）============
+docs/
+notes/
+tests/
+scripts/
+playground/
+.vscode/
+README.md
+CONTRIBUTING.md
+LICENSE
+.gitattributes
+.gitignore
+
+# ============ 本地数据库与临时产物 ============
+# 容器用 .env 的 DATABASE_URL（/app/data/app.db），宿主机上的库不能带进去
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+app.db
+
+# ============ 其他 ============
+Dockerfile
+.dockerignore
+
+# 【注意】：字节码缓存必须排掉 —— 否则本机（甚至另一个 Python 版本）的 .pyc 会被打进镜像，
+#   既占体积又可能和目标解释器不匹配（实测上下文里混进了 cpython-314 的 .pyc）
+__pycache__/
+*.py[cod]
+*.log
