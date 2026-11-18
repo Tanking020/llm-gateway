@@ -25,6 +25,7 @@ X-API-Key: sk_<43 个字符>
 | 没带 / 无效 / 已撤销 | **同一句话同一个码** —— 不告诉你「这把曾经有效」 |
 | 越权访问别人的对话 | **404 `CONVERSATION_NOT_FOUND`**（不是 403）—— 不确认资源存在性 |
 | 为什么不用 Cookie | 自定义头会触发预检，跨站页面发不出 → **顺带免疫 CSRF**（[决策 40](decisions.md)） |
+| **速率配额**（13d-4） | 按**用户**（不是按 key）计：默认 **60 次/分钟**、突发桶 **20**。超限 → **429 `RATE_LIMITED` + `Retry-After`**。⚠️ 进程内计数，`--workers N` 就是 N 倍 —— 生产上还有网关那层 |
 
 **免鉴权端点**（否则负载均衡探测与前端取模型清单会挂）：`/health`、`/health/ready`、`/v1/models*`。
 
@@ -103,6 +104,10 @@ curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
 
 // 越权访问别人的对话 → 404（与"真不存在"完全同形，不确认资源存在性）
 {"error": {"code": "CONVERSATION_NOT_FOUND", "message": "对话不存在：7", "request_id": "b12bb5a33d63"}}
+
+// 超过速率配额（13d-4）：429 + Retry-After（整数秒，>= 1）
+// 【注意】：与 UPSTREAM_RATE_LIMITED 都是 429，但责任方相反 —— 看 code 决定"等"还是"改"
+{"error": {"code": "RATE_LIMITED", "message": "请求太频繁，请稍后重试", "request_id": "7f1c2a9d0e33"}}
 
 // 框架错误：路由不存在 / 方法不允许 —— code 由状态码兜底
 {"error": {"code": "NOT_FOUND", "message": "Not Found", "request_id": "a4175e01d830"}}

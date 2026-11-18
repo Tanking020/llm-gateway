@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     # 【注意】：一旦允许 >= 40960，"4096 多打一个 0" 就再也拦不住了 —— 两者不可兼得
     max_tokens_ceiling: int = Field(default=4096, ge=1, le=32768)
 
+    # 每【用户】每分钟允许多少次请求（持续速率）；按 user.id 计，不按 key
+    # 【注意】：按用户而不是按 key —— 否则"多开几把 key"就等于把配额翻倍
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=100_000)
+
+    # 桶容量 = 允许的瞬时突发（开着页面连点、或脚本冷启动时的一波）
+    # 【注意】：它不改变长期速率，只改变"能不能一口气打出去"
+    rate_limit_burst: int = Field(default=20, ge=1, le=10_000)
+
     @model_validator(mode="after")
     def _forbid_debug_in_prod(self) -> Self:
         # 【注意】：debug=True 会让 @app.exception_handler(Exception) 不执行，
@@ -143,6 +151,8 @@ def startup_config_summary(config: Settings) -> dict[str, object]:
         "request_timeout": config.request_timeout,
         "upstream_total_timeout": config.upstream_total_timeout,
         "graceful_shutdown_timeout": config.graceful_shutdown_timeout,
+        "rate_limit_per_minute": config.rate_limit_per_minute,
+        "rate_limit_burst": config.rate_limit_burst,
     }
 
 

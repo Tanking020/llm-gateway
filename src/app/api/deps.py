@@ -27,6 +27,7 @@ from app.database import SessionMaker
 from app.errors import AppError
 from app.llm_client import LlmClient
 from app.models import User
+from app.ratelimit import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +115,14 @@ def _unauthorized(message: str) -> AppError:
     )
 
 
-async def require_user(request: Request, db: DbDep) -> User:
-    """鉴权依赖：把 X-API-Key 换成「当前用户」，换不到就 401
+async def require_user(request: Request, db: DbDep, config: SettingsDep) -> User:
+    """鉴权 + 限流：把 X-API-Key 换成「当前用户」，换不到就 401；换到了再扣一次令牌
 
-    【注意】：它复用同一个 get_db 会话（FastAPI 按依赖函数缓存结果）——
-        所以这里不需要再开一个 session，也不会和路由的事务边界打架
+    【注意】：限流【故意】挂在鉴权后面而不是独立一格 ——
+        ① 没有身份就没法按人计配额，先有身份才有 429；
+        ② 挂在同一个依赖里，"新增路由忘挂限流"这件事根本不存在
+           （test_source_rules 已经保证每条非公开路由都声明 CurrentUserDep）。
+        代价：将来要做「未登录也按 IP 限流」时必须拆到中间件 —— 那时是一次真实的重构。
     """
     raw = request.headers.get(HEADER_API_KEY)
     if not raw:
@@ -126,6 +130,18 @@ async def require_user(request: Request, db: DbDep) -> User:
     user = await find_user_by_key(db, raw)
     if user is None:
         raise _unauthorized("API key 无效或已撤销")
+
+    limiter: RateLimiter = request.app.state.rate_limiter
+    wait = limiter.acquire(
+        user.id, capacity=config.rate_limit_burst, per_minute=config.rate_limit_per_minute
+    )
+    if wait > 0:
+        raise AppError(
+            "RATE_LIMITED",
+            "请求太频繁，请稍后重试",
+            # 【注意】：Retry-After 只接受整数秒；给 0 等于叫客户端立刻重试
+            headers={"Retry-After": str(limiter.retry_after_seconds(wait))},
+        )
     return user
 
 

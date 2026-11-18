@@ -43,6 +43,7 @@ from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
 from app.logging_setup import configure_logging
 from app.models import Conversation, LlmCall, LlmCallStatus
+from app.ratelimit import RateLimiter
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -80,7 +81,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 【注意】：必须每次启动都新建 —— 复用一个被上一轮测试耗尽的 Semaphore 会永远挡住请求
     app.state.upstream_semaphore = asyncio.Semaphore(settings.max_concurrent_upstream_calls)
 
-    # 启动段[3]：整个进程共享一个上游适配器
+    # 启动段[3]：速率限制器（进程内令牌桶）。每次启动新建 = 每个测试拿到干净的配额
+    # 【注意】：进程内计数在 --workers N 下就是 N 倍 —— 真正的总量要靠网关那层兜（13a 的 nginx）
+    app.state.rate_limiter = RateLimiter()
+
+    # 启动段[4]：整个进程共享一个上游适配器
     async with create_llm_client() as client:
         # 把 client 挂到 app.state 的 llm_client 属性上
         app.state.llm_client = client

@@ -166,7 +166,7 @@ raise RuntimeError      → 一路冒到 ① ServerErrorMiddleware → _unhandle
 |---|---|
 | `__main__.py` | `config`, `logging_setup` |
 | `api/app.py` | `api/deps`, `config`, `constants`, `database`, `errors`, `llm_client`, `logging_setup`, `models`, `schemas` |
-| `api/deps.py` | `auth`, `config`, `constants`, `database`, `errors`, `llm_client`, `models` |
+| `api/deps.py` | `auth`, `config`, `constants`, `database`, `errors`, `llm_client`, `models`, `ratelimit` |
 | `auth.py` | `models` |
 | `keys.py` | `auth`, `database`, `models` |
 | `database.py` | `config` |
@@ -224,13 +224,14 @@ POST /v1/chat/stream
 | **真正"有收尾"的只有 `yield` 依赖** | `return` 依赖没有后半段；本项目只有 `get_db` 是 `yield` |
 | **收尾发生在"响应彻底结束"之后** | 流式路由的"返回"是 `return SseResponse(...)`，此时生成器还没跑 → 收尾要等生成器结束（对应 §8.6 的 ⑪） |
 
-### 2.4.1 三样资源，三种生命周期
+### 2.4.1 五种资源，五种生命周期
 
 | 依赖 | 提供者 | 何时创建 | 何时释放 | 测试能不能换 |
 |---|---|---|---|---|
 | `SettingsDep` | `get_settings()` 直接 `return settings` | **import 那一刻**（模块级单例） | 进程退出 | ✅ `dependency_overrides[get_settings]` |
 | `LlmClientDep` | `get_llm_client(request)` 读 `app.state.llm_client` | **lifespan 启动段** | lifespan 关闭段 `aclose()` | ✅ `dependency_overrides[get_llm_client]` |
 | `DbDep` | `get_db()` **yield** 一个会话 | 依赖被解析时（`SessionMaker()`） | 生成器收尾时（`commit` / `rollback` 之后） | ✅ 也能换，但换了就测不到真事务 |
+| `CurrentUserDep` | `require_user(request, db, config)` 读 `X-API-Key` → 查库 → **扣令牌** | 依赖被解析时（每个需鉴权的路由） | 无状态（令牌扣了就扣了，不退） | ✅ 换 `app.state.rate_limiter` 为假时钟版 |
 | `UpstreamSlotDep` | `get_upstream_slot()` **yield** 一个名额 | 参数最靠前 → **最先解析** | **最后收尾**（依赖按反序退场）→ 覆盖到 `db.commit` 之后 | ✅ 测试里直接替换 `app.state.upstream_semaphore` |
 
 > 📌 会话对象 ≠ 连接：会话在解析时就造好，**连接**要到第一条 SQL 才向池里借，
@@ -240,7 +241,7 @@ POST /v1/chat/stream
 `settings` 与 `llm_client` 都是进程级，`Depends` 只负责**把已有对象递进来**，
 顺带提供"可被替换的接缝"（这正是测试能绕过真库与真上游的原因，见 §11.2）。
 
-⚠️ 四样资源各自**占用多久**不写在这里 —— 连接池那一半的唯一出处是
+⚠️ 上面这些资源各自**占用多久**不写在这里 —— 连接池那一半的唯一出处是
 [tests/README.md](../tests/README.md) §4.2，闸门见 §4.7。
 📌 闸门这一行有个反直觉点：**槽位持有到「整条流结束」**，比 `DbDep` 还长一截 ——
 而这一点是**要的**（"同时在生成的上游调用数"本来就该按整条流算）；同一个 `yield` 机制在 `get_db` 那里却是缺陷（#59）。
@@ -486,6 +487,7 @@ CREATE INDEX ix_api_keys_user_id ON api_keys (user_id);
 > **鉴权**：请求头 `X-API-Key: sk_…`（13d-2）。库里只存 `sha256`，明文只在签发时给一次。
 > 401 形状 `{"error": {"code": "UNAUTHORIZED", …}}` + 响应头 `WWW-Authenticate: ApiKey`。
 > **越权与不存在共用 404**（403 会泄露"这个 id 存在"）。守卫：`tests/test_source_rules.py` 断言"除白名单外每个路由都必须声明 `CurrentUserDep`"。
+> **限流**（13d-4）：`require_user` 里顺带扣一次令牌（按 `user.id`，默认 60 次/分 + 突发 20）→ 超限 **429 `RATE_LIMITED` + `Retry-After`**。⚠️ **挂在鉴权里是刻意的**：没有身份就没法按人计配额，而且这样「新增路由忘挂限流」这件事不存在。
 
 ### 5.1 两个容易混的点
 
@@ -1511,6 +1513,7 @@ POST /v1/conversations
 | 33 | 迁移守卫用子进程跑 alembic CLI | [tests/test_migrations.py](../tests/test_migrations.py) `_run_alembic` | 它自己就是守卫（📎 3 个变异 6 条全红） |
 | 40 | 身份与凭据存两张表，密钥只存 sha256 | [models.py](../src/app/models.py) `User` / `ApiKey`、[auth.py](../src/app/auth.py) `hash_api_key` / `find_user_by_key` | ✅ `test_auth.py::test_key_is_stored_as_sha256_not_plaintext` |
 | 41 | 鉴权做成**依赖**（`CurrentUserDep`）而不是中间件；越权一律 **404** | [deps.py](../src/app/api/deps.py) `require_user` / `CurrentUserDep`、[app.py](../src/app/api/app.py) `require_conversation` / `_fetch_conversation_stats` / `list_conversations` | ✅ `test_auth.py`（13 条）+ `test_source_rules.py::test_every_non_public_route_requires_a_user`（📎 变异：删掉某路由的 `CurrentUserDep` → 点名 `DELETE /v1/conversations/{conv_id}`） |
+| 42 | 限流：进程内令牌桶，按 user 计不按 key 计 | [ratelimit.py](../src/app/ratelimit.py) `RateLimiter`、[deps.py](../src/app/api/deps.py) `require_user` | ✅ `test_rate_limit.py`（9 条；📎 变异「桶不按 user 分」→ `assert 429 == 200`） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
@@ -1545,6 +1548,7 @@ POST /v1/conversations
 | `logging_setup.py` | 日志配置唯一一处 | — |
 | `api/deps.py` | 依赖的集中地（可替换的接缝）：含 `get_db` / `get_llm_client` / `get_upstream_slot` / **`require_user`** | 不含路由 |
 | `auth.py` | API key 的生成 / 哈希 / 查人（请求鉴权与签发 CLI 共用） | 不认识 HTTP 头（只吃明文字符串） |
+| `ratelimit.py` | 令牌桶（按 key 分桶、时钟可注入） | 不认识 HTTP；不自己决定状态码 |
 | `keys.py` | API key 运维 CLI（`python -m app.keys create/list/revoke`） | 不含业务路由；不打印明文到日志 |
 | `api/app.py` | FastAPI 对象 + lifespan + 全部路由 | 不写上游协议细节 |
 | `main.py` | 命令行 demo / ping | 不是 HTTP 入口 |
