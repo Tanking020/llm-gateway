@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-133%20passed-success)
+![Tests](https://img.shields.io/badge/tests-139%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-93%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -17,7 +17,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 133 tests · 93% branch coverage · CI on every push.
+> 139 tests · 93% branch coverage · CI on every push.
 
 ---
 
@@ -205,14 +205,14 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
-uv run pytest -q        # 133 个用例，约 13 s
+uv run pytest -q        # 139 个用例，约 13 s
 ```
 
 | | 结果 |
 |---|---|
 | `ruff check` / `format --check` | 全绿（39 files） |
 | `mypy --strict` | 全绿（42 source files，含 `tests/`、`scripts/` 与 `playground/`） |
-| `pytest -q` | **133 passed** |
+| `pytest -q` | **139 passed** |
 | 分支覆盖 | **93%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
 
@@ -260,11 +260,12 @@ uv run pytest -q        # 133 个用例，约 13 s
 │   ├── logging_setup.py    # dictConfig 单一出口
 │   ├── constants.py        # 跨模块必须一致的常量（如头名 X-Request-ID / X-API-Key）
 │   ├── auth.py             # API key 生成 / sha256 哈希 / 查属主（只存 hash，明文只给一次）
+│   ├── keys.py             # API key 运维 CLI：python -m app.keys create/list/revoke
 │   ├── __main__.py         # 启动入口（让 settings.host/port/debug 生效）
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 133 个用例，按「测哪一层」分为 14 个文件
+├── tests/                  # 139 个用例，按「测哪一层」分为 15 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── playground/             # 一次性实验脚本（不参与交付）
@@ -278,7 +279,7 @@ uv run pytest -q        # 133 个用例，约 13 s
 | 状态 | 内容 |
 |---|---|
 | ✅ **已完成** | HTTP/ASGI 地基 → 参数与契约 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式 → 上游适配器封层 → 持久化与账单 → 配置 / 日志 / 安全 → 回归测试 → CI |
-| 🔜 **进行中（P1，上线前）** | 容器化与反向代理（[#49](docs/todos.md)）· 速率限制（[#37](docs/todos.md)）· 签发 CLI（13d-5）· 池参数按压测定（[#59](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)）· 指标与告警（[#66](docs/todos.md)） |
+| 🔜 **进行中（P1，上线前）** | 容器化与反向代理（[#49](docs/todos.md)）· 速率限制（[#37](docs/todos.md)）· 池参数按压测定（[#59](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)）· 指标与告警（[#66](docs/todos.md)） |
 | 📋 **规划中** | 消息持久化（`messages` 表）· 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
 完整的 87 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
