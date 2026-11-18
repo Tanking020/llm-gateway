@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # llm-app-engineering —— 生产镜像
 #
-# 阶段 1（builder）：装依赖，最终只把 /opt/venv 交出去（不带编译器、不带 uv、不带源码）
+# 阶段 1（builder）：装依赖，最终只把 /opt/venv 交出去（uv 与源码都留在 builder，不进最终层）
 # 阶段 2（runtime）：只带 venv + alembic 配置，以非 root 用户运行
 #
 # 【注意】：CMD 用 `python -m app` 而不是裸 uvicorn —— 这样 settings.host/port 与
@@ -9,16 +9,25 @@
 
 ARG PYTHON_VERSION=3.12
 ARG UV_VERSION=0.12.23
+# 【注意】：COPY --from= 的镜像引用在解析期当阶段名处理，不展开 ARG（实测两种写法都报
+#   invalid reference format）；且部分网络拉不到 ghcr.io 的 blob —— 所以 uv 走 pip 装。
+#   本地构建带 --build-arg PIP_INDEX_URL=<镜像源>，CI 用默认值即可
+ARG PIP_INDEX_URL=https://pypi.org/simple
 
 
 # ============ 阶段 1：builder ============
 FROM python:${PYTHON_VERSION}-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /usr/local/bin/uv
+# 全局 ARG 只在 FROM 行可用，阶段内要用必须重新声明
+ARG UV_VERSION
+ARG PIP_INDEX_URL
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" "uv==${UV_VERSION}"
 
+# 【注意】：pip 走 --index-url，uv 走 UV_DEFAULT_INDEX —— 两个都要设，否则 uv sync 会去撞默认源
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
+    UV_DEFAULT_INDEX="${PIP_INDEX_URL}" \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
 WORKDIR /build
@@ -30,8 +39,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # 再拷源码并安装项目本身
 COPY src ./src
+# 【注意】：uv 默认 editable 装项目（写一个指向 /build/src 的 .pth），而 runtime 阶段没有 /build
+#   → import app 直接 ModuleNotFoundError。必须 --no-editable 把包真正装进 site-packages
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev
+    uv sync --locked --no-dev --no-editable
 
 
 # ============ 阶段 2：runtime ============

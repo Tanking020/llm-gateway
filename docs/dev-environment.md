@@ -93,10 +93,10 @@ uv 报 `warning: Ignoring unsupported Python request ﻿3.12 in version file`，
 | 工具 | 状态 | 怎么确认 | 卡住什么 |
 |---|---|---|---|
 | **WSL / WSL2** | ✅ **3.0.5.0**（2026-11-18） | `wsl --version`；`Test-Path "$env:WINDIR\System32\vmcompute.exe"` = True | — |
-| **Docker / Docker Desktop** | 🟡 **安装中**（2026-11-18） | `docker --version` | 13a 的 `docker build` / `docker stop` 验 143、13e 的 `X-Forwarded-For`、13f 容器内压测 |
+| **Docker / Docker Desktop** | ✅ **4.99.0 / engine 29.9.3**（2026-11-18，WSL2 后端，数据盘在 `D:\Docker\wsl`） | `docker --version`；`docker info --format '{{.OSType}}'` = linux | 已解除。⚠️ 新装的 bin 目录要**重启 VS Code** 才进 PATH |
 | 管理员权限 | ❌ 助手会话里没有 | `WindowsPrincipal.IsInRole(Administrator)` = False | 只能由学习者本人在**管理员终端**操作 |
 | 虚拟化 | ✅ 已开启（VBS Running） | `Win32_ComputerSystem.HypervisorPresent` = True | — |
-| 磁盘 | ✅ C 剩 173 GB / D 剩 455 GB（**同一块 NVMe**） | `Get-CimInstance Win32_LogicalDisk` | 装 Docker 时把**镜像存储位置**指到 D |
+| 磁盘 | ✅ C 剩 174 GB / D 剩 455 GB（**同一块 NVMe**） | `Get-CimInstance Win32_LogicalDisk` | 装 Docker 时把**镜像存储位置**指到 D（已做：`D:\Docker\wsl`） |
 | 系统版本 | Windows 11 **家庭版** 26200 | `Win32_OperatingSystem.Caption` | 家庭版**只能**用 WSL2 后端 |
 
 ### 8.0 WSL 安装时踩到的坑（2026-11-18 真实经历）
@@ -115,6 +115,56 @@ winget install --id Docker.DockerDesktop -e --accept-source-agreements
 # 设置 → Resources → Advanced → Disk image location 改到 D:\Docker\wsl（趁还是空的，迁移成本为 0）
 docker info --format '{{.OSType}}'   # 必须是 linux
 ```
+
+### 8.0b Docker 装好之后还有一步：给 Docker Hub 配镜像加速器（2026-11-18 实测）
+
+`docker.io` / `auth.docker.io` 在国内是 **000（8s 超时）**，不配加速器连 `hello-world` 都拉不下来。
+📎 实测各源（`curl -o NUL -w "%{http_code}|%{time_total}" https://<host>/v2/`）：
+
+| 目标 | 结果 | 结论 |
+|---|---|---|
+| `registry-1.docker.io` | **000**（8s 超时） | ❌ 不可用 |
+| `ghcr.io` | 401 / 0.99s，但 **blob 下载卡死 >12 分钟** | ❌ 只有 API 通 |
+| `docker.m.daocloud.io` | 401 / **0.15s** | ✅ 采用 |
+| `docker.1ms.run` | 401 / **0.17s** | ✅ 采用（备用） |
+| `pypi.tuna.tsinghua.edu.cn` | 200 / 2.2s | ✅（构建期 pip / uv 用） |
+
+**配法**：写 `%USERPROFILE%\.docker\daemon.json`（Docker Desktop 的 Docker Engine 配置），然后 `docker desktop restart`：
+
+```json
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://docker.1ms.run"
+  ]
+}
+```
+
+📎 验证：`docker info --format '{{json .RegistryConfig.Mirrors}}'` 应回显两条。
+
+⚠️ `registry-mirrors` **只对 Docker Hub（docker.io）生效**，不管 `ghcr.io` —— 所以 `Dockerfile` 里不依赖任何 ghcr 镜像（决策 44）。
+⚠️ 数据盘落点**不能**看 `docker info` 的 `DockerRootDir`（WSL2 后端永远是 `/var/lib/docker`，那是**虚拟机内部**路径）。权威来源是注册表：
+
+```powershell
+Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" | ForEach-Object {
+  $p = Get-ItemProperty $_.PSPath; "$($p.DistributionName) -> $($p.BasePath)"
+}
+# 期望：docker-desktop -> \?\D:\Docker\wsl\DockerDesktopWSL\main
+```
+
+### 8.0c 构建镜像（只有两条命令要记）
+
+```powershell
+# 首次 / 换基础镜像后（会用清华 PyPI 源装 uv，避免撞 pypi.org 超时）
+docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t llm-app:dev .
+
+# 跑起来看看
+docker run --rm llm-app:dev whoami                       # 必须 app，不是 root
+docker run --rm llm-app:dev python -m alembic upgrade head
+```
+
+⚠️ `--build-arg PIP_INDEX_URL` **不能省**：省掉就是 `Dockerfile` 里 `ARG` 的默认值 `https://pypi.org/simple`，本机会慢到以为卡死（📎 `pypi.org/simple/uv/` 实测 10s 超时）。CI / 海外构建反而不该传它。
+📎 参考实测：全量构建约 **14~20s**（依赖层命中缓存时 5.5s），镜像 **283 MB**，构建上下文 **26 文件 / 471 KB**。
 
 ### 8.1 与这条相关的排期决定
 

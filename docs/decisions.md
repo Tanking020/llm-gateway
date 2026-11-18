@@ -775,8 +775,8 @@
 | **背景** | uvicorn 的 `timeout_graceful_shutdown` **默认 `None` = 无限等**。发版 / 扩容时，一条慢速滴答的 SSE 就能把 `docker stop` 挂住，最后被 SIGKILL 硬杀：在途流半截消失、`lifespan` 关闭段（`client.aclose()` → `engine.dispose()`）不执行 |
 | **方案对比** | **A 什么都不做**：❌ 无限等，被编排系统强杀<br>**B 只靠 nginx / 编排系统**：❌ 它们只负责「等多久就杀」，不会让我们的进程优雅收尾<br>**C 自己实现信号处理 + 自己管连接**：❌ uvicorn 已内建（停 accept → 对空闲连接发 `ConnectionClosed` → 等 tasks → 超时 `t.cancel()` → 跑 lifespan shutdown），重写等于重造轮子<br>**D 暴露配置 + 交给 uvicorn**：✅ 3 行代码 |
 | **决定** | **D**。新增 `graceful_shutdown_timeout: int = Field(default=30, gt=0, le=300)`（**必须 int** —— 📎 uvicorn 的注解是 `int \| None`，传 float 过不了 mypy，实测报 `arg-type`），在 `__main__.py` 传给 `uvicorn.run(timeout_graceful_shutdown=...)`，并进启动摘要（#85 的守卫强制）。默认 **30s = k8s `terminationGracePeriodSeconds` 默认值**；**验收脚本** = `scripts/probe_graceful_shutdown.py`（13c-6，子进程 + 真信号 → `PASS/FAIL` + 退出码） |
-| **代价** ⚠️ | ① **部署最坏多等 30s**（这正是「让在途流跑完」的代价）<br>② 窗口内跑不完的流**一定**被切断（连接关闭、**无 `[DONE]`**）→ 前端要按「流断了」处理<br>③ **只在 `python -m app` 下生效**：直接 `uvicorn app.api.app:app` 必须带 `--timeout-graceful-shutdown`（13a 的 Dockerfile CMD 必须带）<br>④ 📎 Windows 上 Ctrl+Break 的退出码是 **3**（uvicorn 优雅关闭后**重新 raise 信号**的固有行为，Linux 是 143），与配置无关 |
-| **重审条件** | ① **13a `docker stop` 实测**：拿到 Linux SIGTERM 的真实退出码与耗时；若「最坏 30s 才退出」影响发版节奏 → 调小或按 `upstream_total_timeout` 分层。⚠️ **`docker stop` 默认只等 10s 就 SIGKILL**（compose 的 `stop_grace_period` 默认同为 10s），比本窗口 30s **小** → 13a 必须显式写 `stop_grace_period`（如 `40s`）或把窗口降到 10s 以内，否则窗口永远走不完<br>② 13f 压测后若发现长回答占比高 → 重新评估窗口（可能需要 >30s，同时调大编排宽限期）<br>③ 若编排系统改为「先摘流量、等待 N 秒再发 SIGTERM」（preStop hook）→ 窗口可显著调小<br>④ 若要做「零中断发版」（双版本并存）→ 这套单进程优雅停机不够，需要滚动 + 就绪探针配合 |
+| **代价** ⚠️ | ① **部署最坏多等 30s**（这正是「让在途流跑完」的代价）<br>② 窗口内跑不完的流**一定**被切断（连接关闭、**无 `[DONE]`**）→ 前端要按「流断了」处理<br>③ **只在 `python -m app` 下生效**：直接 `uvicorn app.api.app:app` 必须带 `--timeout-graceful-shutdown`（13a 的 Dockerfile CMD 必须带）<br>④ 📎 Windows 上 Ctrl+Break 的退出码是 **3**。**Linux 容器实测是 `0`** —— 2026-11-18 订正：原文写「Linux 是 143」是**错的**。`143 = 128 + 15` 表示进程**没处理** SIGTERM 就被信号打死，那是「信号处理器没装上」的 bug 信号；uvicorn 装了处理器并正常退出 → 退出码 **0** |
+| **重审条件** | ① ~~**13a `docker stop` 实测**~~ → ✅ **2026-11-18 已实测（13a-3，真容器）**：📎 **无在途请求** 0.60s / 0.74s，`ExitCode=0`（窗口是**上限**不是固定等待）；📎 **有在途请求**（上游黑洞，窗口设 3s）3.71s / 3.85s，`ExitCode=0`，日志走完 `Shutting down → Application shutdown complete`；📎 1 次（默认 `docker stop` 参数）出现 `ExitCode=137 @3.55s` 且 lifespan 未走完 —— **未定位**，登记 **#88**。⚠️ **`docker stop` 默认只等 10s 就 SIGKILL**（compose 的 `stop_grace_period` 默认同为 10s），比默认窗口 30s **小** → 13a-2 必须显式写 `stop_grace_period`（如 `40s`）或把窗口降到 10s 以内，否则窗口永远走不完<br>② 13f 压测后若发现长回答占比高 → 重新评估窗口（可能需要 >30s，同时调大编排宽限期）<br>③ 若编排系统改为「先摘流量、等待 N 秒再发 SIGTERM」（preStop hook）→ 窗口可显著调小<br>④ 若要做「零中断发版」（双版本并存）→ 这套单进程优雅停机不够，需要滚动 + 就绪探针配合 |
 
 ---
 
@@ -827,6 +827,18 @@
 | **代价** ⚠️ | ① 镜像里**没有 shell 工具**（无 curl / wget）→ HEALTHCHECK 只能用 `python -c`，失败时 `docker inspect` 里的 traceback 较长；② **非 root 让绑定宿主机目录变麻烦**：bind mount 会盖掉镜像里的 `chown`，SQLite 可能不可写 → 13a-2 的 compose 用**命名卷**而不是 bind mount；③ `python -m app` 的 `reload=settings.debug` 在容器里没意义（且 `--reload` 要装 watchfiles），所以**容器里 `DEBUG` 必须为 false**；④ builder 不落地 → 排错时不能进 builder 阶段看中间状态（要多写一个 `--target builder`） |
 | **重审条件** | ① 需要**多阶段变三阶段**（如加编译型依赖）→ 再拆；② 若编排系统要求**只读根文件系统** → 要给 `PYTHONDONTWRITEBYTECODE` + `/tmp` 挂 tmpfs 再验一遍；③ 若改用 `uvicorn --workers N` → 优雅停机与限流的「进程内」假设全部要重算（见决策 42 代价①）；④ 若换 distroless 基础镜像 → `HEALTHCHECK` 的 `python -c` 要确认解释器路径仍在 |
 
+
+---
+
+## 44. 镜像里的 uv 用 pip 装，项目用 `--no-editable` 装
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 13a-3 第一次真跑 `docker build` 就连续炸两次：① `COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION}` 报 `failed to parse stage name ... invalid reference format` —— `COPY --from=` 的镜像引用在**解析期**就被当阶段名处理，**不展开 `ARG`**（📎 实测：全局 ARG 版、阶段内重新声明版**两种都失败**）；② 就算写字面量，本机 `ghcr.io` 的 **blob 下载卡死 >12 分钟**（API 通、0.99s 返回 401，但层下不来）。另外 `uv sync` **默认 editable** 装项目 → 写一个指向 `/build/src` 的 `.pth`，而 runtime 阶段没有 `/build` → `import app` 直接 `ModuleNotFoundError` |
+| **方案对比** | **A `COPY --from=ghcr.m.daocloud.io/astral-sh/uv:0.12.23`**：改动最小，但把第三方国内镜像**烧进** Dockerfile（CI / 海外构建绕路）、`ARG` 仍不能展开只能硬编码版本、镜像长期可用性不可控<br>**B 从 GitHub releases 下 uv 二进制**：📎 实测 **32 KB/s**，12s 只下 400 KB（包 15 MB ≈ 8 分钟），且随时断<br>**C 把 uv 二进制提交进 git**：二进制进仓库，还要覆盖多平台<br>**D `pip install uv==<ver>` + `ARG PIP_INDEX_URL`（默认 `pypi.org`）**：✅ 一个旋钮解决「本机慢 / CI 正常」<br>**E 项目继续 editable + `ENV PYTHONPATH=/build/src`**：❌ 等于把源码再拷一份进 runtime |
+| **决定** | **D + `--no-editable`**。builder 里 `RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" "uv==${UV_VERSION}"`（`ARG` 在 `RUN` 里**能**展开，与 `COPY --from` 不同）；`ENV UV_DEFAULT_INDEX="${PIP_INDEX_URL}"` 让 `uv sync` 也走同一源（pip 看 `--index-url`，uv 看 `UV_DEFAULT_INDEX`，两个都要设）；第二段 `uv sync --locked --no-dev --no-editable`。本地构建带 `--build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` |
+| **代价** ⚠️ | ① builder 多一层 pip（📎 实测 **+9.4s**，有缓存后接近 0）<br>② 本地构建必须记得传 `--build-arg PIP_INDEX_URL`，忘了就退化成撞 `pypi.org` 超时<br>③ `--no-editable` 让「改代码 → 镜像生效」必须重建（本来也要重建）<br>④ 📎 `--no-editable` 与 `--locked` 同时用没问题，但**单独**跑 `uv sync` 而不带 `--locked` 会改写 `uv.lock` |
+| **重审条件** | ① 若 CI / 生产网络能正常拉 `ghcr.io`，可评估改回官方 `COPY --from`（少一层 pip）；② 若 uv 官方提供国内可用的 OCI 镜像，同样重审；③ 若镜像构建时长成为瓶颈，把 uv 二进制**固定在基础镜像**里（自建 base image）比 pip 装更省 |
 
 ---
 
