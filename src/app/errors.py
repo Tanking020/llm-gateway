@@ -71,6 +71,9 @@ _STATUS_BY_CODE: dict[str, int] = {
     "INVALID_MAX_TOKENS": status.HTTP_400_BAD_REQUEST,
     # 401：没带凭据 / 凭据无效或已撤销。响应带 WWW-Authenticate，符合 RFC 9110 的要求
     "UNAUTHORIZED": status.HTTP_401_UNAUTHORIZED,
+    # 429：【我们】限这个客户端（与 UPSTREAM_RATE_LIMITED 不同，那个是上游限我们）
+    # 【注意】：两者都是 429 但责任方相反 —— 客户端看到 429 时先看 code 再决定"等"还是"改"
+    "RATE_LIMITED": status.HTTP_429_TOO_MANY_REQUESTS,
     # 404 有两种来源、两种含义：客户端据此能区分"模型名打错"和"对话 id 不存在"
     "MODEL_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "CONVERSATION_NOT_FOUND": status.HTTP_404_NOT_FOUND,

@@ -16,6 +16,8 @@ _WHITELIST = {
     "request_timeout",
     "upstream_total_timeout",
     "graceful_shutdown_timeout",
+    "rate_limit_per_minute",
+    "rate_limit_burst",
 }
 
 # 每个「故意不打」的字段都必须写理由：写不出理由的，就该进摘要（#85）
