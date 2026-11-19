@@ -1,4 +1,4 @@
-# 单机部署栈（13a-2）。⚠️ 还没有 nginx（2c）
+# 单机部署栈（13a-2）。入口只有 nginx（2c），app 不再发布宿主端口
 name: llm-app
 
 # 【注意】：app 与 migrate 必须指向同一个库；两处各写一遍迟早漂移，所以用 YAML 锚点共享
@@ -22,12 +22,16 @@ services:
       PORT: "8000"
       # 【注意】：四个斜杠 = 绝对路径 /app/data/app.db；三个斜杠是相对路径
       DATABASE_URL: *database-url
+      # 【注意】：uvicorn 默认只信 127.0.0.1 的 X-Forwarded-For；不放开这一项，
+      #   访问日志里的客户端 IP 会全是 nginx 的（#56）
+      FORWARDED_ALLOW_IPS: "*"
     # 【注意】：迁移没成功就不启动 app —— 否则空库第一请求就是 no such table（#84、K93）
     depends_on:
       migrate:
         condition: service_completed_successfully
-    ports:
-      - "8000:8000"
+    # 【注意】：不再 publish 到宿主 —— 只有 compose 网络内的 proxy 能连（13a-2c）
+    expose:
+      - "8000"
     volumes:
       # 【注意】：必须命名卷不是 bind mount —— Linux 宿主上 bind mount 属主是 root:root，
       #   uid 10001 写不进去（本机 v9fs 是 777 掩盖了这一点），且实测慢 3.8 倍
@@ -50,6 +54,29 @@ services:
       - app_data:/app/data
     # 【注意】：一次性的，失败就停在那里等人工看；自动重启只会刷日志掩盖失败
     restart: "no"
+
+  # 反代：唯一对宿主发布端口的服务（13a-2c）
+  proxy:
+    image: nginx:1.29-alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      # 【注意】：ro —— 容器不该改配置；挂到 conf.d 是替换镜像自带的默认站点
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # 【注意】：nginx 对 SIGTERM 是 fast shutdown（掐断在途连接），SIGQUIT 才优雅退出。
+    #   而 compose stop 是「依赖者先停」（📎 实测 proxy → app），这一环决定在途流会不会被砍
+    stop_signal: SIGQUIT
+    stop_grace_period: 40s
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
 volumes:
   app_data:

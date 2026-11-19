@@ -33,6 +33,7 @@ notes/
 tests/
 scripts/
 playground/
+deploy/
 .vscode/
 README.md
 CONTRIBUTING.md

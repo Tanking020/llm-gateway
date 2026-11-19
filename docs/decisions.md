@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-18 · 共 43 条
+**最后更新**：2026-11-19 · 共 46 条
 
 ---
 
@@ -66,6 +66,7 @@
 | [43](#43-镜像用多阶段构建非-root-且-cmd-走-python--m-app) | 镜像长什么样 | **多阶段 + 非 root + `CMD python -m app`（不裸调 uvicorn）** | 2026-11-18 |
 | [44](#44-镜像里的-uv-用-pip-装项目用---no-editable-装) | 镜像里怎么装依赖 | **pip 装 uv + `uv sync --no-editable`** | 2026-11-18 |
 | [45](#45-部署时迁移由一次性-migrate-服务执行app-等它成功再起) | 部署时谁跑迁移 | **一次性 `migrate` 服务 + `depends_on: service_completed_successfully`** | 2026-11-19 |
+| [46](#46-入口只有-nginxapp-不再对宿主暴露端口) | 流量入口长什么样 | **nginx 独占 80；`proxy_buffering off`；`resolver` 重解析；SIGQUIT 优雅退出** | 2026-11-19 |
 
 ---
 
@@ -853,6 +854,18 @@
 | **决定** | **D**。`migrate` 用**同一镜像**（`image: llm-app:dev`，不重复 `build`）、**同一命名卷**、`command: ["python","-m","alembic","upgrade","head"]`、`restart: "no"`；只注入 `DATABASE_URL`，**不挂 `env_file`** —— 迁移用不上 `LLM_API_KEY`，密钥不该进这个容器。数据库连接串用 YAML 锚点（`x-database-url: &database-url`）两处共享，避免指针漂移 |
 | **代价** ⚠️ | ① 多一个服务定义与一段启动等待（📎 空库 3 条迁移约 1s，可忽略）<br>② 每次 `docker compose up` 都会**重跑**一次 migrate（📎 实测幂等：库已到 head 时 exit 0、数据不动）<br>③ `up` **不带** `--build` 时会用本地旧镜像，改了代码必须显式 `--build` —— 这条限制在加 migrate 之前就存在，不是新引入的<br>④ 迁移失败时 app 状态停在 `created`（不会 running），必须看 `compose ps -a` 才看得见；只 `docker compose ps` 会以为什么都没发生<br>⑤ 单机 compose 的 `service_completed_successfully` 换到 k8s 就是 initContainer / Job，语义等价但要重写编排文件 |
 | **重审条件** | ① 迁移时长涨到拖慢发版（> 30s）→ 评估只在新版本镜像变化时跑；② 上多节点后需要「只跑一次」的全局锁 → 迁移里加 advisory lock 或改由发布流水线触发；③ 若 `/health/ready` 也改成校验 `alembic_version == head`（K93 的第二层），这条决策的覆盖面收窄，可重审是否还需要 `depends_on` |
+
+---
+
+## 46. 入口只有 nginx，app 不再对宿主暴露端口
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 13a-2a/2b 的 compose 用 `ports: "8000:8000"` 把 uvicorn 直接发布到宿主。上线前必须回答三件事：**TLS/统一入口在哪一层**、**流式会不会被代理攒住**、**真实客户端 IP 怎么进来**（[#56](todos.md)）。另外 `compose stop` 是「依赖者先停」，一旦有反代，**它先死还是 app 先死**直接决定在途流会不会被砍（决策 39） |
+| **方案对比** | **A 继续直接暴露 app:8000**：零改动，但没有 TLS、没有统一入口、限流/大包防护都得写进应用；客户端 IP 只能是 TCP 对端<br>**B 用 Caddy 自动 HTTPS**：证书自动化最省心，但**本机没有域名，验不了**，等于把「没验证的配置」发上线<br>**C nginx 独占 80 + app 只 `expose`**：✅ 一层解决 TLS 落点、SSE、大包、真实 IP；nginx 是运维常识，面试能讲清<br>**D 在应用里加中间件做 TLS 终止**：把证书生命周期塞进业务进程，发版即断连 |
+| **决定** | **C**，且四个细节必须显式写：① **`proxy_buffering off`** —— nginx 默认 `on` 会把 SSE 攒成一块（📎 5 帧 × 0.4s 的流：`off` 逐帧 0.07/0.47/0.87…，`on` 全部在 2.07s 到达）；② **`resolver 127.0.0.11 valid=10s` + `server app:8000 resolve`** —— nginx 默认只在上线时解析一次上游 IP，app 重建换 IP 后**永久 502**（📎 实测：app IP 从 `.2` 变 `.4` 后日志 `connect() failed ... upstream: "http://172.18.0.2:8000"`，加 `resolve` 后同一场景 200）；③ **`stop_signal: SIGQUIT`** —— nginx 对 SIGTERM 是 fast shutdown（📎 compose `stop` 输出顺序确实是 `proxy Stopped → app Stopping`，所以反代先走；SIGQUIT 才让它「不再接新连接、把在途请求跑完」）；④ **`depends_on: app: condition: service_healthy`** —— 反代不该在 app 还没就绪时就开始 502 |
+| **代价** ⚠️ | ① 多一个容器 + 一份 `deploy/nginx.conf`；② **`client_max_body_size 1m` 的 413 是 nginx 的 HTML 页，不是我们的 JSON envelope**（📎 实测 `content-type: text/html`、`server: nginx/1.29.8`），而 app 自己的超限是 **422 JSON** → 「请求太大」出现两种状态码两种形状（[#89](todos.md)）<br>③ `proxy_read_timeout 130s` 是**手工算出来的**（> `upstream_total_timeout` 120s），改那个旋钮必须同步改这里 —— 两处副本<br>④ 停服链多一环：proxy 停 → app 停，任何一环的信号/宽限期配错都会砍掉在途流（📎 实测 stop 期间在途流跑到 4.8s 收到 `[DONE]`，三容器 exit 0）<br>⑤ `FORWARDED_ALLOW_IPS="*"` 意味着**信任任何来源的 `X-Forwarded-For`** —— 只有在「app 端口不对宿主发布」时才是安全的 |
+| **重审条件** | ① 有域名 + 要自动证书 → 评估 Caddy 或 certbot 是否比手写 nginx 更省；② 上多副本/多机 → 上游要从 compose 服务名换成真实负载均衡器，`resolver` 那套跟着改；③ 若 #89 决定「让 app 的 422 成为唯一出口」，`client_max_body_size` 要抬到与 `MAX_TOTAL_CHARS` 对应的字节数并重估；④ 若引入 CDN/WAF，`X-Forwarded-For` 的可信链要重算（`real_ip` 模块 + 只信自己那层） |
 
 ---
 

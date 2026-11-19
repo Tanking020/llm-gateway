@@ -1361,17 +1361,17 @@ POST /v1/conversations
 | 数据库池 | `AsyncAdaptedQueuePool`：`size=5` + `max_overflow=10` = **15**，等连接 `pool_timeout=30s` | [database.py](../src/app/database.py) |
 | 上游 HTTP 池 | `max_connections=100`（httpx 默认 `Limits`） | [llm_client.py](../src/app/llm_client.py) |
 | SQLite 忙等 | `busy_timeout = 5000ms` | SQLite/`sqlite3` 默认 |
-| 部署产物 | **CI 已有**（`.github/workflows/ci.yml`，push/PR 跑四道门）；**镜像 + compose 栈已就绪**（13a-1 / 13a-2a / 13a-2b，📎 真 `docker build` + 空库部署验过）；**没有** nginx（13a-2c）、灰度与回滚 | 待办 #49（13a-2c） |
+| 部署产物 | **CI 已有**（`.github/workflows/ci.yml`，push/PR 跑四道门）；**镜像 + compose 栈已就绪**（13a-1 / 13a-2a / 13a-2b / 13a-2c，📎 真 `docker build` + 空库部署 + 经 nginx 验过）；**没有**灰度与回滚 | 待办 #49（灰度） |
 
 ⭐ 一句话：**第一道顶不住的是我们自己设的闸门（`max_concurrent_upstream_calls`，默认 4）**；
 闸门之后才是「15 条数据库连接」和「SQLite 只能有一个写者」；上游 HTTP 池（100）永远排最后。
 "多副本"仍然不存在 → 所有进程内计数都是单进程的账。逐层推导见 [§13.3](#133-五层上限谁在限谁2026-11-04)。
 
-### 13.2 上线前这张图会变的三处（都还没做）
+### 13.2 上线前这张图会变的三处
 
 | 会变什么 | 为什么 | 待办 |
 |---|---|---|
-| 前面多一层反向代理 | CORS / 限流 / body 上限 / 给 500 补头 在那一层做更省事 | #38 #57 |
+| ~~前面多一层反向代理~~ ✅ **已做（13a-2c，决策 46）** | CORS / 限流 / body 上限 / 给 500 补头 在那一层做更省事。现在：`浏览器 → nginx:80 → app:8000`，app 只 `expose` | #38 #57 #89（413 形状） |
 | SQLite → PostgreSQL | 单写者会把并发退化成排队 | 决策 13 |
 | 进程 → 多副本 | 单进程里的任何计数（`Semaphore` / 内存限流）都会变成 N 倍 | #44 |
 
@@ -1516,6 +1516,7 @@ POST /v1/conversations
 | 42 | 限流：进程内令牌桶，按 user 计不按 key 计 | [ratelimit.py](../src/app/ratelimit.py) `RateLimiter`、[deps.py](../src/app/api/deps.py) `require_user` | ✅ `test_rate_limit.py`（9 条；📎 变异「桶不按 user 分」→ `assert 429 == 200`） |
 | 43 | 镜像多阶段 + 非 root + exec 形式 `python -m app` | [Dockerfile](../Dockerfile)、[.dockerignore](../.dockerignore) | ✅ `tests/test_docker_assets.py`（5 条；📎 7 个变异全红）+ 📎 真 `docker build` / `docker run`（13a-1c） |
 | 45 | 部署时迁移由一次性 `migrate` 服务执行，app 等它成功再起 | [docker-compose.yml](../docker-compose.yml) `migrate` / `app.depends_on` | ✅ `test_docker_assets.py::test_compose_migrates_before_app_starts` + `::test_compose_defines_database_url_once`（📎 6 个变异全红：删 `depends_on` / 换卷 / 加 `env_file` / 抄第二份连接串 / app 自己跑迁移 / `restart: always`） |
+| 46 | 入口只有 nginx，app 不发布宿主端口 | [docker-compose.yml](../docker-compose.yml) `proxy`、[deploy/nginx.conf](../deploy/nginx.conf) | ⚠️ 无自动化用例 —— 靠隔离项目实测（📎 401/201 形状不变、宿主 8000 不通、SSE 逐帧到达、stop 期间流跑到 `[DONE]`、`resolver` 修正 IP 变更后的 502） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
@@ -1552,7 +1553,8 @@ POST /v1/conversations
 | `auth.py` | API key 的生成 / 哈希 / 查人（请求鉴权与签发 CLI 共用） | 不认识 HTTP 头（只吃明文字符串） |
 | `ratelimit.py` | 令牌桶（按 key 分桶、时钟可注入） | 不认识 HTTP；不自己决定状态码 |
 | `Dockerfile`（仓库根） | 多阶段镜像：builder 只交出 `/opt/venv`；runtime 非 root + exec 形式 CMD | 不写业务配置（用环境变量注入） |
-| `docker-compose.yml`（仓库根） | 单机栈：`app` + **一次性 `migrate`**（同镜像 / 同命名卷，`depends_on: service_completed_successfully`）+ **命名卷** `app_data:/app/data` + `stop_grace_period: 40s`；连接串用 `x-database-url` 锚点共享；⚠️ 还没有 nginx（2c） | 不写密钥（`app` 的 `env_file: .env` 从宿主读；`migrate` **只拿 `DATABASE_URL`**）；不重复写 `healthcheck`（继承镜像） |
+| `docker-compose.yml`（仓库根） | 单机栈：**`proxy`（nginx，唯一发布 80）** → `app`（`expose: 8000`，健康后才起反代）→ 一次性 `migrate`；**命名卷** `app_data:/app/data`；连接串用 `x-database-url` 锚点共享 | 不写密钥（`app` 的 `env_file: .env` 从宿主读；`migrate` **只拿 `DATABASE_URL`**）；不重复写 app 的 `healthcheck`（继承镜像） |
+| `deploy/nginx.conf`（仓库根下 `deploy\`） | 反代唯一配置：`proxy_buffering off`（不关流式就废）、`resolver 127.0.0.11 valid=10s` + `server app:8000 resolve`（否则 app 换 IP 后永久 502）、`client_max_body_size 1m`、`/nginx-health` | 不放业务逻辑；不改 app 的响应形状（⚠️ 例外：413 是 nginx 自己的 HTML 页 → #89） |
 | `.dockerignore` | 构建上下文里「白名单之外的一切」（📎 26 文件 / 471 KB） | 不排除 `uv.lock` / `alembic` / `src`（会构建失败） |
 | `keys.py` | API key 运维 CLI（`python -m app.keys create/list/revoke`） | 不含业务路由；不打印明文到日志 |
 | `api/app.py` | FastAPI 对象 + lifespan + 全部路由 | 不写上游协议细节 |
