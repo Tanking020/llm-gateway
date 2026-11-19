@@ -137,7 +137,7 @@ Step 13 已经补掉了原评审里最要命的一半：**谁都不能白用**�
 - [x] 500 响应带 CORS 头（否则浏览器里前端连 `request_id` 都读不到） · `P1` · 关联 **#57** —— ✅ **2026-11-17 完成**（13c-1，决策 35；📎 500 的 CORS 头与 404 **集合相等**，外来源仍无头）
 - [x] 「返回 201/200 ≠ 已提交」修掉（`commit()` 在响应发出之后才执行，磁盘满会静默丢数据） · `P1` · 关联 **#54** —— ✅ **2026-11-17 完成**（13c-4，决策 38；📎 TDD 改前 3 红；patch `commit` 必失败 → POST/PATCH/DELETE 全 500 且库状态不变）。⚠️ 残余「忘写 commit 被兜底掩盖」→ **#86 已用 AST 静态检查兜住**
 - [ ] 灰度 + 回滚预案（哪怕只是「保留上一版镜像 + 一条回滚命令」） · `P2` · 部署流程项（不占待办编号）
-- [ ] **部署时谁跑迁移**（`docker-compose` 的 init/migrate 服务） · `P0` · 关联 **#84** —— 没有它，新库上线第一条请求就是 `no such table`，而 `/health/ready` 只 `SELECT 1` 发现不了。📎 13a-1 已验证**镜像里跑得通**（`python -m alembic upgrade head` 在「只有 wheel + `COPY` 进去的 alembic」的目录下 exit 0，建出 5 张表） → 只剩 13a-2 把它接进 compose
+- [ ] **部署时谁跑迁移**（`docker-compose` 的 init/migrate 服务） · `P0` · 关联 **#84** —— 🟡 **2026-11-19 进展（13a-2a）**：compose 骨架已就绪（`app` + **命名卷** + `stop_grace_period: 40s`），📎 `docker compose up -d` → **healthy**、`whoami=app`、`HOST`/`DATABASE_URL` 被 `environment` 正确覆盖、卷内 `app.db` 属主 **10001:10001**、`down` 后重建**数据仍在**；⚠️ **迁移仍靠手工 `exec`**，2b 才接成一次性服务。原记录： —— 没有它，新库上线第一条请求就是 `no such table`，而 `/health/ready` 只 `SELECT 1` 发现不了。📎 13a-1 已验证**镜像里跑得通**（`python -m alembic upgrade head` 在「只有 wheel + `COPY` 进去的 alembic」的目录下 exit 0，建出 5 张表） → 只剩 13a-2 把它接进 compose
 
 ### 门 7 · 数据治理与合规 🔴 **零**
 
