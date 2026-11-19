@@ -25,12 +25,16 @@ _ACCESS_LOGGER = "app.api.app"
 def test_access_log_line_has_client_and_request_id(
     client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """回归：每行访问日志都要能回答「谁 + 哪次请求」"""
+    """回归：每行访问日志都要能回答「谁 + 哪次请求」（13e-2 起是结构化字段，不再拼字符串）"""
     caplog.set_level(logging.INFO, logger=_ACCESS_LOGGER)
     client.get("/health")
-    line = next(r.getMessage() for r in caplog.records if r.name == _ACCESS_LOGGER)
-    assert "client=" in line, f"访问日志缺客户端 IP：{line}"
-    assert "request_id=" in line
+    record = next(r for r in caplog.records if r.name == _ACCESS_LOGGER)
+    # 【注意】：字段是运行时挂在 LogRecord 上的（extra=），用 vars() 取，静态类型检查才不抱怨
+    fields = vars(record)
+    assert fields["client"] == "testclient", f"访问日志缺客户端 IP：{fields}"
+    assert fields["request_id"]
+    assert fields["path"] == "/health"
+    assert fields["status"] == 200
 
 
 @pytest.mark.parametrize(
@@ -58,17 +62,17 @@ def test_client_label_neutralizes_external_input(raw: str | None, expected: str)
 
 
 @pytest.fixture
-def forged_xff_server() -> Iterator[tuple[str, list[str]]]:
+def forged_xff_server() -> Iterator[tuple[str, list[logging.LogRecord]]]:
     """真 uvicorn：信任名单里【没有】127.0.0.1，于是伪造的 XFF 必须被忽略
 
     【注意】：不能用 TestClient —— 它走 ASGI 直连，ProxyHeadersMiddleware 不在栈里，
         这条用例会在「守卫其实没生效」的情况下依然通过
     """
-    lines: list[str] = []
+    records: list[logging.LogRecord] = []
 
     class _Grab(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
-            lines.append(record.getMessage())
+            records.append(record)
 
     handler = _Grab()
     logger = logging.getLogger(_ACCESS_LOGGER)
@@ -99,7 +103,7 @@ def forged_xff_server() -> Iterator[tuple[str, list[str]]]:
         raise RuntimeError("uvicorn 10 秒内没起来")
     port = server.servers[0].sockets[0].getsockname()[1]
     try:
-        yield f"http://127.0.0.1:{port}", lines
+        yield f"http://127.0.0.1:{port}", records
     finally:
         server.should_exit = True
         thread.join(timeout=10)
@@ -108,12 +112,14 @@ def forged_xff_server() -> Iterator[tuple[str, list[str]]]:
 
 
 def test_forged_xff_is_ignored_when_peer_is_not_the_trusted_proxy(
-    forged_xff_server: tuple[str, list[str]],
+    forged_xff_server: tuple[str, list[logging.LogRecord]],
 ) -> None:
     """回归：「只信自己那层」—— 不可信对端带的 X-Forwarded-For 一律不算数"""
-    base, lines = forged_xff_server
+    base, records = forged_xff_server
     httpx.get(f"{base}/health", headers={"X-Forwarded-For": "1.2.3.4"})
-    assert any("client=127.0.0.1" in line for line in lines), (
-        f"伪造的 X-Forwarded-For 被采信了：{lines}"
+    # 【注意】：同一 logger 上还有启动摘要等没有 client 字段的记录 —— 先按结构筛出访问日志
+    access = [vars(r) for r in records if "request_id" in vars(r)]
+    assert any(fields.get("client") == "127.0.0.1" for fields in access), (
+        f"伪造的 X-Forwarded-For 被采信了：{[f.get('client') for f in access]}"
     )
-    assert not any("client=1.2.3.4" in line for line in lines)
+    assert not any(fields.get("client") == "1.2.3.4" for fields in access)

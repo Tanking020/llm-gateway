@@ -192,15 +192,16 @@ async def add_request_id(
         duration_ms = (time.perf_counter() - start) * 1000
         # 访问日志属于 INFO（正常发生的事）：请求失败也是这一行，失败详情由异常处理器的 ERROR 记
         logger.info(
-            "%s %s -> %s %.1fms client=%s request_id=%s",
-            request.method,
-            request.url.path,
-            # getattr 是 Python 内置函数，作用是根据名字获取对象的属性
-            # 异常路径上没有 response 时，用 ERR 占位
-            getattr(response, "status_code", "ERR"),
-            duration_ms,
-            _client_label(request),
-            request_id,
+            "request",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                # 【注意】：异常路径上没有 response，用 ERR 占位而不是丢掉这一行
+                "status": getattr(response, "status_code", "ERR"),
+                "duration_ms": round(duration_ms, 1),
+                "client": _client_label(request),
+                "request_id": request_id,
+            },
         )
 
     # 走到这里说明没有异常（异常路径根本到不了这行）:断言同时帮 mypy 收窄类型

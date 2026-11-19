@@ -1160,21 +1160,25 @@ root  (WARNING, 有我们的 handler)
  └── uvicorn.access            ← 本项目**主动关掉**（访问日志由中间件自己打，带 request_id）
 ```
 
-### 10.3 输出格式
+### 10.3 输出格式：一行一个 JSON 对象（决策 48）
 
-```text
-2026-11-02 00:19:56,291 INFO    app.api.app | POST /v1/chat/stream -> 200 11.6ms client=203.0.113.7 request_id=07e575948a97
-└──────── 时间 ────────┘ └级别┘ └── logger 名 ──┘ └────────────────────── message ──────────────────────────────────────┘
+```json
+{"ts": "2026-11-19T12:34:20.117+00:00", "level": "INFO", "logger": "app.api.app", "msg": "request", "method": "GET", "path": "/health", "status": 200, "duration_ms": 0.3, "client": "203.0.113.7", "request_id": "f4f5d692bbc6"}
 ```
 
 | 字段 | 来源 | 为什么必须有 |
 |---|---|---|
+| `ts` | `datetime.fromtimestamp(record.created, UTC)` | 带 **UTC 偏移**，跨时区排查不用换算 |
+| `level` / `logger` / `msg` | `LogRecord` | 最小可读三件套；`msg` 仍是人拼的字符串 |
 | `client=` | `request.client.host`，**已被 uvicorn 按信任链改写**（决策 47） | 区分「一个客户端刷 1 万次」和「一万个客户端各一次」（#56） |
 | `request_id=` | 请求头 `X-Request-ID` 或新生成 | 用户贴一个 id 就能定位整条链路 |
-| 耗时 `%.1fms` | `perf_counter` 差值 | 只有一个数字，但它是 p99 的原料（13f） |
+| `duration_ms` | `perf_counter` 差值 | 只有一个数字，但它是 p99 的原料（13f） |
+| `exc` | `formatter.formatException(record.exc_info)` | **换行被 `json.dumps` 转义** → traceback 仍是一行，不会被采集器切碎 |
 
 ⚠️ `client` 是**外部输入**：`X-Forwarded-For` 里可能带换行 → 直接格式化能凭空造出一行假日志（CWE-117）。
 所以它先过 `_client_label()`（去控制字符 + 截断 64 字符），📎 见 `tests/test_access_log.py`。
+
+⚠️ **轮转不在 Python 里**：容器日志走 stdout，由 Docker 的 `logging` 选项截断（📎 实测默认 4000 行全留，`64k × 2` 只剩 504 行）。`compose` 里三个服务都是 `json-file` + `max-size: 10m` + `max-file: 3`。
 
 | 设定 | 值 | 为什么 |
 |---|---|---|
@@ -1596,6 +1600,7 @@ app 等 `service_healthy` 最多等到健康检查判失败、nginx 的 `proxy_r
 | 45 | 部署时迁移由一次性 `migrate` 服务执行，app 等它成功再起 | [docker-compose.yml](../docker-compose.yml) `migrate` / `app.depends_on` | ✅ `test_docker_assets.py::test_compose_migrates_before_app_starts` + `::test_compose_defines_database_url_once`（📎 6 个变异全红：删 `depends_on` / 换卷 / 加 `env_file` / 抄第二份连接串 / app 自己跑迁移 / `restart: always`） |
 | 46 | 入口只有 nginx，app 不发布宿主端口 | [docker-compose.yml](../docker-compose.yml) `proxy`、[deploy/nginx.conf](../deploy/nginx.conf) | ✅ `test_docker_assets.py` 4 条：`test_app_is_not_published_to_host` / `test_proxy_waits_for_healthy_app_and_exits_gracefully` / `test_nginx_conf_streams_and_reresolves` / `test_nginx_read_timeout_exceeds_app_budget`（📎 11 个变异全红：`buffering on` / 删 `resolver` / 去 `resolve` / 读超时 60s / 删 `proxy_cache` / app 加回 `ports` / `SIGTERM` / `service_started` / 端口改 8080 / `.dockerignore` 删 `deploy/` / `UPSTREAM_TOTAL_TIMEOUT=200`） |
 | 47 | 客户端 IP：只信代理那一跳 | [docker-compose.yml](../docker-compose.yml) `FORWARDED_ALLOW_IPS` / `networks.app_net`、[app.py](../src/app/api/app.py) `_client_label` | ✅ `test_access_log.py`（3 条，含**真 uvicorn** 的伪造头用例）+ `test_docker_assets.py::test_forwarded_allow_ips_matches_proxy_static_ip`（📎 7 个变异全红） |
+| 48 | 日志一行一 JSON；轮转归 Docker | [logging_setup.py](../src/app/logging_setup.py) `JsonFormatter`、[docker-compose.yml](../docker-compose.yml) `logging` | ✅ `test_log_json.py`（2 条：子进程逐行 `json.loads` / traceback 不换行）+ `test_docker_assets.py::test_every_service_rotates_its_logs`（📎 6 个变异全红） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。

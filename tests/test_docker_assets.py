@@ -332,3 +332,15 @@ def test_forwarded_allow_ips_matches_proxy_static_ip() -> None:
     )
     proxy_ip = proxy_net["ipv4_address"]
     assert trusted == proxy_ip, f"信任名单 {trusted} 与代理固定 IP {proxy_ip} 不一致"
+
+
+def test_every_service_rotates_its_logs() -> None:
+    """回归：轮转必须由 Docker 做（Python 管不到 stdout）—— 少一个服务就少一个能写满盘的口子"""
+    services = _compose()["services"]
+    for name in ("app", "migrate", "proxy"):
+        logging_cfg = services[name].get("logging") or {}
+        assert logging_cfg.get("driver") == "json-file", f"{name} 缺 logging.driver"
+        options = logging_cfg.get("options") or {}
+        # 【注意】：不写 max-size 就是无限增长 —— 📎 实测默认 4000 行全留，配了 64k 只留 504 行
+        assert options.get("max-size"), f"{name} 缺 max-size（默认不轮转）"
+        assert str(options.get("max-file")) not in ("", "0"), f"{name} 的 max-file 必须 > 0"

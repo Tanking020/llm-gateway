@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-19 · 共 47 条
+**最后更新**：2026-11-19 · 共 48 条
 
 ---
 
@@ -68,6 +68,7 @@
 | [45](#45-部署时迁移由一次性-migrate-服务执行app-等它成功再起) | 部署时谁跑迁移 | **一次性 `migrate` 服务 + `depends_on: service_completed_successfully`** | 2026-11-19 |
 | [46](#46-入口只有-nginxapp-不再对宿主暴露端口) | 流量入口长什么样 | **nginx 独占 80；`proxy_buffering off`；`resolver` 重解析；SIGQUIT 优雅退出** | 2026-11-19 |
 | [47](#47-客户端-ip-只信代理那一跳伪造的-x-forwarded-for-一律不算) | 客户端 IP 从哪来 | **`FORWARDED_ALLOW_IPS` = 代理固定 IP；日志前先净化** | 2026-11-19 |
+| [48](#48-日志一行一-json形状归-formatter体量归-docker) | 日志长什么样、写多久 | **JSON formatter（进程内）+ `logging` 轮转（Docker 侧）** | 2026-11-19 |
 
 ---
 
@@ -879,6 +880,18 @@
 | **决定** | **D**。三项配套：① compose 钉死网络 `172.30.0.0/24` 并用 `ip_range: 172.30.0.128/25` 把**动态地址赶到上半段**；② `proxy` 固定 `ipv4_address: 172.30.0.2`；③ `app.environment.FORWARDED_ALLOW_IPS: "172.30.0.2"`。日志侧再补一层：`_client_label()` 去掉控制字符、截断 64 字符后才写进日志（`X-Forwarded-For` 是外部输入，换行可伪造日志行，CWE-117） |
 | **代价** ⚠️ | ① **网段与固定 IP 是硬编码**：换网段要同时改 `subnet` / `ip_range` / `ipv4_address` / `FORWARDED_ALLOW_IPS` 四处（守卫会红，提醒你别漏）<br>② 与宿主已有网络冲突时 `up` 会**响亮失败**（可接受：静默错配更难查）<br>③ 固定 IP 与动态分配**会打架**：📎 实测第一版没写 `ip_range` 时 app 先抢到 `.2`，proxy 随后绑 `.2` 报 `Address already in use` → 必须靠 `ip_range` 分隔<br>④ 以后加第二层代理（CDN / WAF）时信任链要重算：`real_ip` 模块 + 只信自己那层，本条的 `FORWARDED_ALLOW_IPS` 会变成一段链<br>⑤ `client` 只是「TCP 对端 + 可信链解析」的结果，**不是身份**：限流仍按 `user.id`（决策 42），不按 IP |
 | **重审条件** | ① 引入 CDN/WAF → 信任链变化，需重写 `real_ip` 与信任名单；② 迁到 K8s → 用 Service/Ingress，`FORWARDED_ALLOW_IPS` 改为集群内部 CIDR；③ 若出现「未登录也按 IP 限流」的需求，`client` 才成为安全边界，需要重新评估伪造风险 |
+
+---
+
+## 48. 日志：一行一 JSON（形状归 formatter），体量归 Docker
+
+| 项 | 内容 |
+|---|---|
+| **背景** | [#51](todos.md)：日志是 `2026-11-02 00:19:56,291 INFO app.api.app \| GET /health -> 200 3.1ms` 这种文本，采集到 Loki/ELK 后只能拿正则抠字段；且**没有任何轮转** —— 容器一直跑，宿主磁盘就会被写满。13e-2 要同时解决「形状」与「体量」 |
+| **方案对比** | **A 加 `python-json-logger`**：省事，但它默认字段名（`message`/`asctime`）还得再映射一次，且为 15 行代码引一个依赖<br>**B 自己写 `JsonFormatter`（标准库 `json.dumps`）**：✅ 字段完全可控、无新依赖<br>**C 用 Python `RotatingFileHandler` 写文件 + 挂卷**：❌ 容器日志在 **stdout**，写文件等于双份真相 —— `docker logs` 看不到、容器删了文件可能丢、多 worker 还会互相抢 rename<br>**D 轮转交给 Docker `logging`（`json-file` + `max-size`/`max-file`）**：✅ 与「日志走 stdout」一致 |
+| **决定** | **B + D**。`logging_setup.py` 里 `JsonFormatter` 输出 `{ts, level, logger, msg}` + 任意 `extra` 字段（排除 `LogRecord` 自带属性），`exc_info` 收进 `exc` 字段（换行被 `json.dumps` 转义 → **traceback 仍是一行**），`ensure_ascii=False` 保留中文；访问日志从「拼字符串」改成 `logger.info("request", extra={method, path, status, duration_ms, client, request_id})`。compose 三个服务各加 `logging: {driver: json-file, options: {max-size: 10m, max-file: 3}}` |
+| **代价** ⚠️ | ① **本地开发读日志变难**（人眼读 JSON）→ 给一条 `ConvertFrom-Json` 打平命令（dev-environment §8.0d）<br>② ⚠️ **PowerShell 5.1 的 `Get-Content` 默认按 GBK 解码**，中文会变 `涓枃` → 必须 `-Encoding UTF8`（与坑 K91 同源）<br>③ `ensure_ascii=False` 要求采集端按 UTF-8 解；若换成要求纯 ASCII 的采集器要改 True<br>④ **`msg` 仍是人拼的字符串**：本轮只把访问日志字段化，warning/error 的细节仍在 `msg` 里<br>⑤ 轮转参数是**每个服务一份**（3 处重复）；上限 = `max-size × max-file × 服务数` = 90 MB<br>⑥ 日志平台侧不再能靠「行首时间戳」排序，必须解析 `ts` 字段（好处是带 UTC 偏移） |
+| **重审条件** | ① 接入真日志平台（Loki/ELK）且要求 trace_id 贯穿 → 加 `trace_id` 字段并评估 OpenTelemetry；② 若需要「本地文件 + 采集器 tail」而非 stdout → 轮转归采集器，本条要重写；③ 若单服务日志量超过 `10m × 3` 的保留窗口（排查需要更久）→ 调大或改远端存储；④ 若 #89 决定统一错误形状，`error_code` 也应进 `extra` |
 
 ---
 

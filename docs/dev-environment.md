@@ -180,6 +180,16 @@ docker compose down                                  # 保留卷；加 -v 才删
 
 ⚠️ **入口只有 nginx，宿主上的 8000 已经不通**（`app` 从 `ports` 改成 `expose`，决策 46）—— 这是有意的：直连 `127.0.0.1:8000` 失败不代表服务坏了。
 
+📎 **日志现在是一行一个 JSON**（决策 48）。人眼读要打平（⚠️ 必须 `-Encoding UTF8`，否则中文变 `涓枃`，见坑 K91）：
+
+```powershell
+docker compose logs --no-log-prefix -f app |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Format-Table ts, level, msg, status, duration_ms, client, request_id -AutoSize
+```
+
+⚠️ **轮转由 Docker 做**（compose 里 `logging: json-file` + `max-size: 10m` + `max-file: 3`，每服务最多 30 MB）。**不要**在 Python 里加 `RotatingFileHandler` —— 容器日志在 stdout，写文件等于双开一份真相（决策 48）。
+
 ⚠️ **迁移不用手工跑了**：`up` 会先起 `migrate` 容器执行 `python -m alembic upgrade head`，退出码 0 之后 app 才启动（决策 45）。手工 `exec app python -m alembic upgrade head` 仍可用来查看 / 补跑，但**不是部署步骤**。
 ⚠️ **迁移失败时 `docker compose ps` 看不到 app** —— 它停在 `created` 状态，必须 `docker compose ps -a`；`up` 本身会以**非 0**退出并打印 `app-1 not started: condition "service_completed_successfully" ... not met`。
 ⚠️ `up` **不带 `--build` 就用本地已有镜像**（改了代码必须显式 `--build`，或用 `up -d --build`）。

@@ -40,6 +40,13 @@ services:
     #   默认值会让窗口走不完就被 SIGKILL；40s = 30s 窗口 + 10s 收尾余量
     stop_grace_period: 40s
     restart: unless-stopped
+    # 【注意】：轮转必须由 Docker 做 —— 容器日志在 stdout，Python 写文件等于
+    #   另开一份真相，且 docker logs 看不到、容器一删就丢（📎 实测：默认 4000 行全留）
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - app_net
 
@@ -56,6 +63,11 @@ services:
       - app_data:/app/data
     # 【注意】：一次性的，失败就停在那里等人工看；自动重启只会刷日志掩盖失败
     restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - app_net
 
@@ -75,6 +87,11 @@ services:
     stop_signal: SIGQUIT
     stop_grace_period: 40s
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
       interval: 10s
