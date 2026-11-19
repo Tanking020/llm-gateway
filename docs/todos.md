@@ -25,7 +25,7 @@
 | `阶段 2` | 消息落库 / 软删除 / 并发控制 / `KNOWN_MODELS` 改真实数据 | **#3 #32 #34 #35** | ⬜ 未开始 |
 | `随时` | ~~`DATABASE_URL` 补进 `.env.example`~~ | **#27** | ✅ 11a 已完成 |
 
-## 二、待办表（#1 ~ #82）
+## 二、待办表（#1 ~ #89）
 
 > 归属到对应 Step 时再修。
 
@@ -126,6 +126,7 @@
 | 87 | ~~🔴 **测试库是固定文件名（`<temp>/llm-app-test.db`），连续/并发跑 pytest 会互相踩 → 偶发红**~~ | 📎 实测三次（2026-11-17 复核覆盖率时）：① 连跑两次 `pytest --cov` → 第二次 `ERROR tests/test_limits.py::… - sqlite3.OperationalError`，覆盖率 93% → 64%、`app.py` 89% → 29%；② 紧接着重跑 → **`55 passed, 76 errors`**；③ 重跑即恢复 `131 passed / 93%`。⚠️ **危险的不是错误本身，是「红灯不再可信」** —— 门 1 的判据是「改坏一行 5 分钟内能知道」，而一个会偶发 76 errors 的套件做不到 | ✅ **已解决（2026-11-17）**：`conftest._TEST_DB` 改为 `llm-app-test-{os.getpid()}.db`（一进程一个库），会话结束尽力清理；新增守卫 `test_test_db_path_is_per_process`（**真起子进程** import conftest 比库名，📎 变异「改回固定文件名」→ 点名红）。📎 **验证**：两个 pytest **并行**跑 → 都 `132 passed`；**连跑三次** → 全 `132 passed`。见坑 K94 |
 | 76 | 🔴 **从来没压测过：「能扛多少」至今是一个猜出来的数**（2026-11-04 学习者读「闸门 vs 连接池」时自己提出要记住） | 📎 现在的数字全是**推导**不是**实测**：闸门 4（保守起点）、DB 池 15（SQLAlchemy 默认值）、HTTP 池 100（httpx 默认值）—— 没有一个来自压力测试。⚠️ 而 12g-2 之后 `MAX_CONCURRENT_UPSTREAM_CALLS=4` **直接决定第 5 个用户看到 503 还是看到回答**，这个数拍错了要么浪费钱、要么白白拒绝用户。📎 另外「4 够不够」「要不要调 8」这类问题，只有压测能回答 | **`P1`（2026-11-04 从 `P2` 上调；2026-11-14 定位为 Step **13f**，须排在 13e 指标之后）**：用 `locust` / `k6` 对 `/v1/chat/stream` 打真实并发，记录「并发 N 时的 p95 首字节 / 错误率 / DB 池 checkedout / 上游 429 次数」，把「能扛多少」变成一个**数字**。⚠️ 必须用真 uvicorn + 真 TCP（`TestClient` 测不出池占用，见 #73） |
 | 88 | 🟡 **`docker stop` 偶发 `ExitCode=137`（SIGKILL）且 lifespan 未走完** —— 13a-3 三次实测里 1 次复现（默认 `docker stop` 参数、耗时 3.55s、末行停在 `Waiting for connections to close`），另 2 次（`-t 30`）都是 `ExitCode=0` / 3.7~3.85s | 📎 三次数据都相同的前置条件：`GRACEFUL_SHUTDOWN_TIMEOUT=3` + 上游黑洞（`10.255.255.1`）+ 一条在途 `/v1/chat/stream`。差异只有 `docker stop` 的 `-t` 参数与机器负载，**根因未定位** | 🟡 **未定位**：13a-2 写 compose 时用 `stop_grace_period: 40s` 给足余量，并在压测（13f）中统计出现频率；若稳定复现则需查 uvicorn 版本 / WSL2 信号传递 |
+| 89 | 🟠 **nginx 的 413 是 HTML 页，不是我们的 JSON envelope** —— 客户端拿到的错误形状突然换了语言（`<html><head><title>413 Request Entity Too Large`），前端按 `error.code` 分支的代码直接崩 | 📎 实测（13a-2c，经 nginx）：`POST /v1/chat` 带 2 MB body → **413** + `content-type: text/html` + `server: nginx/1.29.8`；而 app 自己的超限是 **422 `application/json`**（`schemas.py` 的三条 `max_length`）。⚠️ 也就是说「请求太大」现在有**两种状态码 + 两种形状**，取决于超的是 60k 字符还是 1 MB | 🔴 `P2` **未修** —— 两条路：① nginx 侧 `error_page 413 = @json` 返回与 envelope 一致的 JSON；② 把 `client_max_body_size` 抬到「永远轮不到 nginx 先拒」，让 app 的 422 成为唯一出口（但那样 nginx 就失去挡大包的作用）。13f 压测时一并定 |
 > 🟡 **#51 拆成两半**（11c，2026-10-31）：
 > - ✅ **已解决**：`basicConfig` 的静默失效 + 两套格式并存 + 每请求两行 → `dictConfig(force=True)` 落地，三条启动路径同一格式。
 > - ⬜ **仍未做**：**JSON 结构化**与**按天轮转** —— 它们只在「有日志平台 / 多机」时才有意义，随部署阶段一起做（另见待办 #55 的"无总时长上限"对日志量的影响）。
