@@ -137,7 +137,7 @@ Step 13 已经补掉了原评审里最要命的一半：**谁都不能白用**�
 - [x] 500 响应带 CORS 头（否则浏览器里前端连 `request_id` 都读不到） · `P1` · 关联 **#57** —— ✅ **2026-11-17 完成**（13c-1，决策 35；📎 500 的 CORS 头与 404 **集合相等**，外来源仍无头）
 - [x] 「返回 201/200 ≠ 已提交」修掉（`commit()` 在响应发出之后才执行，磁盘满会静默丢数据） · `P1` · 关联 **#54** —— ✅ **2026-11-17 完成**（13c-4，决策 38；📎 TDD 改前 3 红；patch `commit` 必失败 → POST/PATCH/DELETE 全 500 且库状态不变）。⚠️ 残余「忘写 commit 被兜底掩盖」→ **#86 已用 AST 静态检查兜住**
 - [ ] 灰度 + 回滚预案（哪怕只是「保留上一版镜像 + 一条回滚命令」） · `P2` · 部署流程项（不占待办编号）
-- [x] **部署时谁跑迁移**（`docker-compose` 的 init/migrate 服务） · `P0` · 关联 **#84** —— ✅ **2026-11-19 完成（13a-2b，决策 45）**：一次性 `migrate` 服务（同镜像 / 同命名卷 / 只注入 `DATABASE_URL`）+ `app.depends_on: service_completed_successfully`。📎 隔离项目 + **全新空卷**实测：migrate **exit 0**（`b33d7c602b8e → 7112e775108b → 7c1f0a2d9b44`）→ app 起且 **healthy** → **5 张表齐全** + `alembic_version=7c1f0a2d9b44` → `POST /v1/conversations` **201**；📎 `DATABASE_URL` 指向不可打开路径 → migrate **exit 1**、`up` **exit 1**、app 停在 `created` **未启动**；📎 重复 `up` 幂等、数据不丢。⚠️ 仍缺：只 `docker compose ps` 看不到未启动的 app（要看 `ps -a`）；不带 `--build` 会用本地旧镜像
+- [x] **部署时谁跑迁移**（`docker-compose` 的 init/migrate 服务） · `P0` · 关联 **#84** —— ✅ **2026-11-19 完成（13a-2b，决策 45）**：一次性 `migrate` 服务（同镜像 / 同命名卷 / 只注入 `DATABASE_URL`）+ `app.depends_on: service_completed_successfully`。📎 隔离项目 + **全新空卷**实测：migrate **exit 0**（`b33d7c602b8e → 7112e775108b → 7c1f0a2d9b44`）→ app 起且 **healthy** → **5 张表齐全** + `alembic_version=7c1f0a2d9b44` → `POST /v1/conversations` **201**；📎 `DATABASE_URL` 指向不可打开路径 → migrate **exit 1**、`up` **exit 1**、app 停在 `created` **未启动**；📎 重复 `up` 幂等、数据不丢。📎 **静态守卫**：`tests/test_docker_assets.py` 2 条（compose 结构 + 连接串只写一份），**6 个变异全红**。⚠️ 仍缺：只 `docker compose ps` 看不到未启动的 app（要看 `ps -a`）；不带 `--build` 会用本地旧镜像
 
 ### 门 7 · 数据治理与合规 🔴 **零**
 
