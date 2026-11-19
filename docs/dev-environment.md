@@ -166,18 +166,20 @@ docker run --rm llm-app:dev python -m alembic upgrade head
 ⚠️ `--build-arg PIP_INDEX_URL` **不能省**：省掉就是 `Dockerfile` 里 `ARG` 的默认值 `https://pypi.org/simple`，本机会慢到以为卡死（📎 `pypi.org/simple/uv/` 实测 10s 超时）。CI / 海外构建反而不该传它。
 📎 参考实测：全量构建约 **14~20s**（依赖层命中缓存时 5.5s），镜像 **283 MB**，构建上下文 **26 文件 / 471 KB**。
 
-### 8.0d 用 compose 起整套（13a-2a 起）
+### 8.0d 用 compose 起整套（13a-2a / 2b 起）
 
 ```powershell
 docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-docker compose up -d
-docker compose ps                                   # 等到 healthy
-docker compose exec app whoami                      # app
-docker compose exec app python -m alembic upgrade head
-docker compose stop                                 # 停机计时（宽限期 40s / 窗口 30s）
-docker compose down                                 # 保留卷；加 -v 才删数据
+docker compose up -d                                 # 先跑一次性 migrate，成功后才起 app
+docker compose ps                                    # app 要 healthy；migrate 应是 exited 0
+docker compose exec app whoami                       # app
+docker compose stop                                  # 停机计时（宽限期 40s / 窗口 30s）
+docker compose down                                  # 保留卷；加 -v 才删数据
 ```
 
+⚠️ **迁移不用手工跑了**：`up` 会先起 `migrate` 容器执行 `python -m alembic upgrade head`，退出码 0 之后 app 才启动（决策 45）。手工 `exec app python -m alembic upgrade head` 仍可用来查看 / 补跑，但**不是部署步骤**。
+⚠️ **迁移失败时 `docker compose ps` 看不到 app** —— 它停在 `created` 状态，必须 `docker compose ps -a`；`up` 本身会以**非 0**退出并打印 `app-1 not started: condition "service_completed_successfully" ... not met`。
+⚠️ `up` **不带 `--build` 就用本地已有镜像**（改了代码必须显式 `--build`，或用 `up -d --build`）。
 ⚠️ **不要跑 `docker compose config` 就整份贴出来** —— 它会把 `env_file` 注入的 `LLM_API_KEY` **明文解析出来**（📎 2026-11-19 实际踩到）。要核对就用 `docker compose config | Select-String "stop_grace_period|HOST|DATABASE_URL"`。
 ⚠️ 数据在**命名卷** `llm-app_app_data` 里（WSL 的 ext4），宿主资源管理器打不开：`docker compose exec app ls -ln /app/data`。
 📎 本机 SQLite 写入实测（200 次 commit）：命名卷 **1.975s** vs bind mount（v9fs）**7.465s**。
