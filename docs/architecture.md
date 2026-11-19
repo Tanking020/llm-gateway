@@ -1515,7 +1515,7 @@ POST /v1/conversations
 | 41 | 鉴权做成**依赖**（`CurrentUserDep`）而不是中间件；越权一律 **404** | [deps.py](../src/app/api/deps.py) `require_user` / `CurrentUserDep`、[app.py](../src/app/api/app.py) `require_conversation` / `_fetch_conversation_stats` / `list_conversations` | ✅ `test_auth.py`（13 条）+ `test_source_rules.py::test_every_non_public_route_requires_a_user`（📎 变异：删掉某路由的 `CurrentUserDep` → 点名 `DELETE /v1/conversations/{conv_id}`） |
 | 42 | 限流：进程内令牌桶，按 user 计不按 key 计 | [ratelimit.py](../src/app/ratelimit.py) `RateLimiter`、[deps.py](../src/app/api/deps.py) `require_user` | ✅ `test_rate_limit.py`（9 条；📎 变异「桶不按 user 分」→ `assert 429 == 200`） |
 | 43 | 镜像多阶段 + 非 root + exec 形式 `python -m app` | [Dockerfile](../Dockerfile)、[.dockerignore](../.dockerignore) | ✅ `tests/test_docker_assets.py`（5 条；📎 7 个变异全红）+ 📎 真 `docker build` / `docker run`（13a-1c） |
-| 45 | 部署时迁移由一次性 `migrate` 服务执行，app 等它成功再起 | [docker-compose.yml](../docker-compose.yml) `migrate` / `app.depends_on` | ⚠️ 无自动化用例 —— 靠 compose 行为 + 隔离项目实测（📎 空库 → 迁移 → 201；迁移失败 → app 不启动） |
+| 45 | 部署时迁移由一次性 `migrate` 服务执行，app 等它成功再起 | [docker-compose.yml](../docker-compose.yml) `migrate` / `app.depends_on` | ✅ `test_docker_assets.py::test_compose_migrates_before_app_starts` + `::test_compose_defines_database_url_once`（📎 6 个变异全红：删 `depends_on` / 换卷 / 加 `env_file` / 抄第二份连接串 / app 自己跑迁移 / `restart: always`） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。

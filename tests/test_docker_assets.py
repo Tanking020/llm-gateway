@@ -1,17 +1,22 @@
-"""容器产物（Dockerfile / .dockerignore）的静态检查
+"""容器产物（Dockerfile / .dockerignore / docker-compose.yml）的静态检查
 
-为什么不跑 docker build：那要真引擎（且不在每次 pytest 里）。但这里要防的两类错
+为什么不跑 docker build：那要真引擎（且不在每次 pytest 里）。但这里要防的三类错
 **不需要引擎也能查**：
   ① 密钥泄漏 —— `.env` 被排除掉之后又被人"手动加回来"
   ② 构建失败 —— Dockerfile `COPY` 的东西被 .dockerignore 排掉了（写代码时看不出来）
+  ③ 部署顺序 —— compose 里迁移与应用的依赖被改回"人工 exec"（那种错没有任何其它用例会红）
 """
 
 import re
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DOCKERFILE = _ROOT / "Dockerfile"
 _DOCKERIGNORE = _ROOT / ".dockerignore"
+_COMPOSE = _ROOT / "docker-compose.yml"
 
 # 镜像里【必须】有的路径：缺任何一个，构建或运行就会坏
 _REQUIRED_IN_CONTEXT = [
@@ -203,3 +208,47 @@ def test_final_stage_runs_as_non_root_and_uses_exec_form() -> None:
     assert re.search(r'^CMD\s+\[\s*"python"', text, re.MULTILINE), (
         "CMD 必须是 exec 形式（JSON 数组），否则 SIGTERM 可能到不了应用"
     )
+
+
+def _compose() -> dict[str, Any]:
+    """解析 docker-compose.yml —— YAML 锚点会被展开成真实值
+
+    【注意】：用真 YAML 解析而不是正则 —— 缩进/换行一变正则守卫就会给出虚假安全感（坑 K96）
+    """
+    raw: object = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    assert isinstance(raw, dict), "docker-compose.yml 顶层不是字典"
+    return raw
+
+
+def test_compose_migrates_before_app_starts() -> None:
+    """回归：迁移必须先成功、app 才启动，且两者看同一个库（#84 / 决策 45）"""
+    services = _compose()["services"]
+    app, migrate = services["app"], services["migrate"]
+
+    # 【注意】：迁移没跑完就起 app = 空库首请求 no such table，而探针只 SELECT 1 发现不了（K93）
+    depends = app.get("depends_on", {}).get("migrate", {})
+    assert depends.get("condition") == "service_completed_successfully", (
+        "app 必须等 migrate 成功退出 —— 否则空库上线第一个请求就是 no such table"
+    )
+    assert migrate["command"] == ["python", "-m", "alembic", "upgrade", "head"], (
+        "migrate 的 command 必须走 alembic upgrade head"
+    )
+    # 【注意】：卷或连接串不一致 → 迁移改的是另一个库，app 用的那个仍然空（比不迁移更难查）
+    assert migrate["volumes"] == app["volumes"], "migrate 与 app 必须挂同一个数据卷"
+    assert migrate["environment"]["DATABASE_URL"] == app["environment"]["DATABASE_URL"], (
+        "migrate 与 app 的 DATABASE_URL 必须一致"
+    )
+    assert "env_file" not in migrate, "migrate 不该挂 env_file —— 迁移用不上 LLM_API_KEY"
+    assert migrate["restart"] in ("no", False), "一次性任务的 restart 必须关（失败要停下等人看）"
+
+
+def test_compose_defines_database_url_once() -> None:
+    """回归：连接串只写一份（锚点共享）；app 不许自己跑迁移"""
+    text = _COMPOSE.read_text(encoding="utf-8")
+    url = "sqlite+aiosqlite:////app/data/app.db"
+    # 【注意】：两份副本迟早漂移；结构断言看不出"是不是抄的"，所以这里查字面量出现次数
+    assert text.count(url) == 1, f"连接串字面量出现 {text.count(url)} 次，必须只在锚点写一次"
+    app = _compose()["services"]["app"]
+    assert app["environment"]["DATABASE_URL"] == url
+    # 【注意】：把迁移塞进 app 启动命令 → 每次重启都跑、多副本并发迁移（决策 45 否掉的方案 B）
+    assert "alembic" not in str(app.get("command", "")), "app 不许自己跑迁移"
