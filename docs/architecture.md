@@ -1361,7 +1361,7 @@ POST /v1/conversations
 | 数据库池 | `AsyncAdaptedQueuePool`：`size=5` + `max_overflow=10` = **15**，等连接 `pool_timeout=30s` | [database.py](../src/app/database.py) |
 | 上游 HTTP 池 | `max_connections=100`（httpx 默认 `Limits`） | [llm_client.py](../src/app/llm_client.py) |
 | SQLite 忙等 | `busy_timeout = 5000ms` | SQLite/`sqlite3` 默认 |
-| 部署产物 | **CI 已有**（`.github/workflows/ci.yml`，push/PR 跑四道门）；**Dockerfile + .dockerignore 文件已就绪**（13a-1，⏳ `docker build` 待验）；**没有** nginx / compose | 待办 #49（13a-2 / 13a-3） |
+| 部署产物 | **CI 已有**（`.github/workflows/ci.yml`，push/PR 跑四道门）；**镜像 + compose 栈已就绪**（13a-1 / 13a-2a / 13a-2b，📎 真 `docker build` + 空库部署验过）；**没有** nginx（13a-2c）、灰度与回滚 | 待办 #49（13a-2c） |
 
 ⭐ 一句话：**第一道顶不住的是我们自己设的闸门（`max_concurrent_upstream_calls`，默认 4）**；
 闸门之后才是「15 条数据库连接」和「SQLite 只能有一个写者」；上游 HTTP 池（100）永远排最后。
@@ -1514,7 +1514,8 @@ POST /v1/conversations
 | 40 | 身份与凭据存两张表，密钥只存 sha256 | [models.py](../src/app/models.py) `User` / `ApiKey`、[auth.py](../src/app/auth.py) `hash_api_key` / `find_user_by_key` | ✅ `test_auth.py::test_key_is_stored_as_sha256_not_plaintext` |
 | 41 | 鉴权做成**依赖**（`CurrentUserDep`）而不是中间件；越权一律 **404** | [deps.py](../src/app/api/deps.py) `require_user` / `CurrentUserDep`、[app.py](../src/app/api/app.py) `require_conversation` / `_fetch_conversation_stats` / `list_conversations` | ✅ `test_auth.py`（13 条）+ `test_source_rules.py::test_every_non_public_route_requires_a_user`（📎 变异：删掉某路由的 `CurrentUserDep` → 点名 `DELETE /v1/conversations/{conv_id}`） |
 | 42 | 限流：进程内令牌桶，按 user 计不按 key 计 | [ratelimit.py](../src/app/ratelimit.py) `RateLimiter`、[deps.py](../src/app/api/deps.py) `require_user` | ✅ `test_rate_limit.py`（9 条；📎 变异「桶不按 user 分」→ `assert 429 == 200`） |
-| 43 | 镜像多阶段 + 非 root + exec 形式 `python -m app` | [Dockerfile](../Dockerfile)、[.dockerignore](../.dockerignore) | ✅ `tests/test_docker_assets.py`（5 条；📎 7 个变异全红）—— ⚠️ `docker build` 本身待 Docker 装好补验 |
+| 43 | 镜像多阶段 + 非 root + exec 形式 `python -m app` | [Dockerfile](../Dockerfile)、[.dockerignore](../.dockerignore) | ✅ `tests/test_docker_assets.py`（5 条；📎 7 个变异全红）+ 📎 真 `docker build` / `docker run`（13a-1c） |
+| 45 | 部署时迁移由一次性 `migrate` 服务执行，app 等它成功再起 | [docker-compose.yml](../docker-compose.yml) `migrate` / `app.depends_on` | ⚠️ 无自动化用例 —— 靠 compose 行为 + 隔离项目实测（📎 空库 → 迁移 → 201；迁移失败 → app 不启动） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
@@ -1551,7 +1552,7 @@ POST /v1/conversations
 | `auth.py` | API key 的生成 / 哈希 / 查人（请求鉴权与签发 CLI 共用） | 不认识 HTTP 头（只吃明文字符串） |
 | `ratelimit.py` | 令牌桶（按 key 分桶、时钟可注入） | 不认识 HTTP；不自己决定状态码 |
 | `Dockerfile`（仓库根） | 多阶段镜像：builder 只交出 `/opt/venv`；runtime 非 root + exec 形式 CMD | 不写业务配置（用环境变量注入） |
-| `docker-compose.yml`（仓库根） | 单机栈：`app` + **命名卷** `app_data:/app/data` + `stop_grace_period: 40s`；⚠️ 还没有 nginx（2c）与一次性 migrate（2b） | 不写密钥（`env_file: .env` 从宿主读）；不重复写 `healthcheck`（继承镜像） |
+| `docker-compose.yml`（仓库根） | 单机栈：`app` + **一次性 `migrate`**（同镜像 / 同命名卷，`depends_on: service_completed_successfully`）+ **命名卷** `app_data:/app/data` + `stop_grace_period: 40s`；连接串用 `x-database-url` 锚点共享；⚠️ 还没有 nginx（2c） | 不写密钥（`app` 的 `env_file: .env` 从宿主读；`migrate` **只拿 `DATABASE_URL`**）；不重复写 `healthcheck`（继承镜像） |
 | `.dockerignore` | 构建上下文里「白名单之外的一切」（📎 26 文件 / 471 KB） | 不排除 `uv.lock` / `alembic` / `src`（会构建失败） |
 | `keys.py` | API key 运维 CLI（`python -m app.keys create/list/revoke`） | 不含业务路由；不打印明文到日志 |
 | `api/app.py` | FastAPI 对象 + lifespan + 全部路由 | 不写上游协议细节 |

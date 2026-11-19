@@ -64,6 +64,8 @@
 | [41](#41-鉴权做成-fastapi-依赖currentuserdep越权一律返回-404) | 鉴权在哪一层、越权返什么 | **依赖 + `Annotated` 别名 + AST 守卫；越权 404** | 2026-11-17 |
 | [42](#42-限流进程内令牌桶按用户计不按-key-计) | 限流算法与粒度 | **令牌桶（进程内）+ 按 user 计 + 429 `Retry-After`** | 2026-11-18 |
 | [43](#43-镜像用多阶段构建非-root-且-cmd-走-python--m-app) | 镜像长什么样 | **多阶段 + 非 root + `CMD python -m app`（不裸调 uvicorn）** | 2026-11-18 |
+| [44](#44-镜像里的-uv-用-pip-装项目用---no-editable-装) | 镜像里怎么装依赖 | **pip 装 uv + `uv sync --no-editable`** | 2026-11-18 |
+| [45](#45-部署时迁移由一次性-migrate-服务执行app-等它成功再起) | 部署时谁跑迁移 | **一次性 `migrate` 服务 + `depends_on: service_completed_successfully`** | 2026-11-19 |
 
 ---
 
@@ -839,6 +841,18 @@
 | **决定** | **D + `--no-editable`**。builder 里 `RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" "uv==${UV_VERSION}"`（`ARG` 在 `RUN` 里**能**展开，与 `COPY --from` 不同）；`ENV UV_DEFAULT_INDEX="${PIP_INDEX_URL}"` 让 `uv sync` 也走同一源（pip 看 `--index-url`，uv 看 `UV_DEFAULT_INDEX`，两个都要设）；第二段 `uv sync --locked --no-dev --no-editable`。本地构建带 `--build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` |
 | **代价** ⚠️ | ① builder 多一层 pip（📎 实测 **+9.4s**，有缓存后接近 0）<br>② 本地构建必须记得传 `--build-arg PIP_INDEX_URL`，忘了就退化成撞 `pypi.org` 超时<br>③ `--no-editable` 让「改代码 → 镜像生效」必须重建（本来也要重建）<br>④ 📎 `--no-editable` 与 `--locked` 同时用没问题，但**单独**跑 `uv sync` 而不带 `--locked` 会改写 `uv.lock` |
 | **重审条件** | ① 若 CI / 生产网络能正常拉 `ghcr.io`，可评估改回官方 `COPY --from`（少一层 pip）；② 若 uv 官方提供国内可用的 OCI 镜像，同样重审；③ 若镜像构建时长成为瓶颈，把 uv 二进制**固定在基础镜像**里（自建 base image）比 pip 装更省 |
+
+---
+
+## 45. 部署时迁移由一次性 `migrate` 服务执行，app 等它成功再起
+
+| 项 | 内容 |
+|---|---|
+| **背景** | [#84](todos.md)：新库上线第一条业务请求就是 `no such table`，而 `/health/ready` 只 `SELECT 1`，**发现不了 schema 没建**（坑 K93）。13b 已把 DDL 移出启动路径，所以「谁跑迁移」成了部署环节的空洞；13a-2a 时靠人工 `docker compose exec app python -m alembic upgrade head` |
+| **方案对比** | **A 人工 `exec` 跑迁移**：零代码改动，但**部署者必须记得**，且「空库 → 迁移 → app 起」这条顺序没有任何机制保证 —— 漏一次就是线上 500<br>**B 迁移塞进 app 启动命令**（`python -m alembic upgrade head && python -m app`）：一条命令搞定，但 📎 每次 `restart` 都跑一遍、多副本同时启动会**并发迁移**；且迁移失败与 app 失败在日志里混成一条，退出码也失去区分<br>**C 应用启动时在 `lifespan` 里 `command.upgrade`**：正是 13b 拆掉的东西（DB 没就绪就 crash loop，📎 #50）<br>**D 一次性 `migrate` 服务 + `app` 用 `depends_on: condition: service_completed_successfully` 等它**：✅ 顺序由编排器保证 |
+| **决定** | **D**。`migrate` 用**同一镜像**（`image: llm-app:dev`，不重复 `build`）、**同一命名卷**、`command: ["python","-m","alembic","upgrade","head"]`、`restart: "no"`；只注入 `DATABASE_URL`，**不挂 `env_file`** —— 迁移用不上 `LLM_API_KEY`，密钥不该进这个容器。数据库连接串用 YAML 锚点（`x-database-url: &database-url`）两处共享，避免指针漂移 |
+| **代价** ⚠️ | ① 多一个服务定义与一段启动等待（📎 空库 3 条迁移约 1s，可忽略）<br>② 每次 `docker compose up` 都会**重跑**一次 migrate（📎 实测幂等：库已到 head 时 exit 0、数据不动）<br>③ `up` **不带** `--build` 时会用本地旧镜像，改了代码必须显式 `--build` —— 这条限制在加 migrate 之前就存在，不是新引入的<br>④ 迁移失败时 app 状态停在 `created`（不会 running），必须看 `compose ps -a` 才看得见；只 `docker compose ps` 会以为什么都没发生<br>⑤ 单机 compose 的 `service_completed_successfully` 换到 k8s 就是 initContainer / Job，语义等价但要重写编排文件 |
+| **重审条件** | ① 迁移时长涨到拖慢发版（> 30s）→ 评估只在新版本镜像变化时跑；② 上多节点后需要「只跑一次」的全局锁 → 迁移里加 advisory lock 或改由发布流水线触发；③ 若 `/health/ready` 也改成校验 `alembic_version == head`（K93 的第二层），这条决策的覆盖面收窄，可重审是否还需要 `depends_on` |
 
 ---
 
