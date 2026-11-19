@@ -1473,6 +1473,75 @@ POST /v1/conversations
 配大了 → 客户端请求通过我们的检查、却被上游以 400 拒绝、且 body 里没有超长 marker
 → 落到 `UPSTREAM_REJECTED` → **502**（语义上"我们的配置错了"，但看起来像上游故障）。
 
+### 13.5 容器栈的三条时序（13a 收口，2026-11-19）
+
+> 判据：**能凭这三张图回答「谁先起、谁先停、出事时用户看到什么」**。
+> 三张图的每一步都有 📎 实测（13a-2b / 13a-2c，Docker 29.9.3，隔离项目 + 全新空卷）。
+
+#### ① `docker compose up` —— 启动顺序
+
+```text
+docker compose up -d
+        │
+        ├─ ① migrate（一次性，restart: "no"）
+        │       command: python -m alembic upgrade head
+        │       env: 只有 DATABASE_URL（不挂 .env → 没有 LLM_API_KEY）
+        │       卷:  app_data:/app/data（与 app 同一个）
+        │       exit 0 ──────────────┐
+        │       exit ≠ 0 ──▶ ✗ up 退出码 1，app 停在 created，不会启动
+        │                            │
+        ├─ ② app ◀───────────────────┘（condition: service_completed_successfully）
+        │       env_file: .env + environment（HOST=0.0.0.0 / PORT=8000 / DATABASE_URL）
+        │       expose: 8000（不对宿主发布）
+        │       healthcheck（镜像自带）→ 探 127.0.0.1:8000/health
+        │       healthy ─────────────┐
+        │                            │
+        └─ ③ proxy ◀────────────────┘（condition: service_healthy）
+                nginx:1.29-alpine，唯一发布 80
+                /nginx-health → 200 "ok"（只证 nginx 活着，不牵 app）
+```
+
+#### ② 一次请求走的路
+
+```text
+浏览器 ──HTTP:80──▶ proxy(nginx)
+                      │  resolver 127.0.0.11 valid=10s + server app:8000 resolve
+                      │  proxy_buffering off   ← 不关它，SSE 会被攒成一块
+                      │  proxy_read_timeout 130s > upstream_total_timeout 120s
+                      ▼
+                    app(uvicorn, 单进程, uid 10001)
+                      ├─ X-API-Key → sha256 → users/api_keys（401 的唯一来源）
+                      ├─ 令牌桶（按 user.id，60/分 + 突发 20 → 429 + Retry-After）
+                      ├─ SQLite（命名卷 /app/data/app.db）
+                      └─ httpx → api.deepseek.com（闸门 4 个槽位；总预算 120s）
+```
+
+⚠️ 代理这一跳**自己也会产生错误**，而它不受我们的 envelope 管：
+`client_max_body_size 1m` 超限 → **413 HTML 页**（`server: nginx/1.29.8`），
+而 app 自己的超限是 **422 JSON** → 两种形状并存（[#89](../docs/todos.md)）。
+
+#### ③ `docker compose stop` —— 停机顺序（依赖者先停）
+
+```text
+docker compose stop
+        │
+        ├─ ① proxy  收 SIGQUIT（compose 的 stop_signal）
+        │       不再接新连接，把「手上还有的请求」做完 → 在途 SSE 继续流
+        │       📎 stop 在 1.2s 发起，客户端仍跑到 4.8s 收到 data: [DONE]
+        │
+        ├─ ② app    收 SIGTERM → uvicorn 的 timeout_graceful_shutdown=30s（决策 39）
+        │       宽限期内跑完 → exit 0；超窗口 → 明确切断（无 [DONE]）
+        │       compose 的 stop_grace_period: 40s = 30s 窗口 + 10s 收尾余量
+        │
+        └─ ③ migrate（已退出的容器，无事可做）
+
+📎 三个容器 ExitCode 全 0。⚠️ 换默认 SIGTERM 给 nginx 就是 fast shutdown = 掐断连接。
+```
+
+⚠️ **启动 / 停机两条链上的每个等待都有超时**：migrate 失败不会卡住（直接非 0 退出）、
+app 等 `service_healthy` 最多等到健康检查判失败、nginx 的 `proxy_read_timeout 130s`
+必须大于应用侧 120s —— **任何一处配反，症状都是「用户端莫名断开」而不是报错**。
+
 ---
 
 ## 14. 决策 ↔ 代码 ↔ 钉住它的测试（一张对账表）
@@ -1516,7 +1585,7 @@ POST /v1/conversations
 | 42 | 限流：进程内令牌桶，按 user 计不按 key 计 | [ratelimit.py](../src/app/ratelimit.py) `RateLimiter`、[deps.py](../src/app/api/deps.py) `require_user` | ✅ `test_rate_limit.py`（9 条；📎 变异「桶不按 user 分」→ `assert 429 == 200`） |
 | 43 | 镜像多阶段 + 非 root + exec 形式 `python -m app` | [Dockerfile](../Dockerfile)、[.dockerignore](../.dockerignore) | ✅ `tests/test_docker_assets.py`（5 条；📎 7 个变异全红）+ 📎 真 `docker build` / `docker run`（13a-1c） |
 | 45 | 部署时迁移由一次性 `migrate` 服务执行，app 等它成功再起 | [docker-compose.yml](../docker-compose.yml) `migrate` / `app.depends_on` | ✅ `test_docker_assets.py::test_compose_migrates_before_app_starts` + `::test_compose_defines_database_url_once`（📎 6 个变异全红：删 `depends_on` / 换卷 / 加 `env_file` / 抄第二份连接串 / app 自己跑迁移 / `restart: always`） |
-| 46 | 入口只有 nginx，app 不发布宿主端口 | [docker-compose.yml](../docker-compose.yml) `proxy`、[deploy/nginx.conf](../deploy/nginx.conf) | ⚠️ 无自动化用例 —— 靠隔离项目实测（📎 401/201 形状不变、宿主 8000 不通、SSE 逐帧到达、stop 期间流跑到 `[DONE]`、`resolver` 修正 IP 变更后的 502） |
+| 46 | 入口只有 nginx，app 不发布宿主端口 | [docker-compose.yml](../docker-compose.yml) `proxy`、[deploy/nginx.conf](../deploy/nginx.conf) | ✅ `test_docker_assets.py` 4 条：`test_app_is_not_published_to_host` / `test_proxy_waits_for_healthy_app_and_exits_gracefully` / `test_nginx_conf_streams_and_reresolves` / `test_nginx_read_timeout_exceeds_app_budget`（📎 11 个变异全红：`buffering on` / 删 `resolver` / 去 `resolve` / 读超时 60s / 删 `proxy_cache` / app 加回 `ports` / `SIGTERM` / `service_started` / 端口改 8080 / `.dockerignore` 删 `deploy/` / `UPSTREAM_TOTAL_TIMEOUT=200`） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
