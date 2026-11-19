@@ -47,6 +47,7 @@ LICENSE
 # ============ 其他 ============
 Dockerfile
 .dockerignore
+docker-compose*.yml
 
 # 【注意】：字节码缓存必须排掉 —— 否则本机（甚至另一个 Python 版本）的 .pyc 会被打进镜像，
 #   既占体积又可能和目标解释器不匹配（📎 实测上下文里混进过 cpython-314 的 .pyc，

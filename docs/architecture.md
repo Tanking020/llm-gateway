@@ -1551,6 +1551,7 @@ POST /v1/conversations
 | `auth.py` | API key 的生成 / 哈希 / 查人（请求鉴权与签发 CLI 共用） | 不认识 HTTP 头（只吃明文字符串） |
 | `ratelimit.py` | 令牌桶（按 key 分桶、时钟可注入） | 不认识 HTTP；不自己决定状态码 |
 | `Dockerfile`（仓库根） | 多阶段镜像：builder 只交出 `/opt/venv`；runtime 非 root + exec 形式 CMD | 不写业务配置（用环境变量注入） |
+| `docker-compose.yml`（仓库根） | 单机栈：`app` + **命名卷** `app_data:/app/data` + `stop_grace_period: 40s`；⚠️ 还没有 nginx（2c）与一次性 migrate（2b） | 不写密钥（`env_file: .env` 从宿主读）；不重复写 `healthcheck`（继承镜像） |
 | `.dockerignore` | 构建上下文里「白名单之外的一切」（📎 26 文件 / 471 KB） | 不排除 `uv.lock` / `alembic` / `src`（会构建失败） |
 | `keys.py` | API key 运维 CLI（`python -m app.keys create/list/revoke`） | 不含业务路由；不打印明文到日志 |
 | `api/app.py` | FastAPI 对象 + lifespan + 全部路由 | 不写上游协议细节 |
