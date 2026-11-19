@@ -116,6 +116,22 @@ uv run python -m app           # 监听地址 / 端口 / reload 全部读 .env
 > 用 `uv run python -m app` 而不是 `uvicorn app.api.app:app --reload`：前者的 `HOST` / `PORT` /
 > `DEBUG` 来自配置；后者会**静默绕过**它们（`.env` 写 `PORT=9001` 也不会生效）。
 
+### 用容器起整套（生产形态）
+
+前置：Docker Desktop（Linux 容器）。
+
+```bash
+docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+docker compose up -d            # ① 一次性迁移 → ② app 健康 → ③ nginx 就绪
+docker compose ps               # app / proxy 都是 healthy；migrate 是 exited 0
+```
+
+入口是 **nginx 的 80**（`http://127.0.0.1/health`）；⚠️ **宿主上的 8000 已不再发布** ——
+app 只在 compose 网络内被反代访问（[决策 46](docs/decisions.md)）。空库首启由 `migrate` 服务先跑完迁移，
+app 通过 `depends_on: service_completed_successfully` 等它（[决策 45](docs/decisions.md)）。
+
+细节（构建参数、日志打平命令、四处联动的网络/信任名单）见 [docs/dev-environment.md](docs/dev-environment.md) §8.0d。
+
 ## 使用
 
 ### 流式对话（SSE）
@@ -174,7 +190,7 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 
 ## 关键设计决策
 
-每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，32 条 ADR）。以下是影响最大的几条：
+每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，48 条 ADR）。以下是影响最大的几条：
 
 | 决策 | 选择 | 为什么 | 代价 / 何时重审 |
 |---|---|---|---|
@@ -196,6 +212,8 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 | 输入上限 | 单条 20 000 字符 / 100 条 / 合计 60 000 字符 | 分别拦下「巨型单条」「海量短消息」「乘积爆炸」 |
 | 客户端断开 | — | `aclose()` 让上游实测 **4 ms 内**停止生成；已产生的用量仍落账单（`aborted`） |
 | 账单对账 | 四态 `StrEnum` | `status` 只回答「金额准不准」，不回答「内容空不空」 |
+| 入口与部署 | nginx 独占 80，app 只 `expose` | 空库首启由一次性 `migrate` 服务先跑完（决策 45 / 46）；宿主 8000 不再发布 |
+| 日志 | 一行一 JSON（`client` / `request_id` / `duration_ms`） | 轮转交给 Docker（`10m × 3`）；⚠️ nginx 自己的 413/502/504 不是 JSON（[#89](docs/todos.md)） |
 | 生产防护 | `APP_ENV=prod` | 交互式文档全部关闭；`DEBUG=true` 直接拒绝启动 |
 
 单请求最坏成本 ≈ **$0.05**（按 1 M 上下文上限 + 4096 输出上限推算，见 [docs/architecture.md](docs/architecture.md)）。
@@ -206,14 +224,14 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
-uv run pytest -q        # 153 个用例，约 13 s
+uv run pytest -q        # 172 个用例，约 14 s
 ```
 
 | | 结果 |
 |---|---|
-| `ruff check` / `format --check` | 全绿（44 files） |
-| `mypy --strict` | 全绿（47 source files，含 `tests/`、`scripts/` 与 `playground/`） |
-| `pytest -q` | **153 passed** |
+| `ruff check` / `format --check` | 全绿（46 files） |
+| `mypy --strict` | 全绿（49 source files，含 `tests/`、`scripts/` 与 `playground/`） |
+| `pytest -q` | **172 passed** |
 | 分支覆盖 | **93%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
 
@@ -244,6 +262,9 @@ uv run pytest -q        # 153 个用例，约 13 s
 | 外键查询（5 万行） | 全表扫 | **快 25 倍** | 加 `index=True` |
 | 连接复用（20 次请求） | 20 条 TCP | **1 条 TCP（快 6.28 倍）** | httpx 连接池 |
 | 上游停止生成的延迟 | — | **4 ms** | 客户端断开后 `aclose()` |
+| 容器空库首启 | 首请求 `no such table` | **migrate 先跑 → app healthy → 201** | 隔离项目 + 全新卷（决策 45） |
+| 反代下的流式 | `proxy_buffering on` 一次性到齐（2.07 s） | **逐帧 0.07 / 0.47 / 0.87 …** | `proxy_buffering off`（决策 46） |
+| 发版不停在途流 | 依赖者先停会掐断 | **在途流跑到 4.8 s 收到 `[DONE]`** | `stop_signal: SIGQUIT`（决策 46） |
 
 ## 项目结构
 
@@ -267,11 +288,13 @@ uv run pytest -q        # 153 个用例，约 13 s
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 153 个用例，按「测哪一层」分为 17 个文件
+├── tests/                  # 172 个用例，按「测哪一层」分为 19 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── Dockerfile              # 多阶段构建 + 非 root + exec 形式 CMD（13a-1）
 ├── .dockerignore           # 构建上下文只有 26 个文件 / 471 KB（排掉 .venv 113 MB、.env）
+├── docker-compose.yml      # 单机栈：migrate（一次性）→ app（不发布端口）→ proxy（nginx 独占 80）
+├── deploy/nginx.conf       # 反代配置：关缓冲（SSE）、上游重解析、body 上限、健康端点
 ├── playground/             # 一次性实验脚本（不参与交付）
 ├── scripts/                # 验收探针（手工跑、不进 CI）：如 probe_graceful_shutdown.py（决策 39）
 ├── pyproject.toml          # 依赖、工具配置、lint 边界的唯一来源
@@ -282,11 +305,11 @@ uv run pytest -q        # 153 个用例，约 13 s
 
 | 状态 | 内容 |
 |---|---|
-| ✅ **已完成** | HTTP/ASGI 地基 → 参数与契约 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式 → 上游适配器封层 → 持久化与账单 → 配置 / 日志 / 安全 → 回归测试 → CI |
-| 🔜 **进行中（P1，上线前）** | 容器化与反向代理（[#49](docs/todos.md)）· 池参数按压测定（[#59](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)）· 指标与告警（[#66](docs/todos.md)） |
+| ✅ **已完成** | HTTP/ASGI 地基 → 参数与契约 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式 → 上游适配器封层 → 持久化与账单 → 配置 / 日志 / 安全 → 回归测试 → CI → **容器化（镜像 + 一次性迁移 + nginx 入口）** → **访问日志带客户端 IP** → **日志 JSON 化 + 轮转** |
+| 🔜 **进行中（P1，上线前）** | 指标与告警（[#66](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)）· 池参数按压测定（[#59](docs/todos.md)）· 灰度与回滚 |
 | 📋 **规划中** | 消息持久化（`messages` 表）· 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
-完整的 87 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
+完整的 89 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 文档
 

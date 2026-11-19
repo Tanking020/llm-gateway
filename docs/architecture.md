@@ -1094,13 +1094,14 @@ lifespan 启动段[1]
         └─ 📎 database 只打「方言://…/库名」—— 不出现 用户名:密码@主机
 ```
 
-📎 真进程第一屏样本（`MAX_CONCURRENT_UPSTREAM_CALLS=7`）：
+📎 真进程第一屏样本（`MAX_CONCURRENT_UPSTREAM_CALLS=7`；13e-2 起是 JSON，下面是展开后的可读形式）：
 
-```text
-INFO    app.api.app | 生效配置：{'app_env': 'dev', 'debug': False, 'database': 'sqlite+aiosqlite://…/x.db',
-                                'max_concurrent_upstream_calls': 7, 'upstream_queue_timeout': 1.0,
-                                'max_tokens_ceiling': 4096, 'request_timeout': 30.0,
-                                'upstream_total_timeout': 120.0, 'graceful_shutdown_timeout': 30}
+```json
+{"ts": "2026-11-19T12:34:20.077+00:00", "level": "INFO", "logger": "app.api.app",
+ "msg": "生效配置：{'app_env': 'dev', 'debug': False, 'database': 'sqlite+aiosqlite://…/x.db',
+        'max_concurrent_upstream_calls': 7, 'upstream_queue_timeout': 1.0,
+        'max_tokens_ceiling': 4096, 'request_timeout': 30.0,
+        'upstream_total_timeout': 120.0, 'graceful_shutdown_timeout': 30}"}
 ```
 
 ⚠️ 白名单的「漏项」目前没有机械兜底（见 [#85](../docs/todos.md)）：`Settings` 新增字段而忘了加进摘要，测试不会红。
@@ -1143,8 +1144,11 @@ logger.info("…")            logger.error("…")
 ③ 沿 logger 树向上到 root  ← 名字是点分层级：app < app.api < app.api.app
       │
       ▼
-④ root 的 handler（StreamHandler → stderr）→ Formatter 拼格式 → 输出
+④ root 的 handler（`StreamHandler(stream=sys.stdout)`）→ Formatter（`JsonFormatter`）拼成一行 JSON → 输出
 ```
+
+> ⚠️ **是 stdout，不是 stderr**（📎 `logging_setup.py` 里 `"stream": "ext://sys.stdout"`）：
+> 容器里 stdout 才是「应用事件流」的规范出口（12-Factor 第 11 条），由 Docker 收集并轮转。
 
 ### 10.2 树形（📎 实测 `loggerDict`）
 
@@ -1196,7 +1200,7 @@ root  (WARNING, 有我们的 handler)
 tests/
 ├── conftest.py   ① 环境地基（必须在 import app 之前就位）
 │     ├─ 删旧测试库（.db / -wal / -shm）
-│     ├─ os.environ["DATABASE_URL"] = %TEMP%/llm-app-test.db
+│     ├─ os.environ["DATABASE_URL"] = %TEMP%/llm-app-test-<pid>.db   ← 一进程一个库（#87 / 坑 K94）
 │     ├─ import app  ← 到这一行 settings 才定型
 │     ├─ _truncate_all()   清表（子 → 父）
 │     └─ client fixture    with TestClient(app) → 触发 lifespan → 清表 → yield
@@ -1206,18 +1210,22 @@ tests/
 │     └─ FakeLlm(LlmClient)              list_models / open_chat_stream / last_body
 │
 └── test_*.py     ③ 按【测哪一层】分家
-      ├─ 地基自检 ──────────── smoke
+      ├─ 地基自检 ──────────── smoke（含「一进程一库」的真子进程用例）
       ├─ HTTP 契约 ─────────── conversations / errors
+      ├─ 身份与配额 ────────── auth / rate_limit / keys_cli
       ├─ 路由层接线与守卫 ──── upstream / stream_frames / stream_accounting
-      ├─ 适配器协议层 ──────── stream_adapter / adapter_http ← 唯一允许 import httpx 的测试
-      ├─ 并发与连接池 ──────── concurrency ← 唯一真起 uvicorn 的测试
-      ├─ 迁移层 ────────────── migrations ← 唯一【起子进程】的测试（跑 alembic CLI）
-      ├─ 源码约定 ──────────── source_rules ← 唯一【只读源码不跑应用】的静态检查（AST）
+      ├─ 适配器协议层 ──────── stream_adapter / adapter_http ← 允许 import httpx（构造/喂数据，不调上游）
+      ├─ 并发与连接池 ──────── concurrency ← 真起 uvicorn + 真 TCP
+      ├─ 访问日志与日志格式 ── access_log（真 uvicorn 验可信链）/ log_json（子进程验一行一 JSON）
+      ├─ 迁移层 ────────────── migrations ← 起子进程跑 alembic CLI
+      ├─ 源码约定 ──────────── source_rules ← 只读源码不跑应用（AST + 文本规则）
+      ├─ 容器产物静态检查 ──── docker_assets ← 只读 Dockerfile / .dockerignore / compose / nginx.conf
+      ├─ 启动接线 ──────────── startup_config（白名单 + 优雅窗口真的传给了 uvicorn）
       └─ 护栏上限 ──────────── limits（闸门 503 / 槽位归还 / max_tokens / 输入长度）
 ```
 
-📌 **用例数 / 每个文件测什么 / 要不要真服务** —— 唯一出处是 [tests/README.md](../tests/README.md) §1。
-本文件不抄一份（抄了就会有两处数字，改一处必漏另一处）。
+📌 **每个文件测什么 / 各有多少用例 / 要不要真服务** —— 唯一出处是
+[tests/README.md](../tests/README.md) §1。本文件不抄一份（抄了就会有两处数字，改一处必漏另一处）。
 
 ### 11.2 依赖注入图（fixture 与 override）
 

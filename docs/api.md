@@ -5,6 +5,7 @@
 > [`src/app/api/app.py`](../src/app/api/app.py)（路由）。
 >
 > 自动生成的交互式文档：服务启动后打开 `http://127.0.0.1:8000/docs`（仅 `APP_ENV=dev` 时开启）。
+> ⚠️ **走 compose 时入口是 nginx 的 80**（`http://127.0.0.1/docs`），宿主上的 8000 已不再发布（决策 46）。
 > 形状的图形化版本（七层栈 / ER / 帧序 / 状态机）见 [architecture.md](architecture.md)。
 > 端点表的变更记录见 [DEVLOG.md](DEVLOG.md)。
 
@@ -125,6 +126,36 @@ curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
 `src/app/errors.py` 的 `_STATUS_BY_CODE`，所有错误响应经同一个出口 `_error_response()` 生成，
 `X-Request-ID` 响应头**恒等于** body 里的 `request_id`。
 
+**全部业务码（16 个，📎 从 `_STATUS_BY_CODE` 实读）** —— 「谁的责任」决定客户端该**等**、**改**还是**重试**：
+
+| 状态码 | `code` | 什么时候出现 | 客户端该做什么 |
+|---|---|---|---|
+| 400 | `LAST_MESSAGE_NOT_USER` | 最后一条消息不是 `user` | 改请求 |
+| 400 | `INVALID_MAX_TOKENS` | `max_tokens` 非正 / 超上限 | 改小 |
+| 401 | `UNAUTHORIZED` | 没带 / 无效 / 已撤销的 `X-API-Key`（响应带 `WWW-Authenticate`） | 换 key |
+| 404 | `MODEL_NOT_FOUND` | `/v1/models/{name}` 的名字不在清单里 | 改名字 |
+| 404 | `CONVERSATION_NOT_FOUND` | 对话不存在**或不属于本人**（同形，不确认存在性） | 别重试 |
+| 413 | `UPSTREAM_PAYLOAD_TOO_LARGE` | **上游**说请求体太大 | 缩短内容 |
+| 429 | `RATE_LIMITED` | **我们**限这个客户端（按 `user.id`） | 等 `Retry-After` |
+| 429 | `UPSTREAM_RATE_LIMITED` | **上游**限我们 | 等 `Retry-After` |
+| 502 | `UPSTREAM_UNREACHABLE` | 上游根本没回应（DNS / TCP / TLS 失败） | 稍后重试 |
+| 502 | `UPSTREAM_AUTH_FAILED` | **我们的**上游密钥坏了 | 重试无用，报障 |
+| 502 | `UPSTREAM_REJECTED` | 上游拒收我们发的 body | 重试无用，报障 |
+| 502 | `UPSTREAM_BAD_STATUS` | 上游回了意料外的 3xx / 5xx（兜底） | 5xx 可重试 |
+| 502 | `UPSTREAM_MALFORMED` | 上游 200 但 body 不是约定结构（HTML / 空 / 字段改名） | 重试无用，报障 |
+| 503 | `DB_UNAVAILABLE` | 数据库连不上（**不是** `no such table`，那是我们的 bug） | 等 |
+| 503 | `SERVER_BUSY` | 我方并发闸门顶穿（不是「你请求太多」—— 那是 429） | 等 `Retry-After` |
+| 504 | `UPSTREAM_TIMEOUT` | 超出 `upstream_total_timeout` 的总时长预算 | 缩短问题后重试 |
+| 500 | `INTERNAL_ERROR` | **我们的** bug（没有对应业务码时兜底） | 报障，附 `request_id` |
+
+📌 429 有**两个**码但责任方相反：`RATE_LIMITED` = 你太多，`UPSTREAM_RATE_LIMITED` = 上游限我们。
+
+> 🔴 **例外：反代自己产生的错误不是这个形状**（13a-2c 起 nginx 独占 80）。
+> `client_max_body_size 1m` 超限 → nginx 直接回 **413 + HTML 页**（`server: nginx/1.29.8`），
+> 与 app 自己因 60k 字符上限回的 **422 JSON** 是**两种形状两种状态码**（待办 [#89](todos.md)）。
+> 同理上游不可达时，**nginx 自己**也可能回 502/504（HTML）—— 那是「代理到不了 app」，
+> 不是 app 报的错。前端解析错误体前必须先看 `content-type`。
+
 > ✅ 流式接口在 `/docs` 里已正确标成 `text/event-stream`（Step 11f：`SseResponse` 的类属性 `media_type` +
 > `response_class=`；只加 `responses={200: …}` 不够，会把 `application/json` 一起留着）。
 
@@ -236,9 +267,13 @@ curl.exe -i http://127.0.0.1:8000/health -H "X-Request-ID: my-trace-001"
 #   -> x-request-id: my-trace-001
 
 # 不带就自动生成；500 时响应头与响应体里的 request_id 完全相同
-# 服务端每个请求都有一行访问日志：
-#   GET /v1/upstream/models -> 200 157.7ms request_id=c68615732f4e
-#   GET /__boom -> ERR 1.1ms request_id=9af3ecfbb812      （ERR = 异常路径上还没有响应对象）
+# 服务端每个请求都有一行【JSON】访问日志（13e-2，决策 48）：
+#   {"ts": "2026-11-19T12:34:20.117+00:00", "level": "INFO", "logger": "app.api.app",
+#    "msg": "request", "method": "GET", "path": "/v1/upstream/models", "status": 200,
+#    "duration_ms": 157.7, "client": "203.0.113.7", "request_id": "c68615732f4e"}
+#   异常路径上 status 是字符串 "ERR"（此时还没有响应对象）
+# 【注意】：client 是「TCP 对端 + 可信代理写的 X-Forwarded-For」解析后的结果（决策 47），
+#   不是邮件头里那串原文 —— 原文可被客户端伪造
 ```
 
 **手工验证**（PowerShell 里 `curl` 是 `Invoke-WebRequest` 的别名，必须写 `curl.exe`）：

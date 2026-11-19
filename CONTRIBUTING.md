@@ -152,6 +152,8 @@ uv run alembic downgrade base && uv run alembic upgrade head
 | 做了一个取舍 | [docs/decisions.md](docs/decisions.md) 加一条 ADR（五段：背景 → 方案对比 → 决定 → **代价** → 重审条件） |
 | 改了接口形状 / 中间件 / 状态机 | [docs/architecture.md](docs/architecture.md) + [docs/api.md](docs/api.md) |
 | ↳ 其中**「接口形状」包括**：端点增删、**新增必填请求头 / 请求体字段**、**新增错误码或状态码**、响应字段增删 | 同上（📎 2026-11-17 教训：13d-2 加了 `X-API-Key` + 401，`architecture.md` 改了，`api.md` 漏了 → 文档里的 curl 示例全部会 401） |
+| 改了**部署形态**（compose / nginx / 端口 / 网络 / 卷） | [docs/architecture.md](docs/architecture.md) §13.5 时序图 + `docker-compose.yml` 里的 `【注意】` + [docs/dev-environment.md](docs/dev-environment.md) §8.0d + `tests/test_docker_assets.py` 的守卫 |
+| 改了**日志字段或格式** | [docs/architecture.md](docs/architecture.md) §10.3 字段表 + [notes/logging.md](notes/logging.md) + `tests/test_log_json.py`；⚠️ 别在 `api.md` 里抄一份字段清单（单一真相） |
 | 踩了一个可复现的坑 | [docs/DEVLOG.md](docs/DEVLOG.md) §三 加一行（`K<n>`），**写出复现方式** |
 | 学到一条跨项目结论或原理 | [notes/](notes/) 的对应文件（不要写进 `docs/`） |
 | 改了阶段进度 | [docs/roadmap.md](docs/roadmap.md) |
