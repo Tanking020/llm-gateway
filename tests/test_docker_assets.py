@@ -16,6 +16,7 @@ import yaml
 _ROOT = Path(__file__).resolve().parents[1]
 _DOCKERFILE = _ROOT / "Dockerfile"
 _DOCKERIGNORE = _ROOT / ".dockerignore"
+_NGINX_CONF = _ROOT / "deploy" / "nginx.conf"
 _COMPOSE = _ROOT / "docker-compose.yml"
 
 # 镜像里【必须】有的路径：缺任何一个，构建或运行就会坏
@@ -40,6 +41,8 @@ _FORBIDDEN_IN_CONTEXT = [
     "alembic/versions/__pycache__/y.pyc",
     "data/app.db",
     "logs/app.log",
+    # 【注意】：deploy/ 只给宿主上的 compose 用，进镜像上下文毫无意义（且拖慢传输）
+    "deploy/nginx.conf",
 ]
 
 
@@ -252,3 +255,66 @@ def test_compose_defines_database_url_once() -> None:
     assert app["environment"]["DATABASE_URL"] == url
     # 【注意】：把迁移塞进 app 启动命令 → 每次重启都跑、多副本并发迁移（决策 45 否掉的方案 B）
     assert "alembic" not in str(app.get("command", "")), "app 不许自己跑迁移"
+
+
+def _nginx_code() -> str:
+    """读 nginx 配置并【去掉注释】—— 否则注释里提到 proxy_buffering 也会被当成配置
+
+    【注意】：单行内 `#` 之后整段都是注释，nginx 本身就是这么解析的
+    """
+    text = _NGINX_CONF.read_text(encoding="utf-8")
+    return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+
+
+def test_app_is_not_published_to_host() -> None:
+    """回归：入口只允许 nginx —— app 一旦 publish 端口，就绕过了反代（决策 46）"""
+    services = _compose()["services"]
+    app, proxy = services["app"], services["proxy"]
+    # 【注意】：发布端口 = 任何能连本机的人都能绕过 nginx 直连应用
+    assert "ports" not in app, "app 不能再发布宿主端口 —— 入口只允许 nginx"
+    assert app.get("expose") == ["8000"]
+    published = [str(p) for p in proxy["ports"]]
+    assert published == ["80:80"], f"只有 proxy 该发布端口，实际 {published}"
+
+
+def test_proxy_waits_for_healthy_app_and_exits_gracefully() -> None:
+    """回归：反代等 app 健康才起 + 收到 SIGQUIT 才优雅退出（决策 46 ③④）"""
+    proxy = _compose()["services"]["proxy"]
+    assert proxy["depends_on"]["app"]["condition"] == "service_healthy", (
+        "反代必须在 app 健康后才起，否则启动期全是 502"
+    )
+    # 【注意】：nginx 对 SIGTERM 是 fast shutdown（掐断在途连接），SIGQUIT 才等它做完
+    assert proxy["stop_signal"] == "SIGQUIT", (
+        "nginx 默认 SIGTERM 是 fast shutdown，会掐断在途 SSE（决策 46）"
+    )
+    mounts = proxy["volumes"]
+    assert any(str(m).endswith(":ro") and "nginx.conf" in str(m) for m in mounts), (
+        "nginx 配置必须以只读方式挂进 conf.d"
+    )
+
+
+def test_nginx_conf_streams_and_reresolves() -> None:
+    """回归：流式与上游重解析的四个前提（决策 46 ①②）"""
+    code = _nginx_code()
+    # 【注意】：默认 on 会把 SSE 攒成一块 —— 📎 实测 5 帧 × 0.4s 全在 2.07s 到齐
+    assert "proxy_buffering off;" in code, "不关缓冲，SSE 会被 nginx 攒成一块"
+    assert "proxy_cache off;" in code
+    # 【注意】：nginx 只在上线时解析一次上游 IP；app 换 IP 后不重解析就一直 502
+    assert re.search(r"resolver\s+127\.0\.0\.11\s+valid=", code), (
+        "缺 resolver，上游 IP 变更后永久 502"
+    )
+    assert re.search(r"server\s+app:8000\s+resolve;", code), "上游必须带 resolve"
+    assert re.search(r"zone\s+\S+\s+\d+k?;", code), "resolve 需要共享内存 zone"
+
+
+def test_nginx_read_timeout_exceeds_app_budget() -> None:
+    """回归：代理读超时必须大于应用侧总预算，否则长流被代理先掐（决策 46 ③ 的代价）"""
+    from app.config import settings  # 局部 import：本文件其它用例不需要 app 包
+
+    match = re.search(r"proxy_read_timeout\s+(\d+)s;", _nginx_code())
+    assert match, "缺 proxy_read_timeout"
+    timeout = int(match.group(1))
+    # 【注意】：这两个数是「同一份事实的两处副本」—— 改 UPSTREAM_TOTAL_TIMEOUT 必须同步改 nginx
+    assert timeout > settings.upstream_total_timeout, (
+        f"nginx {timeout}s 必须 > upstream_total_timeout {settings.upstream_total_timeout}s"
+    )
