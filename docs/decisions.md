@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-19 · 共 46 条
+**最后更新**：2026-11-19 · 共 47 条
 
 ---
 
@@ -67,6 +67,7 @@
 | [44](#44-镜像里的-uv-用-pip-装项目用---no-editable-装) | 镜像里怎么装依赖 | **pip 装 uv + `uv sync --no-editable`** | 2026-11-18 |
 | [45](#45-部署时迁移由一次性-migrate-服务执行app-等它成功再起) | 部署时谁跑迁移 | **一次性 `migrate` 服务 + `depends_on: service_completed_successfully`** | 2026-11-19 |
 | [46](#46-入口只有-nginxapp-不再对宿主暴露端口) | 流量入口长什么样 | **nginx 独占 80；`proxy_buffering off`；`resolver` 重解析；SIGQUIT 优雅退出** | 2026-11-19 |
+| [47](#47-客户端-ip-只信代理那一跳伪造的-x-forwarded-for-一律不算) | 客户端 IP 从哪来 | **`FORWARDED_ALLOW_IPS` = 代理固定 IP；日志前先净化** | 2026-11-19 |
 
 ---
 
@@ -866,6 +867,18 @@
 | **决定** | **C**，且四个细节必须显式写：① **`proxy_buffering off`** —— nginx 默认 `on` 会把 SSE 攒成一块（📎 5 帧 × 0.4s 的流：`off` 逐帧 0.07/0.47/0.87…，`on` 全部在 2.07s 到达）；② **`resolver 127.0.0.11 valid=10s` + `server app:8000 resolve`** —— nginx 默认只在上线时解析一次上游 IP，app 重建换 IP 后**永久 502**（📎 实测：app IP 从 `.2` 变 `.4` 后日志 `connect() failed ... upstream: "http://172.18.0.2:8000"`，加 `resolve` 后同一场景 200）；③ **`stop_signal: SIGQUIT`** —— nginx 对 SIGTERM 是 fast shutdown（📎 compose `stop` 输出顺序确实是 `proxy Stopped → app Stopping`，所以反代先走；SIGQUIT 才让它「不再接新连接、把在途请求跑完」）；④ **`depends_on: app: condition: service_healthy`** —— 反代不该在 app 还没就绪时就开始 502 |
 | **代价** ⚠️ | ① 多一个容器 + 一份 `deploy/nginx.conf`；② **`client_max_body_size 1m` 的 413 是 nginx 的 HTML 页，不是我们的 JSON envelope**（📎 实测 `content-type: text/html`、`server: nginx/1.29.8`），而 app 自己的超限是 **422 JSON** → 「请求太大」出现两种状态码两种形状（[#89](todos.md)）<br>③ `proxy_read_timeout 130s` 是**手工算出来的**（> `upstream_total_timeout` 120s），改那个旋钮必须同步改这里 —— 两处副本<br>④ 停服链多一环：proxy 停 → app 停，任何一环的信号/宽限期配错都会砍掉在途流（📎 实测 stop 期间在途流跑到 4.8s 收到 `[DONE]`，三容器 exit 0）<br>⑤ `FORWARDED_ALLOW_IPS="*"` 意味着**信任任何来源的 `X-Forwarded-For`** —— 只有在「app 端口不对宿主发布」时才是安全的 |
 | **重审条件** | ① 有域名 + 要自动证书 → 评估 Caddy 或 certbot 是否比手写 nginx 更省；② 上多副本/多机 → 上游要从 compose 服务名换成真实负载均衡器，`resolver` 那套跟着改；③ 若 #89 决定「让 app 的 422 成为唯一出口」，`client_max_body_size` 要抬到与 `MAX_TOTAL_CHARS` 对应的字节数并重估；④ 若引入 CDN/WAF，`X-Forwarded-For` 的可信链要重算（`real_ip` 模块 + 只信自己那层） |
+
+---
+
+## 47. 客户端 IP：只信代理那一跳，伪造的 `X-Forwarded-For` 一律不算
+
+| 项 | 内容 |
+|---|---|
+| **背景** | [#56](todos.md)：11c 关掉 `uvicorn.access` 后，每请求只剩中间件那一行，**没有客户端 IP** —— 出故障时分不清「一个客户端刷 1 万次」和「一万个客户端各一次」。上线后流量必经 nginx，而 `X-Forwarded-For`（下称 XFF）是**客户端也能自己填的头** |
+| **方案对比** | **A 保持 uvicorn 默认（只信 `127.0.0.1,::1`）**：容器里对端是 nginx 的 IP → 📎 头被**完全忽略**，日志里永远是 nginx 地址<br>**B `FORWARDED_ALLOW_IPS="*"`**：一行搞定，但**任何人伪造 XFF 都被采信**（📎 实测变成 `client=1.2.3.4`）<br>**C 自己解析 `X-Real-IP`**：等于自己再实现一遍信任链，且要自己处理「从右往左」逻辑<br>**D 只信代理那一个 IP**：✅ uvicorn 已有 `ProxyHeadersMiddleware`，支持单 IP 与 CIDR，且 `get_trusted_client_address` **从右往左**找第一个不可信地址（左边是客户端可伪造的部分） |
+| **决定** | **D**。三项配套：① compose 钉死网络 `172.30.0.0/24` 并用 `ip_range: 172.30.0.128/25` 把**动态地址赶到上半段**；② `proxy` 固定 `ipv4_address: 172.30.0.2`；③ `app.environment.FORWARDED_ALLOW_IPS: "172.30.0.2"`。日志侧再补一层：`_client_label()` 去掉控制字符、截断 64 字符后才写进日志（`X-Forwarded-For` 是外部输入，换行可伪造日志行，CWE-117） |
+| **代价** ⚠️ | ① **网段与固定 IP 是硬编码**：换网段要同时改 `subnet` / `ip_range` / `ipv4_address` / `FORWARDED_ALLOW_IPS` 四处（守卫会红，提醒你别漏）<br>② 与宿主已有网络冲突时 `up` 会**响亮失败**（可接受：静默错配更难查）<br>③ 固定 IP 与动态分配**会打架**：📎 实测第一版没写 `ip_range` 时 app 先抢到 `.2`，proxy 随后绑 `.2` 报 `Address already in use` → 必须靠 `ip_range` 分隔<br>④ 以后加第二层代理（CDN / WAF）时信任链要重算：`real_ip` 模块 + 只信自己那层，本条的 `FORWARDED_ALLOW_IPS` 会变成一段链<br>⑤ `client` 只是「TCP 对端 + 可信链解析」的结果，**不是身份**：限流仍按 `user.id`（决策 42），不按 IP |
+| **重审条件** | ① 引入 CDN/WAF → 信任链变化，需重写 `real_ip` 与信任名单；② 迁到 K8s → 用 Service/Ingress，`FORWARDED_ALLOW_IPS` 改为集群内部 CIDR；③ 若出现「未登录也按 IP 限流」的需求，`client` 才成为安全边界，需要重新评估伪造风险 |
 
 ---
 

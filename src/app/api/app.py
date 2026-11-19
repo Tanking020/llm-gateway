@@ -11,6 +11,7 @@ import json
 
 # logging：标准库日志模块，用来记"每个请求做了什么、花了多久"
 import logging
+import re
 import time
 import uuid
 
@@ -101,6 +102,22 @@ configure_logging()
 
 logger = logging.getLogger(__name__)
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+_MAX_CLIENT_LEN = 64
+
+
+def _client_label(request: Request) -> str:
+    """取「可信链解析后」的客户端地址，净化成能安全写进日志的字符串
+
+    【注意】：request.client 可能已被 uvicorn 的 ProxyHeadersMiddleware 用
+        X-Forwarded-For 改写 —— 那是外部输入，直接格式化进日志可伪造日志行（CWE-117）
+    """
+    client = request.client
+    if client is None:
+        return "-"
+    label = _CONTROL_CHARS.sub("", str(client.host))[:_MAX_CLIENT_LEN]
+    return label or "-"
+
 
 # 交互式文档只在开发环境开放：prod 下它会把全部接口形状公开给任何人
 # 【注意】：三个要一起关 —— 只关 docs 时 /openapi.json 仍能拿到完整结构
@@ -175,13 +192,14 @@ async def add_request_id(
         duration_ms = (time.perf_counter() - start) * 1000
         # 访问日志属于 INFO（正常发生的事）：请求失败也是这一行，失败详情由异常处理器的 ERROR 记
         logger.info(
-            "%s %s -> %s %.1fms request_id=%s",
+            "%s %s -> %s %.1fms client=%s request_id=%s",
             request.method,
             request.url.path,
             # getattr 是 Python 内置函数，作用是根据名字获取对象的属性
             # 异常路径上没有 response 时，用 ERR 占位
             getattr(response, "status_code", "ERR"),
             duration_ms,
+            _client_label(request),
             request_id,
         )
 
