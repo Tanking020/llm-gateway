@@ -162,6 +162,9 @@ select = ["E", "F", "I", "UP", "B", "TID"]
 # test_concurrency.py 要【真的做 TCP 客户端】才能产生并发与背压 —— TestClient 直连 ASGI，
 #   一帧不读也不会占住连接。判据：它必须用网络客户端，而 llm_client 之外只有这里允许
 "tests/test_concurrency.py" = ["TID251"]
+# test_access_log.py 要【真的做 TCP 客户端】才能让 uvicorn 的 ProxyHeadersMiddleware 进栈
+#   （TestClient 直连 ASGI，那层中间件根本不存在）。判据同 concurrency：从外面连 127.0.0.1
+"tests/test_access_log.py" = ["TID251"]
 # playground/ 是学习实验脚本，刻意直接写 httpx（不经过适配器），不是业务代码
 "playground/*.py" = ["TID251"]
 # scripts/ 是【验收探针】：它必须当 HTTP 客户端去敲【本项目的服务】，与 playground 同型

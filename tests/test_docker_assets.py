@@ -318,3 +318,17 @@ def test_nginx_read_timeout_exceeds_app_budget() -> None:
     assert timeout > settings.upstream_total_timeout, (
         f"nginx {timeout}s 必须 > upstream_total_timeout {settings.upstream_total_timeout}s"
     )
+
+
+def test_forwarded_allow_ips_matches_proxy_static_ip() -> None:
+    """回归：信任名单必须与非信任名单一对一 —— 否则伪造 XFF 就被采信（#56 / 决策 47）"""
+    services = _compose()["services"]
+    trusted = services["app"]["environment"]["FORWARDED_ALLOW_IPS"]
+    # 【注意】：写 "*" 等于信任所有人 —— app 虽不发布端口，但不该靠"反正连不上"来兜底
+    assert trusted != "*", "FORWARDED_ALLOW_IPS 不能是 *，必须只信代理那一跳"
+    proxy_net = services["proxy"].get("networks", {}).get("app_net") or {}
+    assert "ipv4_address" in proxy_net, (
+        "proxy 必须固定 IP —— 否则 app 的信任名单只能写网段，等于信任网内所有容器"
+    )
+    proxy_ip = proxy_net["ipv4_address"]
+    assert trusted == proxy_ip, f"信任名单 {trusted} 与代理固定 IP {proxy_ip} 不一致"

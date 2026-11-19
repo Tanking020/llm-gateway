@@ -24,16 +24,17 @@
 
 ---
 
-## 1. 十七个文件各测什么
+## 1. 十八个文件各测什么
 
-**160 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+**169 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
 
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
 | `test_smoke.py` | 6 | 地基：应用能起、lifespan 跑过、独立临时库生效、**健康检查两态**（`/health/ready` 200 / DB 挂时 503）、**测试库一进程一个**（#87）、**清表真的清干净**（每张表都写脏数据再断言 0） | 不涉及 | ❌ |
+| `test_access_log.py` | 8 | **访问日志层**（13e-1，决策 47）：每行都有 `client=` 与 `request_id=` / `_client_label` 对六种输入的处理（`None`·空串·**换行注入**·控制字符·超长截断）/ **真 uvicorn** 验证「不可信对端伪造 `X-Forwarded-For` 被忽略」 | 不涉及（第 3 条**起真 uvicorn + 真 TCP**） | ❌ 起服务但不起容器 |
 | `test_keys_cli.py` | 6 | **API key 运维 CLI**（13d-5）：签发的 key 真能过鉴权 / 明文绝不进库 / 自动建用户 / 同人两把 key 都可用 / `list` 不暴露明文与完整 hash / 撤销后立刻 401 / 撤销幂等且不存在的 id 退出码 1 | 不涉及 | ❌ |
 | `test_rate_limit.py` | 9 | **每用户限流**（13d-4）：5 条桶数学（突发耗尽 / 随时间补充 / **封顶** / **按 key 隔离** / `Retry-After` 取整） + 4 条过 HTTP（第 3 个请求 429 + `Retry-After` / **配额按用户隔离** / 假时钟快进恢复 / 401 不消耗任何人的配额） | 不涉及 | ❌ |
-| `test_docker_assets.py` | 12 | **容器产物静态检查**（13a-1 / 13a-2b / 13a-2c）：`.env`/`.venv`/`.git`/`__pycache__` 必须被排掉 / `uv.lock`·`alembic`·`src` 不许被排掉 / **Dockerfile 每个 `COPY` 源都要活过 `.dockerignore`** / 非 root + exec 形式 CMD / **compose 里 `app` 等 `migrate` 成功、两者同卷同 URL、`migrate` 不挂 `env_file`、连接串只写一份、`app` 不自己跑迁移**（决策 45）/ **app 不发布宿主端口、反代等 app 健康、SIGQUIT、`deploy/` 不进上下文、nginx 关缓冲 + 重解析 + 读超时 > 应用预算**（决策 46） | 不涉及（**只读文件，不用 Docker**） | ❌ |
+| `test_docker_assets.py` | 13 | **容器产物静态检查**（13a-1 / 13a-2b / 13a-2c / 13e-1）：`.env`/`.venv`/`.git`/`__pycache__` 必须被排掉 / `uv.lock`·`alembic`·`src` 不许被排掉 / **Dockerfile 每个 `COPY` 源都要活过 `.dockerignore`** / 非 root + exec 形式 CMD / **compose 里 `app` 等 `migrate` 成功、两者同卷同 URL、`migrate` 不挂 `env_file`、连接串只写一份、`app` 不自己跑迁移**（决策 45）/ **app 不发布宿主端口、反代等 app 健康、SIGQUIT、`deploy/` 不进上下文、nginx 关缓冲 + 重解析 + 读超时 > 应用预算**（决策 46）/ **`FORWARDED_ALLOW_IPS` == 代理固定 IP 且不能是 `*`**（决策 47） | 不涉及（**只读文件，不用 Docker**） | ❌ |
 | `test_auth.py` | 14 | **鉴权与归属**（13d-2）：6 个端点的 401 / 公开路由免鉴权 / 错 key / **已撤销 key** / 越权读改写删全 **404** / 列表与 `total` 不泄露 / 聊天挂别人对话 id / **库里只有 sha256** | 不涉及（`FakeLlm` 只用于 chat 两条） | ❌ |
 | `test_conversations.py` | 12 | 对话 CRUD 契约：全生命周期 / 游标分页 / 422 校验 / 404 语义 / **提交失败必须 5xx（不能先回 201）** | 不涉及 | ❌ |
 | `test_upstream.py` | 7 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、**上游 429 → 429 + `Retry-After`**、pre-flight 能改状态码 | `FakeLlm` | ❌ |

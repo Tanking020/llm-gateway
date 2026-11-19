@@ -190,6 +190,8 @@ docker compose down                                  # 保留卷；加 -v 才删
 ⚠️ **改 `deploy/nginx.conf` 后必须重建 proxy 才生效**（配置是 `:ro` 挂载，改文件不会自动 reload）：`docker compose up -d --force-recreate proxy`。改完先 `docker run --rm --network <项目>_default -v ...:/etc/nginx/conf.d/default.conf:ro nginx:1.29-alpine nginx -t` 验语法 —— ⚠️ **不在 compose 网络里跑 `nginx -t` 会报 `host not found in upstream "app:8000"`**，那不是配置写错了。
 ⚠️ **`proxy_read_timeout 130s` 必须 > `UPSTREAM_TOTAL_TIMEOUT`（默认 120s）** —— 两处副本，改一个必须改另一个。
 
+⚠️ **网段 / 固定 IP / 信任名单是四处联动**（决策 47）：`networks.app_net.ipam.config[0].subnet`、`...ip_range`、`proxy.networks.app_net.ipv4_address`、`app.environment.FORWARDED_ALLOW_IPS`。改任一处，`tests/test_docker_assets.py::test_forwarded_allow_ips_matches_proxy_static_ip` 会红。⚠️ **`ip_range` 不能省** —— 不写的话 `app` 可能先抢到 `172.30.0.2`，proxy 随后报 `Address already in use`（📎 实测踩到）。
+
 ### 8.1 与这条相关的排期决定
 
 Step 13 的执行顺序因此调整为 **13b → 13c → 13d → 13a → 13e → 13f**（见 [roadmap.md](roadmap.md) §二）。
