@@ -11,7 +11,7 @@
 > | 为什么选了现在这个做法 | [decisions.md](decisions.md) |
 >
 > **档期语义**：`P0` = 阻断正确性或成本，现在就做｜`P1` = 对外上线前必须做｜`P2` = 有真实用户前做｜`P3` = 记录在案、不修。
-> **最后更新**：2026-11-17 · 共 87 条（关闭状态逐行标注）
+> **最后更新**：2026-11-21 · 共 93 条（关闭状态逐行标注）
 
 ---
 
@@ -131,6 +131,7 @@
 | 90 | ~~🟠 **「文档 ↔ 代码」没有机械守卫**~~ —— 端点总表、错误码表、测试用例数目前全靠人工比对（2026-11-19 体检发现 `api.md` **缺 12 个业务码的解释**、`README` 的用例数停在 153、`architecture.md` 说日志 handler 是 stderr 而代码是 stdout） | 📎 体检成本：端点表 13 条、错误码 16 个、用例 172 条、相对链接 1196 条 —— 这次是**写脚本**逐条比的（`_STATUS_BY_CODE` 实读 vs `api.md` 正则），但脚本没进仓库 | 🔴 `P2` **未修** —— 建议加 `tests/test_docs_contract.py`：① `api.md` 的错误码集合 == `_STATUS_BY_CODE` 的键集；② `api.md` 端点表 == `app.routes`（排除文档路由）；③ 文档里出现的「N 个用例」== `pytest --collect-only` 的数。⚠️ 代价：改文档也可能变红，要接受「改文档也要跑测试」 | ✅ **已解决（2026-11-20，决策 49）**：新建 `tests/test_docs_contract.py`（4 条）+ conftest.py 的 pytest_collection_finish（零耗时，复用同一次收集）。📎 全量 **176 passed**；📎 **8 个变异全红且点名**（删码 / 错状态码 / 删端点 / 三处数字各改一处 / 逐文件数 +1）；📎 子集运行两条计数用例 **skip**（-rs 可看原因）；📎 **原型先抓出上一轮体检漏掉的 2 处**（README 徽章与总结行停在 153） |
 | 91 | 🟡 **门 3 只跑 `mypy`，但编辑器跑 Pylance —— 会出现「四个门全绿、编辑器一直红」**（2026-11-20 学习者问「app.py 怎么还是红的」时定位） | 📎 实测（13e-3 引入的 `_pool_checked_out`）：`uv run mypy .` **Success: no issues found in 54 source files**；而 Pylance 在 `app.py:254` 报 `reportArgumentType`（`int(method())` 的参数是 `object`）。📎 用 `uv --with pyright pyright src tests`（1.1.414）复核：**全项目只有这 1 个 error / 0 warning**（3 条 severity-4 提示：`asynccontextmanager` 注解形式、`_user`/`_slot` 未存取）。根因：`getattr(obj, "名字", None)` 在 mypy 里退化成 `Any`（逃逸口），在 pyright 里是 `object`；随后 `callable()` 收窄不产生调用签名 → `method()` 仍是 `object` → `int(object)` 被拒 | ✅ **代码侧已修（2026-11-20）**：`_pool_checked_out` 改为 `isinstance(engine.pool, QueuePool)` —— 📎 `pyright src tests` **1 error → 0 errors**，mypy 仍绿；补 2 条池读数用例（**3 个变异全红**）；📎 排查五步写进 [dev-environment.md](dev-environment.md) §8.0f。🟡 **工具侧仍待定**：门 3 要不要加 `pyright` —— ⚠️ 代价是新增 1 个开发依赖 + 两套严格度取舍要写 ADR；📎 现状全仓库只剩 0 处不一致（修前只 1 处），**建议先不加**，靠 §8.0f 的排查顺序兜住 |
 | 92 | ~~🟠 **应用下线时用户要等 **60 秒** 才拿到错误** —— `proxy_connect_timeout` 用的是 nginx 默认 60s，而容器停掉后 TCP SYN 被**丢弃**而不是被拒绝~~ | 📎 实测（2026-11-20，#89 验收时）：`docker compose stop app` 后请求 `/v1/models` → **504**，nginx 日志 `upstream timed out (110: Operation timed out) while connecting to upstream ... rt=60.060`。对照结论：**进程崩溃 / 端口没在听 ≈ 立刻 502；容器或实例下线 ≈ 等 60s 后 504** | ✅ **已解决（2026-11-20）**：`location /` 里显式 `proxy_connect_timeout 3s;`，守卫 `test_nginx_connect_timeout_is_short`（缺 / 过长 / 不小于读超时都红）。📎 **实测 `rt=60.060 → 3.010`**，且返回 504 JSON 信封 + `X-Request-ID`（决策 52）；📎 变异「删掉该行」「改成 60s」全红 |
+| 93 | 🟡 **「ADR 条数 / 待办条数 / 文件数」这类计数在文档里是第二处真相，但没有守卫** —— 📎 2026-11-21 体检实测：README 写「48 条 ADR」实际 **54**、写「89 条待办」实际 **92**、`ruff` 写「46 files」实际 **51**、`mypy` 写「49 source files」实际 **54**；`notes/stage1-fastapi.md` 的进度表还停在「10 数据库 ⬜ 未开始」。**只有「用例数」有守卫**（[决策 49](decisions.md)），所以只有它一直是对的 | 决策 49 已经定过判据（**重复事实用测试钉住**），但当时只覆盖了用例数。档期 `P3`（不改行为，只防文档腐烂）；触发条件：下次再发现一处计数漂移就动手 | ⬜ **未做**：可把 `tests/test_docs_contract.py` 的 `_COUNT_CLAIMS` 扩成「正则 + 期望值来自权威文件」（ADR 条数 ← `decisions.md` 数 `^## \d+\.`、待办条数 ← `todos.md` 数 `^\| \d+ \|`） |
 > - ✅ **已解决**：`basicConfig` 的静默失效 + 两套格式并存 + 每请求两行 → `dictConfig(force=True)` 落地，三条启动路径同一格式。
 > - ⬜ **仍未做**：**JSON 结构化**与**按天轮转** —— 它们只在「有日志平台 / 多机」时才有意义，随部署阶段一起做（另见待办 #55 的"无总时长上限"对日志量的影响）。
 >

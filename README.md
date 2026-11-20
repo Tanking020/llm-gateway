@@ -48,7 +48,7 @@ pydantic-settings · uv（锁文件 + 独立解释器）· ruff · mypy `--stric
 | **多租户鉴权** | ✅ | `X-API-Key` → sha256 → 用户（库里只有 hash）；每次查询带 `owner_id`；越权一律 **404**（不泄露存在性）；静态检查兜住「新增路由忘挂鉴权」 |
 | **可对账账单** | ✅ | `completed` / `aborted` / `no_content` / `pending` 四态（`StrEnum`） |
 | **并发与成本护栏** | ✅ | 上游信号量（超限 **503 + `Retry-After`**）+ `max_tokens` 上限 + 输入三上限 + 上游**总时长**上限（流式发 `STREAM_TIMEOUT` 帧）+ **每用户令牌桶**（60 次/分 + 突发 20 → **429 `Retry-After`**） |
-| **容器镜像** | 🟡 文件就绪 | 多阶段构建（builder 不落地）、非 root（uid 10001）、exec 形式 CMD（SIGTERM 直达应用）；📎 已在「只装 wheel + 只拷 alembic」的等价环境跑通全链路；⚠️ `docker build` 待本机 Docker 装好后补验 |
+| **容器镜像** | ✅ 真构建通过 | 多阶段构建（builder 不落地）、非 root（uid 10001）、exec 形式 CMD（SIGTERM 直达应用）；📎 真 `docker build` 通过：镜像 **283 MB**、`whoami=app`、`alembic upgrade head` exit 0、`/health` 200、无 key 401、`docker stop` 窗口内 **ExitCode=0**（13a-1，2026-11-18） |
 | **优雅停机** | ✅ | `timeout_graceful_shutdown`（默认 30 s）：窗口内跑完 / 超窗口明确切断；📎 有**真信号**验收脚本 `scripts/probe_graceful_shutdown.py` |
 | **统一错误形状** | ✅ | `{"error": {code, message, request_id}}`，422 附加 `details` |
 | **生产环境防护** | ✅ | `prod` + `DEBUG=true` 启动即失败；`/docs`、`/redoc`、`/openapi.json` 一并关闭 |
@@ -86,14 +86,17 @@ flowchart TB
     D --> DB
 ```
 
-**依赖方向是单向的**：`api/ → db/ · core/`；`schemas.py` 只放契约，`config.py` 只读不写。
+**依赖方向是单向的**：`api/` → 根层模块（`config` · `constants` · `database` · `errors` · `llm_client` ·
+`models` · `schemas` · `auth` · `ratelimit` · `metrics` · `logging_setup`），**根层从不反向 import `api/`**；
+`schemas.py` 只放契约，`config.py` 只读不写。
 上游调用只允许出现在适配器里 —— 这条不是靠 code review 记住的，是 `pyproject.toml` 里的一条规则。
 （`services/` 层的拆分已在计划中：路由文件目前同时承担校验编排与帧协议，加检索功能前会按
 「HTTP 契约变化」与「业务规则变化」分开，见 [#63](docs/todos.md)。）
 
 中间件栈的真实顺序（由 `app.build_middleware_stack()` 逐层取得）：
 `ServerError → (ExceptionTelemetry) → Request-ID → CORS → Exception → AsyncExitStack → Router`。
-顺序有语义：`ServerErrorMiddleware` 在最外层，所以 **500 响应不经过 CORS**（已知缺口 [#57](docs/todos.md)）。
+顺序有语义：`ServerErrorMiddleware` 在最外层，所以 **500 响应不经过 CORS 中间件** —— 由异常处理器
+自己补 CORS 头兜住（[#57](docs/todos.md) 已解决，13c-1）。
 
 ## 快速开始
 
@@ -133,10 +136,19 @@ app 通过 `depends_on: service_completed_successfully` 等它（[决策 45](doc
 
 ## 使用
 
+> **鉴权**：除 `/health`、`/health/ready`、`/metrics`、`/v1/models*` 外，所有端点都要 `X-API-Key`。
+> 库里只存 sha256，**明文只在签发时显示一次**：
+>
+> ```bash
+> uv run python -m app.keys create --user me --label laptop   # 输出明文，只给一次
+> export KEY=<粘贴明文>            # Windows PowerShell: $env:KEY = "<粘贴明文>"
+> ```
+
 ### 流式对话（SSE）
 
 ```bash
 curl -N -s http://127.0.0.1:8000/v1/chat/stream \
+  -H "X-API-Key: $KEY" \
   -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"列出三种排序算法"}]}'
 ```
@@ -167,9 +179,11 @@ data: [DONE]
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/v1/conversations \
+  -H "X-API-Key: $KEY" \
   -H 'Content-Type: application/json' -d '{"title": "第一次对话"}'
 
-curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 账单统计
+curl -s http://127.0.0.1:8000/v1/conversations?limit=20 \
+  -H "X-API-Key: $KEY"                  # 游标分页 + 账单统计
 ```
 
 ### 错误契约
@@ -189,7 +203,7 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 
 ## 关键设计决策
 
-每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，48 条 ADR）。以下是影响最大的几条：
+每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，54 条 ADR）。以下是影响最大的几条：
 
 | 决策 | 选择 | 为什么 | 代价 / 何时重审 |
 |---|---|---|---|
@@ -197,7 +211,7 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 | 上游隔离 | **适配器 + lint 强制** | 换上游只改一个文件；错误分类只有一处 | 多一层间接调用 |
 | 流式记账 | **两阶段：先 `commit` 一行 `pending`，拿到 usage 再改状态** | 若在流结束时才写，数据库写事务横跨整条流 → SQLite 单写者 → 并发流完全串行化（实测 4 条并发 **2.60 s → 0.71 s**） | 每请求多一次独立提交；需维护状态机 |
 | 列表分页 | **游标**（`id > N`），`total` 为辅 | offset 在「翻页期间删数据」时会**漏掉一条**（实测），用户永远看不到 | 不支持随机跳页 |
-| 错误形状 | **统一 envelope + 稳定业务码** | 客户端只写一份解析代码；新增错误码不动客户端 | 500 不经过 CORS（[#57](docs/todos.md)） |
+| 错误形状 | **统一 envelope + 稳定业务码** | 客户端只写一份解析代码；新增错误码不动客户端 | 500 不经过 CORS 中间件，靠处理器补头（[#57](docs/todos.md) 已解决） |
 | 上游 4xx | **按「客户端能否自己修好」分流** | 429 透传 + `Retry-After`，避免把上游限流伪装成网关故障而引发重试风暴（每次重试都真实计费） | 需识别 body 中的超长标记（未对真实上游验证） |
 | 并发超限 | **有限等待 → 503 + `Retry-After`** | 纯排队会让被挡用户等 3 s 以上才见到响应头（实测 3.05 s vs 0.50 s） | 单进程信号量；多副本需下沉到 Redis / 网关 |
 | 配置错误 | **启动即失败**（`prod` + `DEBUG=true`、越界值） | 配错在启动时暴露，而不是在第一次请求时 | 需要维护跨字段校验 |
@@ -212,7 +226,7 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 | 客户端断开 | — | `aclose()` 让上游实测 **4 ms 内**停止生成；已产生的用量仍落账单（`aborted`） |
 | 账单对账 | 四态 `StrEnum` | `status` 只回答「金额准不准」，不回答「内容空不空」 |
 | 入口与部署 | nginx 独占 80，app 只 `expose` | 空库首启由一次性 `migrate` 服务先跑完（决策 45 / 46）；宿主 8000 不再发布 |
-| 日志 | 一行一 JSON（`client` / `request_id` / `duration_ms`） | 轮转交给 Docker（`10m × 3`）；⚠️ nginx 自己的 413/502/504 不是 JSON（[#89](docs/todos.md)） |
+| 日志 | 一行一 JSON（`client` / `request_id` / `duration_ms`） | 轮转交给 Docker（`10m × 3`）；nginx 自己的 413/502/504 也回同一 JSON 信封（[决策 52](docs/decisions.md)，[#89](docs/todos.md) 已解决） |
 | 生产防护 | `APP_ENV=prod` | 交互式文档全部关闭；`DEBUG=true` 直接拒绝启动 |
 
 单请求最坏成本 ≈ **$0.05**（按 1 M 上下文上限 + 4096 输出上限推算，见 [docs/architecture.md](docs/architecture.md)）。
@@ -228,8 +242,8 @@ uv run pytest -q        # 206 个用例，约 15 s
 
 | | 结果 |
 |---|---|
-| `ruff check` / `format --check` | 全绿（46 files） |
-| `mypy --strict` | 全绿（49 source files，含 `tests/`、`scripts/` 与 `playground/`） |
+| `ruff check` / `format --check` | 全绿（51 files） |
+| `mypy --strict` | 全绿（54 source files，含 `tests/`、`scripts/` 与 `playground/`） |
 | `pytest -q` | **206 passed** |
 | 分支覆盖 | **93%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
@@ -304,17 +318,17 @@ uv run pytest -q        # 206 个用例，约 15 s
 
 | 状态 | 内容 |
 |---|---|
-| ✅ **已完成** | HTTP/ASGI 地基 → 参数与契约 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式 → 上游适配器封层 → 持久化与账单 → 配置 / 日志 / 安全 → 回归测试 → CI → **容器化（镜像 + 一次性迁移 + nginx 入口）** → **访问日志带客户端 IP** → **日志 JSON 化 + 轮转** |
-| 🔜 **进行中（P1，上线前）** | 指标与告警（[#66](docs/todos.md)）· 压测定容量（[#76](docs/todos.md)）· 池参数按压测定（[#59](docs/todos.md)）· 灰度与回滚 |
+| ✅ **已完成** | HTTP/ASGI 地基 → 参数与契约 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式 → 上游适配器封层 → 持久化与账单 → 配置 / 日志 / 安全 → 回归测试 → CI → **容器化（镜像 + 一次性迁移 + nginx 入口）** → **访问日志带客户端 IP** → **日志 JSON 化 + 轮转** → **多租户鉴权** → **指标与告警**（[#66](docs/todos.md)）→ **压测定容量**（[#76](docs/todos.md)，[决策 51](docs/decisions.md)）→ **非流式接真上游**（[决策 53](docs/decisions.md)） |
+| 🔜 **上线前剩余（P1 / P2）** | 连接池参数按 13f 数字显式设定（[#59](docs/todos.md)）· 日配额与预算告警（门 4）· 告警接收端 Prometheus / Alertmanager（门 5）· 灰度与回滚预案（门 6，`P2`）· 数据治理：备份演练 / 保留策略 / PII（门 7）|
 | 📋 **规划中** | 消息持久化（`messages` 表）· 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
-完整的 89 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
+完整的 93 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 文档
 
 | 想知道 | 去哪 |
 |---|---|
-| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（32 条 ADR） |
+| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（54 条 ADR） |
 | 系统长什么样（中间件栈 / ER / 帧序 / 状态机） | [docs/architecture.md](docs/architecture.md) |
 | 端点契约与真实响应样本 | [docs/api.md](docs/api.md) |
 | 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |

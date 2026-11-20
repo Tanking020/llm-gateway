@@ -13,6 +13,7 @@
 | [decisions.md](decisions.md) | **为什么这么设计、放弃了什么、何时该重审** | **改数据结构 / 接口形状 / 部署形态之前** | 做决定时 |
 | [architecture.md](architecture.md) | **长什么样**：七层栈 / 模块依赖 / ER+DDL / 端点总表 / 成功·错误·SSE 形状 / 配置 / 日志 / 状态机 | 弄清「这个请求经过哪几层」「这个字段从哪来」 | 随提问增补 |
 | [api.md](api.md) | **端点契约**：请求 / 成功响应真实样本 / 错误码 / SSE 帧 | 对接前端、联调 | 加端点时 |
+| [loadtest-record.md](loadtest-record.md) | **压测数据记录表单**：前置条件 / 数据 / 判定 / 结论 四节 + 陷阱自查 + 13f 样本 | 要压测、要对比历史结果 | 每次压测 |
 | [production-readiness.md](production-readiness.md) | **距离上线还差什么**：七道门 + 档期 + 过门判据 | 排优先级、准备面试 | 每次评审 |
 | [ai-collaboration.md](ai-collaboration.md) | **AI 怎么协作**：步骤卡格式、讲解顺序、批改机制、边界、触发词 | 定协作方式时 | 学习者定新规则时 |
 | [tool-approval.md](tool-approval.md) | **哪些操作用 AI 动手前要确认**：两层模型（工具批准 / 编辑接受）、危险与安全清单、当前设置与回滚 | 觉得「点得太频繁」或想收紧安全时 | 改审批设置时 |
@@ -55,4 +56,4 @@
 | `P0` / `P1` / `P2` / `P3` | **档期** | [production-readiness.md](production-readiness.md) |
 
 > 要**写或改测试**、排查**并发与连接池**，看 [../tests/README.md](../tests/README.md)
-> （10 个文件各测哪层 / 怎么读覆盖率 / **两个连接池谁占谁**）。
+> （21 个文件各测哪层 / 怎么读覆盖率 / **两个连接池谁占谁**）。
