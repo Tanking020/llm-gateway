@@ -1,5 +1,6 @@
 """账单层的契约：一次流式调用必须留下一行【能对账】的记录"""
 
+import logging
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -7,7 +8,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from app.api.app import app
+from app.api.app import _as_int, app
 from app.api.deps import get_llm_client
 from app.llm_client import LlmChatStream
 from app.models import LlmCallStatus
@@ -91,6 +92,40 @@ def test_usage_survives_when_index_is_not_zero(client: TestClient, db_path: Path
     """候选 index 不是 0（多候选上游），同一帧的 usage 仍必须落库"""
     _stream(client, [{"choices": [{"index": 1, "delta": {"content": "别"}}], "usage": USAGE}])
     assert _rows(db_path) == [("completed", 31, 7, 38)]
+
+
+def test_as_int_rejects_bool() -> None:
+    """回归：bool 是 int 的子类 —— `_as_int(True)` 必须记 0，不能记成 1 token（#53）"""
+    assert _as_int(True) == 0
+    assert _as_int(False) == 0
+    # 反向证据：真的整数照样通过，否则上面两条可能只是因为函数恒返回 0
+    assert _as_int(7) == 7
+
+
+def test_index_not_zero_is_logged(client: TestClient) -> None:
+    """回归：丢弃非 0 候选时必须留一行 warning —— 静默丢弃等于「客户端只看到缺字」（#72）"""
+
+    class _Collect(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.messages: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.messages.append(record.getMessage())
+
+    handler = _Collect()
+    # 【注意】：直接挂在 app 模块的 logger 上 —— dictConfig 之后应用 logger 可能不向 root 传播，
+    #   caplog 会捕不到
+    target = logging.getLogger("app.api.app")
+    target.addHandler(handler)
+    try:
+        _stream(client, [{"choices": [{"index": 1, "delta": {"content": "别"}}]}])
+    finally:
+        target.removeHandler(handler)
+
+    assert any("index" in m for m in handler.messages), (
+        f"丢弃非 0 候选时没有 warning，日志：{handler.messages}"
+    )
 
 
 def test_duplicate_usage_is_recorded_only_once(client: TestClient, db_path: Path) -> None:

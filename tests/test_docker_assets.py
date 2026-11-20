@@ -433,3 +433,17 @@ def test_nginx_does_not_intercept_upstream_errors() -> None:
     assert not re.search(r"proxy_intercept_errors\s+on\s*;", _nginx_code()), (
         "proxy_intercept_errors on 会改写 app 的错误码，破坏「上游原样透传」"
     )
+
+
+def test_nginx_connect_timeout_is_short() -> None:
+    """回归：连接超时必须显式设成秒级 —— 默认 60s 让用户等一分钟才拿到错误（#92）
+
+    【注意】：📎 实测：容器停掉后 TCP SYN 被【丢弃】不是被拒，`rt=60.060` 才回 504
+    """
+    match = re.search(r"proxy_connect_timeout\s+(\d+)s;", _nginx_code())
+    assert match, "缺 proxy_connect_timeout —— 会用 nginx 默认 60s"
+    timeout = int(match.group(1))
+    assert timeout <= 5, f"proxy_connect_timeout {timeout}s 太长，同网络内握手 < 10ms"
+    # 【注意】：连接超时必须短于读超时，否则「连不上」和「回得慢」在用户眼里分不出来
+    read = re.search(r"proxy_read_timeout\s+(\d+)s;", _nginx_code())
+    assert read and timeout < int(read.group(1))

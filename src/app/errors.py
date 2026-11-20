@@ -193,7 +193,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         ]
         return _error_response(
             request,
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             "VALIDATION_ERROR",
             "请求参数校验失败",
             details,

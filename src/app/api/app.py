@@ -247,6 +247,16 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.head("/health", include_in_schema=False)
+async def health_head() -> dict[str, str]:
+    """HEAD 版健康检查：不少探针与负载均衡只用 HEAD（无响应体，更省）
+
+    【注意】：不能写 `@app.api_route(methods=["GET","HEAD"])` —— 会给 OpenAPI 生成
+        重复的 operationId（📎 实测 `Duplicate Operation ID health_health_head` 警告）
+    """
+    return {"status": "ok"}
+
+
 def _pool_checked_out() -> int:
     """读连接池当前借出的连接数
 
@@ -476,7 +486,8 @@ def _as_dict(value: object) -> dict[str, Any]:
 
 def _as_int(value: object) -> int:
     """把上游的 token 计数收窄成 int：不是 int 就记 0（上游可能给字符串 / None / 浮点）"""
-    return value if isinstance(value, int) else 0
+    # 【注意】：bool 是 int 的子类 —— 不排除会把 True 记成 1 token（账单造假）
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 @app.post("/v1/chat")
@@ -811,6 +822,8 @@ async def chat_stream(
                     )
                     continue
                 if choice.get("index", 0) != 0:  # index = 0 防御性编程
+                    # 【注意】：静默丢弃等于「客户端只看到缺字」—— 至少留一行日志，否则无从追查
+                    logger.warning("上游候选 index=%s，只处理 0，已丢弃", choice.get("index"))
                     continue
                 # DeepSeek 每帧都有 delta，但换上游可能变，这里同样是防御性编程
                 delta = _as_dict(choice.get("delta"))
