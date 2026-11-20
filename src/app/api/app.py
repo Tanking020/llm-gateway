@@ -822,7 +822,10 @@ async def chat_stream(
                     )
                     continue
                 if choice.get("index", 0) != 0:  # index = 0 防御性编程
-                    # 【注意】：静默丢弃等于「客户端只看到缺字」—— 至少留一行日志，否则无从追查
+                    # 【注意】：这条日志的价值是【服务端取证】，不是客户端体验 ——
+                    #   index=0 的帧本身构成完整答案，丢掉的只是备选候选；而"全被丢弃"时
+                    #   客户端会收到 STREAM_NO_CONTENT。留日志是为了区分「上游真空」与
+                    #   「帧全被此守卫吃掉」这两种不同的线上故障
                     logger.warning("上游候选 index=%s，只处理 0，已丢弃", choice.get("index"))
                     continue
                 # DeepSeek 每帧都有 delta，但换上游可能变，这里同样是防御性编程
