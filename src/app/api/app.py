@@ -43,6 +43,7 @@ from app.database import engine
 from app.errors import AppError, register_exception_handlers
 from app.llm_client import create_llm_client
 from app.logging_setup import configure_logging
+from app.metrics import DURATION, REQUESTS, TOKENS, render, sample_pool_checked_out
 from app.models import Conversation, LlmCall, LlmCallStatus
 from app.ratelimit import RateLimiter
 from app.schemas import (
@@ -104,6 +105,9 @@ logger = logging.getLogger(__name__)
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _MAX_CLIENT_LEN = 64
+
+# 【注意】：探针与抓取端点不计量 —— 它们频率远超真实用户流量，计进去会稀释 5xx 比例
+_UNMETERED_PATHS = frozenset({"/health", "/health/ready", "/metrics"})
 
 
 def _client_label(request: Request) -> str:
@@ -203,6 +207,19 @@ async def add_request_id(
                 "request_id": request_id,
             },
         )
+        # 【注意】：指标的 path 标签用【路由模板】而不是真实 URL ——
+        #   否则 /v1/conversations/1、/2… 会各建一条时间序列（卡片式爆炸）
+        route = request.scope.get("route")
+        path_label = str(getattr(route, "path", request.url.path))
+        # 【注意】：探针与抓取端点【不计量】—— 它们每 30s 一次、频率远超真实用户流量，
+        #   计进去会把「5xx 比例」的分母撑大（📎 实测 3 次 /health 就压过 1 次真实请求）
+        if path_label not in _UNMETERED_PATHS:
+            REQUESTS.labels(
+                request.method, path_label, str(getattr(response, "status_code", "ERR"))
+            ).inc()
+            # 【注意】：流式不记总时长 —— 那个数由上游预算决定，不是我们慢不慢（见 metrics.py）
+            if not path_label.endswith("/stream"):
+                DURATION.labels(path_label).observe(duration_ms / 1000)
 
     # 走到这里说明没有异常（异常路径根本到不了这行）:断言同时帮 mypy 收窄类型
     assert response is not None
@@ -224,6 +241,31 @@ async def health() -> dict[str, str]:
     """健康检查：最轻的接口，用来确认【服务活着】"""
     # 部署后 Docker / 负载均衡 会定期打这个接口来判断实例是否可用
     return {"status": "ok"}
+
+
+def _pool_checked_out() -> int:
+    """读连接池当前借出的连接数
+
+    【注意】：`AsyncEngine.pool` 的静态类型是 `Pool`（基类，没有 checkedout）；
+        运行时是 `AsyncAdaptedQueuePool`。换 PostgreSQL 换成 NullPool 之类时要退化成 0，
+        所以用 getattr 而不是 isinstance 硬转换
+    """
+    method = getattr(engine.pool, "checkedout", None)
+    return int(method()) if callable(method) else 0
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    """Prometheus 抓取端点
+
+    【注意】：不对外发布 —— nginx 用 `location = /metrics { return 404; }` 硬阻断，
+        只有容器网络内的抓取方能连（外部请求源 IP 不可信，不能靠 allow/deny，决策 50）
+    【注意】：include_in_schema=False —— 运维端点不属于对外契约
+    """
+    # 【注意】：池占用必须在生成输出【之前】采样，否则输出里是上一次的值
+    sample_pool_checked_out(_pool_checked_out())
+    body, content_type = render()
+    return Response(content=body, media_type=content_type)
 
 
 @app.get("/health/ready")
@@ -697,6 +739,9 @@ async def chat_stream(
             call.completion_tokens = _as_int(usage.get("completion_tokens"))
             call.total_tokens = _as_int(usage.get("total_tokens"))
             call.status = LlmCallStatus.COMPLETED
+            # 【注意】：usage 可能缺字段 —— 缺就记 0（别抛，否则整条流会变 STREAM_FAILED）
+            TOKENS.labels("prompt").inc(call.prompt_tokens or 0)
+            TOKENS.labels("completion").inc(call.completion_tokens or 0)
             # 【注意】：commit 而不是 flush —— 同上，flush 会把写锁一直持有到请求结束
             await db.commit()
 

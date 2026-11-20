@@ -1,0 +1,41 @@
+# 告警规则最小集（13e-3 / 决策 50）
+# 【注意】：本机没有 Prometheus 接收端，所以这些规则只用 promtool 验过语法与表达式
+#   （`promtool check rules deploy/alerts.yml` → SUCCESS: 3 rules found）
+#   真正「发得出去」还需要接收端（Alertmanager），见决策 50 的重审条件
+groups:
+  - name: llm-app
+    rules:
+      # ① 5xx 比例：客户端看到的失败（含我们的 bug 与上游故障）
+      # 【注意】：clamp_min 防分母为 0 —— 没有流量时不该报「错误率 100%」
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total[5m])), 0.001) > 0.01
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "5xx 比例超过 1%（当前 {{ $value | humanizePercentage }}）"
+
+      # ② 被限流的速率：429 有【两个】code，责任方相反，必须一起看
+      - alert: RateLimitedBurst
+        expr: |
+          sum(rate(app_errors_total{code=~"(RATE_LIMITED|UPSTREAM_RATE_LIMITED)"}[5m])) > (10 / 60)
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "429 超过 10 次/分钟（{{ $value | humanize }} 次/秒）"
+
+      # ③ 非流式 p99：只算非流式 —— 流式总时长由上游预算决定，见 metrics.py 的注释
+      - alert: SlowResponses
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 8
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "非流式 p99 超过 8s（当前 {{ $value | humanizeDuration }}）"
