@@ -24,6 +24,14 @@ def test_health(client: TestClient) -> None:
     assert r.json() == {"status": "ok"}
 
 
+def test_health_accepts_head(client: TestClient) -> None:
+    """回归：不少探针与负载均衡【只发 HEAD】—— 405 会被判成「实例不可用」（#9）"""
+    r = client.head("/health")
+    assert r.status_code == 200
+    # 【注意】：HEAD 按协议不能有响应体 —— 有体说明路由被当成 GET 处理了
+    assert r.content == b""
+
+
 def test_create_conversation(client: TestClient) -> None:
     r = client.post("/v1/conversations", json={"title": "测试对话"})
     assert r.status_code == 201

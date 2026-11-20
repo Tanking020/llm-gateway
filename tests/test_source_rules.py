@@ -77,11 +77,13 @@ def test_read_only_whitelist_has_no_stale_entry() -> None:
 
 
 # ============ 鉴权覆盖（13d-2） ============
-_ALL_METHODS = {"get", "post", "patch", "put", "delete"}
+# 【注意】：head 也要收进来 —— 否则 `@app.head` 挂到受保护路由上时没人检查（#9）
+_ALL_METHODS = {"get", "post", "patch", "put", "delete", "head"}
 
 # 不需要鉴权的路由：健康检查 + 本地静态模型表（不花钱、不碰库）
 _PUBLIC_ROUTES = {
     ("get", "/health"),
+    ("head", "/health"),  # HEAD 版健康检查（#9：探针只用 HEAD）
     ("get", "/health/ready"),
     ("get", "/v1/models"),
     ("get", "/v1/models/latest"),
@@ -146,3 +148,19 @@ def test_public_route_whitelist_has_no_stale_entry() -> None:
     routes = _all_routes(ast.parse(_APP_PY.read_text(encoding="utf-8")))
     stale = _PUBLIC_ROUTES - set(routes)
     assert stale == set(), f"公开白名单里的这些路由已经不存在了：{sorted(stale)}"
+
+
+# 已弃用、不该再出现在源码里的名字（starlette 1.8 起告警，见 #67）
+_DEPRECATED_NAMES = {"HTTP_422_UNPROCESSABLE_ENTITY": "HTTP_422_UNPROCESSABLE_CONTENT"}
+
+
+def test_no_deprecated_http_constants() -> None:
+    """回归：弃用的常量会让每次跑测试都吐 DeprecationWarning，久了就没人看警告了（#67）
+
+    【注意】：📎 换成新名后 `pytest -q` 的 `7 warnings` 直接归零，这条就是它的守卫
+    """
+    offenders: list[str] = []
+    for path in (Path(__file__).resolve().parents[1] / "src" / "app").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        offenders.extend(f"{path.name}:{name}" for name in _DEPRECATED_NAMES if name in text)
+    assert offenders == [], f"源码里还有弃用常量（改用 {_DEPRECATED_NAMES}）：{offenders}"
