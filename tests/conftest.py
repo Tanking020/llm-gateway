@@ -147,3 +147,17 @@ def anon_client(client: TestClient) -> Iterator[TestClient]:
     """不带任何凭据的客户端：测 401 用"""
     with TestClient(app) as c:
         yield c
+
+
+# 收集结束时把「本次收集到多少用例」存下来：文档契约守卫要用，但不该为它再起一次 pytest
+# 【注意】：子集运行（pytest tests/test_x.py）时这里是子集的数 —— 守卫必须自己判断能不能比
+COLLECTED_COUNTS: dict[str, object] = {}
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    per_file: dict[str, int] = {}
+    for item in session.items:
+        name = Path(str(item.path)).name
+        per_file[name] = per_file.get(name, 0) + 1
+    COLLECTED_COUNTS["total"] = len(session.items)
+    COLLECTED_COUNTS["per_file"] = per_file

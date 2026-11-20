@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-19 · 共 48 条
+**最后更新**：2026-11-20 · 共 49 条
 
 ---
 
@@ -69,6 +69,7 @@
 | [46](#46-入口只有-nginxapp-不再对宿主暴露端口) | 流量入口长什么样 | **nginx 独占 80；`proxy_buffering off`；`resolver` 重解析；SIGQUIT 优雅退出** | 2026-11-19 |
 | [47](#47-客户端-ip-只信代理那一跳伪造的-x-forwarded-for-一律不算) | 客户端 IP 从哪来 | **`FORWARDED_ALLOW_IPS` = 代理固定 IP；日志前先净化** | 2026-11-19 |
 | [48](#48-日志一行一-json形状归-formatter体量归-docker) | 日志长什么样、写多久 | **JSON formatter（进程内）+ `logging` 轮转（Docker 侧）** | 2026-11-19 |
+| [49](#49-文档与代码的重复事实用测试钉住锚定--命中次数--子集跳过) | 文档里的数字谁保证 | **锚定正则 + 预期命中次数 + 子集 skip** | 2026-11-20 |
 
 ---
 
@@ -892,6 +893,18 @@
 | **决定** | **B + D**。`logging_setup.py` 里 `JsonFormatter` 输出 `{ts, level, logger, msg}` + 任意 `extra` 字段（排除 `LogRecord` 自带属性），`exc_info` 收进 `exc` 字段（换行被 `json.dumps` 转义 → **traceback 仍是一行**），`ensure_ascii=False` 保留中文；访问日志从「拼字符串」改成 `logger.info("request", extra={method, path, status, duration_ms, client, request_id})`。compose 三个服务各加 `logging: {driver: json-file, options: {max-size: 10m, max-file: 3}}` |
 | **代价** ⚠️ | ① **本地开发读日志变难**（人眼读 JSON）→ 给一条 `ConvertFrom-Json` 打平命令（dev-environment §8.0d）<br>② ⚠️ **PowerShell 5.1 的 `Get-Content` 默认按 GBK 解码**，中文会变 `涓枃` → 必须 `-Encoding UTF8`（与坑 K91 同源）<br>③ `ensure_ascii=False` 要求采集端按 UTF-8 解；若换成要求纯 ASCII 的采集器要改 True<br>④ **`msg` 仍是人拼的字符串**：本轮只把访问日志字段化，warning/error 的细节仍在 `msg` 里<br>⑤ 轮转参数是**每个服务一份**（3 处重复）；上限 = `max-size × max-file × 服务数` = 90 MB<br>⑥ 日志平台侧不再能靠「行首时间戳」排序，必须解析 `ts` 字段（好处是带 UTC 偏移） |
 | **重审条件** | ① 接入真日志平台（Loki/ELK）且要求 trace_id 贯穿 → 加 `trace_id` 字段并评估 OpenTelemetry；② 若需要「本地文件 + 采集器 tail」而非 stdout → 轮转归采集器，本条要重写；③ 若单服务日志量超过 `10m × 3` 的保留窗口（排查需要更久）→ 调大或改远端存储；④ 若 #89 决定统一错误形状，`error_code` 也应进 `extra` |
+
+---
+
+## 49. 文档与代码的重复事实用测试钉住：锚定 + 命中次数 + 子集跳过
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 有三类事实**同时存在于代码与文档**：端点表（`app.routes` ↔ `api.md`）、错误码（`_STATUS_BY_CODE` ↔ `api.md`）、用例数（pytest 实际收集 ↔ `README` / `tests/README` / `production-readiness`）。2026-11-20 体检靠**手写一次性脚本**发现 13 处落后（📎 `api.md` 漏 12 个业务码；`README` 徽章与总结行停在 153）。⚠️ **结论不是"下次更仔细"，而是"人比对必然腐烂"** |
+| **方案对比** | **A 靠 review**：零成本，但 📎 已经失败两次（11-17 一次、11-19 一次）<br>**B 子进程跑 `pytest --collect-only` 拿数**：直观，但 📎 单独跑 **1.86s**（`uv run` 包装下 15.39s），而收集结果**本来就在内存里**<br>**C 用 AST 数 `def test_`**：❌ 📎 `test_access_log.py` 只有 3 个函数却收集出 8 条（`parametrize`）<br>**D `conftest` 的 `pytest_collection_finish` 记录 + 测试读它**：✅ 零耗时，复用同一次收集 |
+| **决定** | **D**，配三条硬约束：① **锚定正则**（`^**(\d+) 个用例**，按「测哪一层」`），不用宽正则 —— 📎 宽正则 `\*\*(\d+) 个用例\*\*` 会误判 `tests/README` 历史行的「累计 61 个用例」；② 每条正则声明**预期命中次数**，命中数不符也报红（防「正则悄悄失效导致守卫永远绿」，即坑 K96 那类假安全感）；③ **子集运行 skip** 计数断言 —— 拿子集数比全量文档是假红；判据是「磁盘上的 `test_*.py` 是否都被收集到了」 |
+| **代价** ⚠️ | ① **改文档也可能让测试变红**（这是故意的：`api.md` 是客户端契约）<br>② 正则与文档**措辞耦合**：改标题措辞必须同步改正则，否则报「命中 0 次，预期 1 次」（失败信息会直接指出来）<br>③ 单独跑 `pytest tests/test_docs_contract.py` 时两条计数用例 **skip**，只看得到 2 passed —— 需要 `-rs` 才看见原因<br>④ 只覆盖**这三类**事实；日志字段、时序图、配置默认值仍靠人 |
+| **重审条件** | ① 文档数量涨到「正则清单超过 20 条」→ 改成 `docs/contracts.yml` 声明式配置<br>② 引入真日志/接口网关后，错误码可能由网关统一生成 → 那时契约来源变了，`api.md` 的角色要重定<br>③ 若 CI 改成只跑受影响的测试（增量测试）→ 子集 skip 会让计数守卫形同虚设，必须改成「CI 里单独一条全量作业」 |
 
 ---
 
