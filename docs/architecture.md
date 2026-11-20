@@ -1409,6 +1409,8 @@ POST /v1/conversations
 └──────────────────────────────────────────────────────────────┘
 ```
 
+⭐ 这个「进程共享的一个 client」在测试里有两个可替换的接缝 —— 见 [§13.7](#137-上游客户端的两层接缝工厂层-vs-取用层2026-11-20决策-4--53)。
+
 📎 2026-11-04 实测（`app.routes` / `engine.pool` / `httpx` 内部对象 / `PRAGMA`）：
 
 | 事实 | 值 | 位置 |
@@ -1646,6 +1648,61 @@ nginx 错误在 app 日志里查不到，只能 `grep rid=<id>` 查 nginx 访问
 🔴 **已知缺口（#92）**：`proxy_connect_timeout` 还是默认 **60 s** —— 应用下线时用户要等 60 秒才拿到 504。
 
 ---
+### 13.7 上游客户端的两层接缝：工厂层 vs 取用层（2026-11-20，决策 4 + 53）
+
+⭐⭐ **一句话**：**「怎么造」和「怎么取」是两个独立的接缝** —— 用例里的 mock 换**取用层**，
+全局哨兵换**工厂层**。两者能共存，正是因为它们在不同时刻被调用、且清理机制不同。
+
+| 层 | 谁 | 什么时候被调用 | 测试里由谁替换 | 被 `dependency_overrides.clear()` 清掉吗 |
+|---|---|---|---|---|
+| **工厂层** | `create_llm_client()`（`app.llm_client`），由 `lifespan` 调用 | **启动时一次** | `tests/conftest.py` 的 `_forbid_real_upstream`（session 级哨兵） | ❌ **清不掉**（它是模块属性，不是依赖覆盖） |
+| **取用层** | `get_llm_client(request)`（`app.api.deps`）→ 读 `request.app.state.llm_client` | **每个请求一次** | 用例里的 `app.dependency_overrides[get_llm_client] = lambda: FakeLlm(...)` | ✅ 立刻清掉 |
+
+```text
+应用启动（每个 TestClient 都跑一次 lifespan）
+  └─ create_llm_client()                       ← 【工厂层】哨兵改这里
+        │   ⚠️ 换成的是「造出来的东西【碰网络】才报错」的工厂，
+        │      不是「一调用就报错」—— 后者会让 lifespan 直接炸，所有用例一起红
+        ↓
+     app.state.llm_client = LlmClient(transport = 会炸的 transport)
+
+每个请求
+  └─ Depends(get_llm_client)                   ← 【取用层】mock 改这里
+        ├─ 有 override → 直接返回 FakeLlm（完全不走 app.state）
+        └─ 无 override → 走原始实现 → 取 app.state.llm_client（= 哨兵造的那个）
+                          ↓
+                    路由调用 client.complete() / open_chat_stream() / list_models()
+                          ↓
+                    真正发 HTTP 的那一刻 → RealUpstreamForbidden
+```
+
+#### 13.7a 三个时点：造 → 取 → 发（最容易混淆的地方）
+
+| 时点 | 发生什么 | 📎 实测 |
+|---|---|---|
+| ① **造**（lifespan） | 成功，得到一个 `LlmClient` —— **不报错** | `forbidden_llm()` 返回 `LlmClient` |
+| ② **取**（`Depends`） | 成功，拿到对象 —— **不报错** | `app.state.llm_client` 类型是 `LlmClient` |
+| ③ **发**（适配器里） | **报错** `RealUpstreamForbidden` | `POST /v1/chat` / `GET /v1/upstream/models` 都抛 |
+
+🔴 **由此得到一条重要推论**：**pre-flight 就失败的请求不会触发哨兵** —— 400 / 401 / 404 / 422 / 500
+全都发生在「打上游之前」。📎 实测：无 override + `{"messages": []}` → **422**，哨兵一声没响。
+这正是 9 个 `/v1/chat` 用例（`test_auth` / `test_errors` / `test_limits`）**没有 override 也照样绿**的原因。
+
+#### 13.7b 为什么 mock 必须在取用层、哨兵必须在工厂层
+
+| 问题 | 答案 |
+|---|---|
+| 为什么 mock 不换工厂？ | 工厂**只在启动跑一次**。要让「A 用例用假上游、B 用例用另一个假上游」，只能在**每次取用**时换 —— 取用层是每请求一次的接缝，粒度正好 |
+| 为什么哨兵不也放取用层？ | 用例里的 `app.dependency_overrides.clear()` 会把它一起清掉 → 保护瞬间失效。工厂是**模块属性**，`clear()` 碰不到 |
+| 为什么哨兵不在 lifespan 里直接 raise？ | lifespan 每个用例都跑 → 所有用 `TestClient` 的用例一起炸，连已经 override 的也炸。**粒度太粗** |
+| 为什么哨兵要换整个 transport 而不重写方法？ | 所有方法都走 `self._http` → 将来适配器**新增的方法自动被保护**，不用回来补 |
+
+★ **两条判据**：
+1. **mock = 换「怎么取」（每请求、可清）；哨兵 = 换「怎么造」（每启动、清不掉）。**
+2. **守卫要响在「真正发生危险动作」的那一刻**（发 HTTP），不要在「准备动作」（造 / 取）时响 —— 
+   否则误伤整批用例，最后一定会有人把它关掉。
+
+---
 ## 14. 决策 ↔ 代码 ↔ 钉住它的测试（一张对账表）
 
 > 用途有两个：读到一条决策想知道**它落在哪个符号**；改一个符号想知道**哪条决策会因此失效**。
@@ -1658,7 +1715,7 @@ nginx 错误在 app 日志里查不到，只能 `grep rid=<id>` 查 nginx 访问
 | 1 | 项目与笔记同仓库 | 仓库根 | — |
 | 2 | `app` + `src/` 布局 | [pyproject.toml](../pyproject.toml) `packages = ["src/app"]` | — |
 | 3 | Docker 延后 | 未落地（#49） | — |
-| 4 | client 应用级共享 | [app.py](../src/app/api/app.py) `lifespan`、[deps.py](../src/app/api/deps.py) | `test_upstream.py`（间接：override 的正是这个接缝） |
+| 4 | client 应用级共享 | [app.py](../src/app/api/app.py) `lifespan`、[deps.py](../src/app/api/deps.py) `get_llm_client`（两层接缝见 [§13.7](#137-上游客户端的两层接缝工厂层-vs-取用层2026-11-20决策-4--53)） | `test_upstream.py`（间接：override 的正是取用层）、[conftest.py](../tests/conftest.py) `_forbid_real_upstream`（工厂层哨兵） | |
 | 5 | 三种错误形状暂不统一 | 已被 #25 取代 → [errors.py](../src/app/errors.py) | `test_errors.py`（7） |
 | 6 | 上游错误三层翻译 | [llm_client.py](../src/app/llm_client.py) `_request`（L1/L2）、`list_models`（L3） | ✅ `test_adapter_http.py`（10，穿过 `MockTransport`） |
 | 7 | 流式用 SSE | [app.py](../src/app/api/app.py) `SseResponse`、`chat_stream` | `test_stream_frames.py`、`test_stream_consumes_fake_chunks` |

@@ -52,10 +52,9 @@ pydantic-settings · uv（锁文件 + 独立解释器）· ruff · mypy `--stric
 | **优雅停机** | ✅ | `timeout_graceful_shutdown`（默认 30 s）：窗口内跑完 / 超窗口明确切断；📎 有**真信号**验收脚本 `scripts/probe_graceful_shutdown.py` |
 | **统一错误形状** | ✅ | `{"error": {code, message, request_id}}`，422 附加 `details` |
 | **生产环境防护** | ✅ | `prod` + `DEBUG=true` 启动即失败；`/docs`、`/redoc`、`/openapi.json` 一并关闭 |
-| **可观测性** | 🟡 部分 | 结构化访问日志（请求 ID / 耗时 / 状态）；指标与告警见 Roadmap |
+| **可观测性** | ✅ | 一行一 JSON 的访问日志（含客户端 IP / request_id）；5 个进程内指标 + `/metrics`（nginx 侧 `return 404` 硬阻断）+ 3 条告警规则（📎 `promtool check rules` 验过）；⚠️ 无告警接收端（Prometheus/Alertmanager 未部署） |
 
-> 说明：`POST /v1/chat`（非流式）目前返回占位实现，真实上游接线与消息持久化一起做（[#46](docs/todos.md)）。
-> 这不是遗漏，而是刻意避免「一个端点真调上游、另一个假装」的不一致状态。
+> 说明：`POST /v1/chat`（非流式）已**真调上游**（决策 53）：一次请求一次响应，落一行账单，与流式共用同一条 pre-flight 顺序和同一个并发闸门。
 
 ## 架构
 
@@ -73,7 +72,7 @@ flowchart TB
     R["routers: /v1/chat · /v1/chat/stream · /v1/conversations · /v1/models"]
     D["deps: settings · llm client · db session · upstream slot"]
     E["errors: AppError → 4xx / 5xx"]
-    A["LlmClient / LlmChatStream (L1·L2·L3)"]
+    A["LlmClient / LlmChatStream / LlmCompletion (L1·L2·L3)"]
     DB[("SQLite: conversations · llm_calls")]
     U["Upstream LLM"]
 
@@ -294,9 +293,9 @@ uv run pytest -q        # 205 个用例，约 15 s
 ├── Dockerfile              # 多阶段构建 + 非 root + exec 形式 CMD（13a-1）
 ├── .dockerignore           # 构建上下文只有 26 个文件 / 471 KB（排掉 .venv 113 MB、.env）
 ├── docker-compose.yml      # 单机栈：migrate（一次性）→ app（不发布端口）→ proxy（nginx 独占 80）
-├── deploy/nginx.conf       # 反代配置：关缓冲（SSE）、上游重解析、body 上限、健康端点
+├── deploy/nginx.conf       # 反代：关缓冲（SSE）、上游重解析、body 上限、健康端点、**反代层 413/502/504 回 JSON 信封**（决策 52）、`/metrics` 404 硬阻断
 ├── playground/             # 一次性实验脚本（不参与交付）
-├── scripts/                # 验收探针（手工跑、不进 CI）：如 probe_graceful_shutdown.py（决策 39）
+├── scripts/                # 验收探针（手工跑、不进 CI）：probe_graceful_shutdown.py（决策 39）、fake_upstream.py + loadtest_chat_stream.py（决策 51）
 ├── pyproject.toml          # 依赖、工具配置、lint 边界的唯一来源
 └── .github/workflows/ci.yml
 ```
