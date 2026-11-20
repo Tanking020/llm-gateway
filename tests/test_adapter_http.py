@@ -279,6 +279,31 @@ def test_complete_returns_content_and_usage() -> None:
     assert result.usage
 
 
+def test_complete_usage_stays_a_plain_dict() -> None:
+    """决策守卫（决策 54）：usage 必须是真 dict，不许换成 MappingProxyType
+
+    为什么必须有这条：换容器类型是【源码重构】，全程没有运行时赋值 —— frozen 拦不到，
+    上一个用例的 `==` 也拦不到（mappingproxy == dict 为 True），而下游 `isinstance(x, dict)`
+    的收窄守卫会把非 dict 【静默】归一成 {}：记账变 0、接口照常 200、日志无异常。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"index": 0, "message": {"content": "hi"}}],
+                "usage": {"total_tokens": 1},
+            },
+        )
+
+    async def scenario() -> LlmCompletion:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE) as http:
+            return await LlmClient(http).complete({"stream": False})
+
+    assert isinstance(asyncio.run(scenario()).usage, dict)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

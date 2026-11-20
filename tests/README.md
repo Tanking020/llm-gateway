@@ -26,7 +26,7 @@
 
 ## 1. 二十一个文件各测什么
 
-**205 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+**206 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
 
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
@@ -45,7 +45,7 @@
 | `test_stream_frames.py` | 12 | **路由层**字段守卫：7 种怪 chunk + 帧序 + 终止条件（用假 chunk，不经 SSE 文本） | `FakeLlm` | ❌ |
 | `test_stream_adapter.py` | 11 | **适配器协议层**：原始 SSE 字节 → `aiter_chunks()`，`data:{` 无空格 / 空 data / 非 dict / `[DONE]` 之后 | **直接喂 `httpx.Response`** | ❌ |
 | `test_stream_accounting.py` | 12 | **账单四态**：completed / aborted / no_content / pending + 枚举值守卫 | `FakeLlm` | ❌ |
-| `test_adapter_http.py` | 27 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
+| `test_adapter_http.py` | 28 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
 | `test_concurrency.py` | 4 | **并发与连接池**：串行化、首字节延迟、流跑到一半时 `pending` 已落库 | `FakeLlm`（慢速版） | ✅ **真 uvicorn** |
 | `test_limits.py` | 14 | **护栏上限**：并发闸门 503 / 槽位归还（正常+异常）/ `max_tokens` 三分支 / 输入三条上限 / **上游总时长超预算 → `STREAM_TIMEOUT`** / `UPSTREAM_TIMEOUT` → 504 | `FakeLlm` | ❌ |
 | `test_migrations.py` | 2 | **迁移层**：`alembic check` 无漂移 + 迁移建出的**结构**（列/外键/索引/唯一约束，用 `PRAGMA` 读）与 `create_all` 一致 | 不涉及（**起子进程跑 alembic CLI**） | ❌ |

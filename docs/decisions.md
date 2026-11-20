@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-20 · 共 53 条
+**最后更新**：2026-11-21 · 共 54 条
 
 ---
 
@@ -74,6 +74,7 @@
 | [51](#51-压测不打真上游假上游--自己写的容量探针) | 容量怎么测 | **假上游 + 自写容量探针（含 PASS/FAIL 判据）** | 2026-11-20 |
 | [52](#52-反代层错误也按应用信封返回89) | 反代层错误长什么样 | **`error_page` + 内部 location 回 JSON 信封** | 2026-11-20 |
 | [53](#53-非流式-v1chat-接真上游一次调用--闸门--记账) | 非流式怎么调上游 | **适配器加 `complete()`；同闸门、成功记一行账单、失败不记** | 2026-11-20 |
+| [54](#54-llmcompletionusage-保持-dict不换-mappingproxytype) | `usage` 要不要做成不可变 | **保持 `dict`；只读靠约定 + 一条 `isinstance` 反向用例** | 2026-11-21 |
 
 ---
 
@@ -956,6 +957,18 @@
 | **决定** | **B**。`LlmClient.complete(body) -> LlmCompletion(content, usage)`：L1/L2 复用既有 `_request`（三档翻译不分流式/非流式），只新增 L3 解析；路由 `/v1/chat` 加 `UpstreamSlotDep` 闸门、pre-flight 顺序与 `chat_stream` 完全一致、成功后写一行 `LlmCall(COMPLETED, tokens)` 并**自己 `await db.commit()`**；发给上游的 body **显式**带 `stream: False`；`max_tokens` 未指定时用 `max_tokens_ceiling` 兜底 |
 | **代价** ⚠️ | ① **失败不记账**：`LlmCallStatus` 只有 `pending/completed/aborted`，没有 `failed`——上游抛错时这次调用在账面上不可见（对比流式：流内异常会留下 `aborted` 行）。📎 影响面比 #43 小：非流式没有「已产出 token 的中间态」可观测，HTTP 4xx/5xx 时上游通常也不计费<br>② **多一次 DB 写**：每请求多一行 `LlmCall`（📎 13f 实测单次 commit ≈ 10ms）<br>③ **`max_tokens` 语义与流式不同**：流式「None → 不放进 body」，这里「None → 用上限兜底」—— 两处差异是**有意的**，但读代码的人容易以为是抄漏<br>④ 适配器多一个方法：将来上游协议变更要改两处（`open_chat_stream` / `complete`） |
 | **重审条件** | ① 真实用户报「账单少了调用」→ 引入 `LlmCallStatus.FAILED`（列是 `String(20)`，无需迁移，但要定语义）② 非流式要支持「中途取消」→ 改走 B 之外的流式拼装方案③ 上游协议从 OpenAI 兼容换成别的 → 两处解析都要重写，考虑抽公共形状层 |
+
+---
+
+## 54. `LlmCompletion.usage` 保持 `dict`，不换 `MappingProxyType`
+
+| 项 | 内容 |
+|---|---|
+| **背景** | `LlmCompletion` 是 `@dataclass(frozen=True, slots=True)`。学习者指出一个真事实：**`frozen` 是浅冻结** —— 它挡住 `result.usage = {...}`，却挡不住 `result.usage["x"] = 1`，所以"结果对象不可变"这句话其实是半句话。于是自然要问：要不要把 `usage` 换成不可变容器（`MappingProxyType`）把那一半补上 |
+| **方案对比** | **A 换 `MappingProxyType`**：`usage: Mapping[str, Any]` + 在 `__post_init__` 里 `object.__setattr__(self, "usage", MappingProxyType(dict(self.usage)))`。✅ 挡住顶层 key 写入 ❌ 📎 引入三个新踩法（见「代价」）❌ 嵌套层仍可改，仍是半句话<br>**B 换成三个具名字段**（`prompt_tokens: int` 等）：✅ 最强的类型信息 ❌ 把上游字段名写死，与「L3 宽容上游形状」（决策 53 的前提）冲突；上游改名/加字段就从「记 0」变成 500<br>**C 保持 `dict`，只读靠 docstring 约定 + 一条反向用例**：✅ 零新踩法 ✅ 把"有人换成 Mapping"这个**源码级**风险变成红灯 ❌ 挡不住"读完 docstring 还往里写" |
+| **决定** | **C**。`usage: dict[str, Any]` 不动；docstring 写明「`usage` 是只读约定，要加工先 `dict(usage)` 复制」；新增 `test_complete_usage_stays_a_plain_dict` 断言 `isinstance(result.usage, dict)`，作为**决策守卫**（谁换成 `Mapping` 就红） |
+| **代价** ⚠️ | ① **这不是类型强制**：docstring 挡不住"读完还往里写"，只是提高门槛。判据是四象限 —— 「需故意才触发 + 触发后一定看得见」的东西不值得用右下的风险去换<br>② 📎 **方案 A 的三笔账**（`MappingProxyType` 实测）：`isinstance(x, dict)` → **False**（`_as_dict()` 与 `complete()` 里的 usage 归一都靠这条判断，会**静默**把记账变成 0，接口照常 200、日志无异常）；`json.dumps(proxy)` → `TypeError`；`copy.deepcopy(proxy)` → `TypeError`（cannot pickle）<br>③ **`frozen` 连硬屏障都不算**：📎 实测 `object.__setattr__(c, "usage", {...})` 能直接改冻结字段 —— 它的真实身份是「防手滑」，所以任何"要防重构"的诉求都得另加守卫<br>④ 用例只钉「是 dict」，不钉「别往里写」 —— 后者写不成用例（无法断言"未来没人写"） |
+| **重审条件** | ① 出现**真实的写入路径**（有代码往 `usage` 里写，不只是"能写"）→ 重新评估，并且要连带改 `_as_dict` 的收窄方式（不能只换类型）② `usage` 需要跨进程/跨请求传递或被缓存复用 → 那时「两次 `complete()` 是否共享同一对象」才成为真问题（现在每次 `response.json()` 都新解析，天然不共享）③ 换成 Pydantic 模型统一校验时 → 不可变性由 `model_config(frozen=True)` + 真实字段承担，本条作废 |
 
 ---
 ## 待定 / 需要以后拍板的
