@@ -63,6 +63,20 @@ def test_gate_returns_503_when_no_slot_available(client: TestClient) -> None:
     assert error["code"] == "SERVER_BUSY"
 
 
+def test_gate_applies_to_non_stream_chat(client: TestClient) -> None:
+    """回归：非流式 /v1/chat 也必须过闸门 —— 否则它绕过并发上限（决策 53）
+
+    【注意】：13f 的容量结论是按「闸门 4」测出来的；非流式不设闸门时那套数字对它不成立
+    """
+    _use(FakeLlm(), queue_timeout=0.05)
+    _set_slots(0)
+
+    response = client.post("/v1/chat", json=REQ)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "SERVER_BUSY"
+
+
 def test_gate_slot_released_after_success(client: TestClient) -> None:
     _use(FakeLlm(chunks=CHUNKS))
     _set_slots(1)

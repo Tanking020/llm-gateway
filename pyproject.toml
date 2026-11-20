@@ -171,3 +171,6 @@ select = ["E", "F", "I", "UP", "B", "TID"]
 # scripts/ 是【验收探针】：它必须当 HTTP 客户端去敲【本项目的服务】，与 playground 同型
 #   判据：不绕过适配器调上游，而是从外面连自己的 127.0.0.1
 "scripts/*.py" = ["TID251"]
+# tests/conftest.py 装「测试禁止出网」哨兵：它必须构造一个会炸的 httpx transport，
+#   才能让任何真调上游的尝试立刻报错。判据同上：它不绕过适配器调上游，而是【堵住】那条路
+"tests/conftest.py" = ["TID251"]

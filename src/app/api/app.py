@@ -492,20 +492,65 @@ def _as_int(value: object) -> int:
 
 @app.post("/v1/chat")
 async def chat(
-    request: ChatRequest, config: SettingsDep, user: CurrentUserDep, db: DbDep
+    request: ChatRequest,
+    # 【注意】：放在最前面 —— 依赖按参数顺序解析、按【反序】收尾，
+    #   所以闸门是最后一个释放的：它覆盖到下面 db 的 commit 也做完（与 chat_stream 一致）
+    _slot: UpstreamSlotDep,
+    user: CurrentUserDep,
+    client: LlmClientDep,
+    config: SettingsDep,
+    db: DbDep,
 ) -> ChatResponse:
-    """
-    request 是【请求体】—— 类型是 pydantic 模型，所以 FastAPI 从 JSON body 里面取；
-    config 是【依赖】—— FastAPI 调 get_settings() 后注入
-    """
-    ensure_last_message_is_user(request)  # 便宜的语义检查在前，与 chat_stream 保持同一顺序
+    """真模型非流式：一次拿全正文与用量（客户端不想自己拼 SSE 时用它）"""
+    # 与 chat_stream 完全同一条业务规则，所以调同一个函数
+    # 【注意】：必须放在打开上游之前：否则会白花一次上游调用（真金白银）
+    ensure_last_message_is_user(request)
     ensure_max_tokens_within_ceiling(request, config)
 
+    # pre-flight：对话存在性必须在【打上游之前】查（放后面 = 白花一次调用）
     if request.conversation_id is not None:
         await require_conversation(db, request.conversation_id, user.id)
 
-    last = request.messages[-1]
-    return ChatResponse(content=f"[echo] {last.content}", model=request.model or config.llm_model)
+    actual_model = request.model or config.llm_model
+    # 客户端没指定 max_tokens 时用服务端上限兜底 —— 不能"不传 = 不限制"
+    max_tokens = request.max_tokens if request.max_tokens is not None else config.max_tokens_ceiling
+
+    body: dict[str, object] = {
+        "model": actual_model,
+        "messages": [m.model_dump() for m in request.messages],
+        "temperature": request.temperature,
+        "max_tokens": max_tokens,
+        # 【注意】：显式写 False 而不是省略 —— 省略时"是否流式"由上游默认值决定，
+        #   而这是【一次非流式请求】的核心语义，不能交给别人决定
+        "stream": False,
+    }
+
+    # L1 / L2 / L3 全部由适配器翻译好再抛（路由里看不到 httpx）
+    completion = await client.complete(body)
+
+    usage = completion.usage
+    prompt_tokens = _as_int(usage.get("prompt_tokens"))
+    completion_tokens = _as_int(usage.get("completion_tokens"))
+    total_tokens = _as_int(usage.get("total_tokens"))
+
+    # 账单：成功才记一行（LlmCallStatus 没有 failed，见决策 53 的代价②）
+    call = LlmCall(
+        conversation_id=request.conversation_id,
+        model=actual_model,
+        status=LlmCallStatus.COMPLETED,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+    )
+    db.add(call)
+    # 【注意】：必须自己 commit —— 依赖收尾的兜底提交跑在【响应发出之后】，
+    #   那时已经改不了状态码（#54 实测：报 201 但库里没有那一行）
+    await db.commit()
+
+    TOKENS.labels("prompt").inc(prompt_tokens)
+    TOKENS.labels("completion").inc(completion_tokens)
+
+    return ChatResponse(content=completion.content, model=actual_model, usage_tokens=total_tokens)
 
 
 # FastAPI 构建路由时会检查：有显式 response_model 就用它，没有就用【返回注解】

@@ -11,7 +11,9 @@ _APP_PY = Path(__file__).resolve().parents[1] / "src" / "app" / "api" / "app.py"
 _WRITE_METHODS = {"post", "patch", "put", "delete"}
 
 # 允许「不 commit」的写路由白名单：它们确实不写库
-_READ_ONLY_ROUTES = {"/v1/chat"}
+# 【注意】：/v1/chat 已从白名单撤掉 —— 它现在会写 LlmCall（#8/#46），
+#   撤掉之后 test_every_write_route_commits_before_returning 会强制它自己 commit
+_READ_ONLY_ROUTES: set[str] = set()
 
 
 def _write_routes(tree: ast.Module) -> dict[tuple[str, str], ast.AST]:

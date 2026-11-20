@@ -26,7 +26,7 @@
 
 ## 1. 二十一个文件各测什么
 
-**194 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+**205 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
 
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
@@ -40,14 +40,14 @@
 | `test_metrics.py` | 8 | **指标层**（13e-3，决策 50）：`/metrics` 不在 OpenAPI 里 / 输出是 Prometheus 文本且五个核心指标都在 / **path 标签是路由模板**（不是真实 URL）/ 错误计数覆盖 401（走 `_error_response` 单一出口）/ 流式不进耗时直方图 / **探针路径不计量**（否则稀释 5xx 比例）/ **池占用是真读数**（借出连接时必须 ≥1）/ **池无 `checkedout` 时退化成 0**（不抛 AttributeError） | 不涉及 | ❌ |
 | `test_auth.py` | 14 | **鉴权与归属**（13d-2）：6 个端点的 401 / 公开路由免鉴权 / 错 key / **已撤销 key** / 越权读改写删全 **404** / 列表与 `total` 不泄露 / 聊天挂别人对话 id / **库里只有 sha256** | 不涉及（`FakeLlm` 只用于 chat 两条） | ❌ |
 | `test_conversations.py` | 12 | 对话 CRUD 契约：全生命周期 / 游标分页 / 422 校验 / 404 语义 / **提交失败必须 5xx（不能先回 201）** | 不涉及 | ❌ |
-| `test_upstream.py` | 7 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、**上游 429 → 429 + `Retry-After`**、pre-flight 能改状态码 | `FakeLlm` | ❌ |
+| `test_upstream.py` | 11 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、**上游 429 → 429 + `Retry-After`**、pre-flight 能改状态码 | `FakeLlm` | ❌ |
 | `test_errors.py` | 11 | **错误形状契约**：envelope 三键 / 三种 404 靠业务码分 / 422 的 `details` 只留三键 / 500 不泄漏 / **500 的 CORS 头与 404 一致且不外泄给外来源** / **DB 连不上 → 503（SQL 错仍 500）** | `FakeLlm` | ❌ |
 | `test_stream_frames.py` | 12 | **路由层**字段守卫：7 种怪 chunk + 帧序 + 终止条件（用假 chunk，不经 SSE 文本） | `FakeLlm` | ❌ |
 | `test_stream_adapter.py` | 11 | **适配器协议层**：原始 SSE 字节 → `aiter_chunks()`，`data:{` 无空格 / 空 data / 非 dict / `[DONE]` 之后 | **直接喂 `httpx.Response`** | ❌ |
 | `test_stream_accounting.py` | 12 | **账单四态**：completed / aborted / no_content / pending + 枚举值守卫 | `FakeLlm` | ❌ |
-| `test_adapter_http.py` | 21 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
+| `test_adapter_http.py` | 27 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
 | `test_concurrency.py` | 4 | **并发与连接池**：串行化、首字节延迟、流跑到一半时 `pending` 已落库 | `FakeLlm`（慢速版） | ✅ **真 uvicorn** |
-| `test_limits.py` | 13 | **护栏上限**：并发闸门 503 / 槽位归还（正常+异常）/ `max_tokens` 三分支 / 输入三条上限 / **上游总时长超预算 → `STREAM_TIMEOUT`** / `UPSTREAM_TIMEOUT` → 504 | `FakeLlm` | ❌ |
+| `test_limits.py` | 14 | **护栏上限**：并发闸门 503 / 槽位归还（正常+异常）/ `max_tokens` 三分支 / 输入三条上限 / **上游总时长超预算 → `STREAM_TIMEOUT`** / `UPSTREAM_TIMEOUT` → 504 | `FakeLlm` | ❌ |
 | `test_migrations.py` | 2 | **迁移层**：`alembic check` 无漂移 + 迁移建出的**结构**（列/外键/索引/唯一约束，用 `PRAGMA` 读）与 `create_all` 一致 | 不涉及（**起子进程跑 alembic CLI**） | ❌ |
 | `test_startup_config.py` | 6 | **启动摘要层 + 启动接线**：白名单恰好这几项 / **每个 `Settings` 字段要么打出来、要么写明为何不打** / 连接串只留方言 + 库名 / 密钥与主机绝不出现 / **优雅窗口真的传给 uvicorn** | 不涉及 | ❌ |
 | `test_source_rules.py` | 5 | **源码约定（静态检查）**：用 `ast` 断言每个写路由函数体里有 `await db.commit()`（#86）+ **每个非公开路由都声明了 `CurrentUserDep`**（13d-2）；两条白名单都不许留过期项 | 不涉及（**只读源码，不跑应用**） | ❌ |

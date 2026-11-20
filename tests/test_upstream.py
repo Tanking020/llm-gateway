@@ -1,15 +1,21 @@
 """上游适配器接线测试：用假 LLM 证明路由真的走了依赖注入，且上游故障都变 502"""
 
+import sqlite3
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+from conftest import RealUpstreamForbidden
 from fastapi.testclient import TestClient
 
 from app.api.app import app
 from app.api.deps import get_llm_client
+from app.config import settings
 from app.errors import AppError
 from app.schemas import ModelItem
 from fakes import FakeLlm
+
+REQ = {"messages": [{"role": "user", "content": "hi"}]}
 
 
 # @pytest.fixture 是用来定义"测试前置/后置条件"的装饰器——
@@ -103,3 +109,79 @@ def test_stream_consumes_fake_chunks(client: TestClient) -> None:
     assert body.endswith("data: [DONE]\n\n")
     assert fake.last_body is not None
     assert fake.last_body["stream"] is True
+
+
+# ============ 非流式 /v1/chat 接真上游（#8/#46 / 决策 53）============
+
+
+def _llm_calls(db: Path) -> list[tuple[object, ...]]:
+    """绕过 API 直接查 llm_calls：每行 (model, status, prompt, completion, total)"""
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT model, status, prompt_tokens, completion_tokens, total_tokens "
+            "FROM llm_calls ORDER BY id"
+        ).fetchall()
+        return [tuple(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def test_chat_returns_upstream_content_and_records_tokens(
+    client: TestClient, db_path: Path
+) -> None:
+    """回归：/v1/chat 必须回上游正文 + usage_tokens，并落一行 completed 账单"""
+    fake = FakeLlm()  # 默认 completion: content="fake answer", usage 5/3/8
+    app.dependency_overrides[get_llm_client] = lambda: fake
+
+    response = client.post("/v1/chat", json=REQ)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["content"] == "fake answer"
+    # 【注意】：这条是「还是 echo 吗」的判据 —— 少了它，把实现改回占位也能全绿
+    assert "[echo]" not in body["content"]
+    assert body["usage_tokens"] == 8
+
+    rows = _llm_calls(db_path)
+    assert len(rows) == 1, f"应当恰好落一行账单，实际 {rows}"
+    _, status, prompt, completion, total = rows[0]
+    assert (status, prompt, completion, total) == ("completed", 5, 3, 8)
+
+
+def test_chat_requests_non_stream_explicitly(client: TestClient) -> None:
+    """回归：发给上游的 body 必须【显式】带 stream=False，且带 max_tokens 兜底"""
+    fake = FakeLlm()
+    app.dependency_overrides[get_llm_client] = lambda: fake
+
+    client.post("/v1/chat", json=REQ)
+
+    body = fake.last_complete_body
+    assert body is not None
+    # 【注意】：先断言"键存在"—— 否则省略了这个键时 `is False` 的断言根本不会执行到（假绿）
+    assert "stream" in body, "必须显式带上 stream 键（省略时由上游默认值决定）"
+    assert body["stream"] is False
+    # 客户端没给 max_tokens 时必须落到服务端上限，不能"不传 = 不限制"
+    assert body["max_tokens"] == settings.max_tokens_ceiling
+
+
+def test_chat_upstream_error_becomes_502(client: TestClient) -> None:
+    """回归：上游挂了必须透传成 502，不是 200 + 空正文"""
+    fake = FakeLlm(complete_error=AppError(code="UPSTREAM_UNREACHABLE", message="上游挂了"))
+    app.dependency_overrides[get_llm_client] = lambda: fake
+
+    response = client.post("/v1/chat", json=REQ)
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "UPSTREAM_UNREACHABLE"
+
+
+def test_tests_cannot_reach_real_upstream(client: TestClient) -> None:
+    """哨兵自检：没有 override 的用例一旦真调上游就【报错】（不是静默替换成假数据）
+
+    【注意】：如果哨兵改成"静默返回 FakeLlm"，这条会绿 —— 那正是我们要防的假绿
+    """
+    app.dependency_overrides.pop(get_llm_client, None)
+
+    with pytest.raises(RealUpstreamForbidden, match="真调上游"):
+        client.get("/v1/upstream/models")

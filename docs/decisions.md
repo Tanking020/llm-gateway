@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-20 · 共 52 条
+**最后更新**：2026-11-20 · 共 53 条
 
 ---
 
@@ -73,6 +73,7 @@
 | [50](#50-指标最小集进程内计数metrics-只给容器网络内抓) | 指标怎么采、谁能看 | **5 个进程内指标 + `/metrics` 反代硬阻断** | 2026-11-20 |
 | [51](#51-压测不打真上游假上游--自己写的容量探针) | 容量怎么测 | **假上游 + 自写容量探针（含 PASS/FAIL 判据）** | 2026-11-20 |
 | [52](#52-反代层错误也按应用信封返回89) | 反代层错误长什么样 | **`error_page` + 内部 location 回 JSON 信封** | 2026-11-20 |
+| [53](#53-非流式-chat-接真上游一行一次调用--闸门--记账) | 非流式怎么调上游 | **适配器加 `complete()`；同闸门、成功记一行账单、失败不记** | 2026-11-20 |
 
 ---
 
@@ -944,6 +945,17 @@
 | **决定** | **C**。三个内部 location（413 `PAYLOAD_TOO_LARGE` / 502 `BAD_GATEWAY` / 504 `GATEWAY_TIMEOUT`），每个都带 `default_type application/json`、`X-Request-ID` 与 CORS 头（**全部 `always`**）；CORS 白名单用 `map $http_origin $cors_origin`，由守卫钉住与 `constants.ALLOWED_ORIGINS` 一致；同时把 `$request_id` 写进 nginx 访问日志（否则回给客户端的 id 在任何日志里都搜不到） |
 | **代价** ⚠️ | ① **CORS 白名单出现第二处副本**（nginx `map` vs `constants.ALLOWED_ORIGINS`）—— 靠 `test_nginx_cors_map_matches_app_allowlist` 兜住<br>② **两套 request_id 空间**（nginx 32 hex / app 12 hex）：nginx 错误在 app 日志里查不到，只能查 nginx 日志<br>③ 只覆盖 413/502/504 —— nginx 自身的 400/414/500/503 仍是 HTML（罕见，已记录）<br>④ **413 有两个码名**：`PAYLOAD_TOO_LARGE`（反代层嫌大）vs `UPSTREAM_PAYLOAD_TOO_LARGE`（上游嫌大）—— 客户端必须按 `code` 分支，不能按状态码 |
 | **重审条件** | ① 前端改同源部署 / 加 BFF → CORS 那段可删；② 引入 CDN 或第二层反代 → 错误页要在**最外层**统一，本层 `Vary: Origin` 与 `$request_id` 需重评；③ 换 K8s Ingress → 用 `default-backend` 方案，本决策作废；④ 要覆盖 nginx 全部错误码 → 同一套 named location 逐个加，成本线性 |
+
+---
+## 53. 非流式 `/v1/chat` 接真上游：一次调用 + 闸门 + 记账
+
+| 项 | 内容 |
+|---|---|
+| **背景** | `/v1/chat` 自 Step 4 起是 `[echo] {last.content}` 占位（#8 / #46）——对外文档里它是正经端点，返回的却是假内容。📎 2026-11-20 复核实测：`POST /v1/chat` → `{"content":"[echo] 你好", ...}`，**完全不碰上游** |
+| **方案对比** | **A 内部调 `chat_stream` 再拼成整段**：✅ 复用全部流式逻辑 ❌ 白烧上游预算与带宽；❌ 丢掉「非流式」这个能力本身<br>**B 适配器加 `complete()`，路由直调**：✅ 一次请求一次响应，最简单 ❌ 需要新增适配器方法（L3 解析要重写一遍）<br>**C 保持 echo，只标注文档**：❌ 等于承认「对外端点不可用」|
+| **决定** | **B**。`LlmClient.complete(body) -> LlmCompletion(content, usage)`：L1/L2 复用既有 `_request`（三档翻译不分流式/非流式），只新增 L3 解析；路由 `/v1/chat` 加 `UpstreamSlotDep` 闸门、pre-flight 顺序与 `chat_stream` 完全一致、成功后写一行 `LlmCall(COMPLETED, tokens)` 并**自己 `await db.commit()`**；发给上游的 body **显式**带 `stream: False`；`max_tokens` 未指定时用 `max_tokens_ceiling` 兜底 |
+| **代价** ⚠️ | ① **失败不记账**：`LlmCallStatus` 只有 `pending/completed/aborted`，没有 `failed`——上游抛错时这次调用在账面上不可见（对比流式：流内异常会留下 `aborted` 行）。📎 影响面比 #43 小：非流式没有「已产出 token 的中间态」可观测，HTTP 4xx/5xx 时上游通常也不计费<br>② **多一次 DB 写**：每请求多一行 `LlmCall`（📎 13f 实测单次 commit ≈ 10ms）<br>③ **`max_tokens` 语义与流式不同**：流式「None → 不放进 body」，这里「None → 用上限兜底」—— 两处差异是**有意的**，但读代码的人容易以为是抄漏<br>④ 适配器多一个方法：将来上游协议变更要改两处（`open_chat_stream` / `complete`） |
+| **重审条件** | ① 真实用户报「账单少了调用」→ 引入 `LlmCallStatus.FAILED`（列是 `String(20)`，无需迁移，但要定语义）② 非流式要支持「中途取消」→ 改走 B 之外的流式拼装方案③ 上游协议从 OpenAI 兼容换成别的 → 两处解析都要重写，考虑抽公共形状层 |
 
 ---
 ## 待定 / 需要以后拍板的

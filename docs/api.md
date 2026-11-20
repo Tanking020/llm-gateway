@@ -60,7 +60,7 @@ curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
 | GET | `/v1/models` | 硬编码的模型清单；支持 `?prefix=` / `?limit=`（1 ~ 100） | 200 / 422 | **公开** |
 | GET | `/v1/models/latest` | 默认模型 | 200 | **公开** |
 | GET | `/v1/models/{model_name}` | 单个模型；名称不在清单里 → 404 | 200 / 404 | **公开** |
-| POST | `/v1/chat` | 聊天；⚠️ **业务逻辑仍为 `echo` 占位**（待办 #46）；最后一条消息必须是 `user`；可选 `conversation_id`（不存在**或不属于本人** → 404） | 200 / **401** / 400 / 404 / 422 | key |
+| POST | `/v1/chat` | **非流式**：真调上游一次拿全正文与用量（决策 53）；最后一条消息必须是 `user`；可选 `conversation_id`（不存在**或不属于本人** → 404）；每次调用落一行账单；**同样受并发闸门约束**（顶穿 → 503 `SERVER_BUSY`） | 200 / **401** / 400 / 404 / 422 / 502 / **503** / **504** | key |
 | GET | `/v1/upstream/models` | **真实调用**上游 `/models`，返回 `ModelListResponse`（**它花钱，所以必须鉴权**） | 200 / **401** / 502 / **504**（超出 `upstream_total_timeout`） | key |
 | POST | `/v1/chat/stream` | **SSE 流式**：真调上游 `stream=true`，逐帧转发回答文字（思维链按产品要求丢弃）；可选 `conversation_id`（不存在**或不属于本人** → 404，**在流开始前拦**）；每次调用落一行账单 | 200 / **401** / 404 / 422 | key |
 | POST | `/v1/conversations` | 新建对话（落库，**归属当前 key**）；`title` 长度 1~100 | 201 / **401** / 422 | key |
@@ -72,8 +72,8 @@ curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
 **成功响应形状**（Step 4 起，`schemas.py` 定义，可在 `/docs` 展开）：
 
 ```jsonc
-// POST /v1/chat（⚠️ echo 占位）
-{"content": "[echo] 你好", "model": "deepseek-flash", "usage_tokens": 0}
+// POST /v1/chat —— 真上游；usage_tokens = 上游 total_tokens（缺字段记 0）
+{"content": "你好！有什么可以帮你？", "model": "deepseek-flash", "usage_tokens": 38}
 
 // GET /v1/upstream/models —— 上游 10 个键只暴露 3 个（白名单：owned_by / effort 等不外泄）
 {"total": 2, "items": [
