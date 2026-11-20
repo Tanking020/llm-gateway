@@ -150,11 +150,19 @@ curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
 
 📌 429 有**两个**码但责任方相反：`RATE_LIMITED` = 你太多，`UPSTREAM_RATE_LIMITED` = 上游限我们。
 
-> 🔴 **例外：反代自己产生的错误不是这个形状**（13a-2c 起 nginx 独占 80）。
-> `client_max_body_size 1m` 超限 → nginx 直接回 **413 + HTML 页**（`server: nginx/1.29.8`），
-> 与 app 自己因 60k 字符上限回的 **422 JSON** 是**两种形状两种状态码**（待办 [#89](todos.md)）。
-> 同理上游不可达时，**nginx 自己**也可能回 502/504（HTML）—— 那是「代理到不了 app」，
-> 不是 app 报的错。前端解析错误体前必须先看 `content-type`。
+> ✅ **反代层（nginx）自己产生的错误现在也是同一个形状**（#89 / 决策 52）。
+> 上面那张表是**应用**产生的；下表是**代理**产生的 —— 它们不经过应用，所以没有 `details`，
+> 但信封、`X-Request-ID` 头、CORS 头与上表完全一致，客户端可以走同一套解析代码。
+>
+> | 层 | 状态码 | `code` | 什么时候出现 | 客户端该做什么 |
+> |---|---|---|---|---|
+> | 反代 | 413 | `PAYLOAD_TOO_LARGE` | 请求体超过 **1 MB**（`client_max_body_size`）。⚠️ 与上表的 `UPSTREAM_PAYLOAD_TOO_LARGE` 不同：那个是**上游**嫌大 | 缩短内容 |
+> | 反代 | 502 | `BAD_GATEWAY` | 连应用被**拒绝**（app 进程没在听 8000） | 稍后重试，指数退避 |
+> | 反代 | 504 | `GATEWAY_TIMEOUT` | 📎 实测两种情况都落这里：① 应用在 130 s 内没回完（`proxy_read_timeout`）；② 容器停掉后 TCP 握手**超时**（SYN 被丢弃，见待办 [#92](todos.md)） | 同上；② 说明实例已下线 |
+>
+> 📎 **两种 413 的区别（别混）**：`200 KB` 请求体（> 20000 字符）由**应用**回 **422 `VALIDATION_ERROR`**；
+> `2 MB` 请求体由 **nginx** 回 **413 `PAYLOAD_TOO_LARGE`**。前者是业务字段超长、后者是协议层体积上限。
+
 
 > ✅ 流式接口在 `/docs` 里已正确标成 `text/event-stream`（Step 11f：`SseResponse` 的类属性 `media_type` +
 > `response_class=`；只加 `responses={200: …}` 不够，会把 `application/json` 一起留着）。

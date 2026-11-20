@@ -344,3 +344,92 @@ def test_every_service_rotates_its_logs() -> None:
         # 【注意】：不写 max-size 就是无限增长 —— 📎 实测默认 4000 行全留，配了 64k 只留 504 行
         assert options.get("max-size"), f"{name} 缺 max-size（默认不轮转）"
         assert str(options.get("max-file")) not in ("", "0"), f"{name} 的 max-file 必须 > 0"
+
+
+# ---- 反代层错误也必须说 JSON 信封（#89）----
+# 这三类由 nginx 自己产生 —— app 根本没机会回话
+_EXPECTED_NGINX_ERROR_STATUSES = {"413", "502", "504"}
+
+
+def _nginx_internal_location(status: str) -> str:
+    """取出 `@json_<状态码>` 这个内部 location 的配置块（已去注释）"""
+    block = re.search(rf"location @json_{status} \{{(.*?)\n    \}}", _nginx_code(), re.DOTALL)
+    assert block, f"缺 @json_{status} 这个内部 location"
+    return block.group(1)
+
+
+def _nginx_error_codes() -> dict[str, str]:
+    """从配置里【解析】出 (状态码 -> 码名)
+
+    【注意】：不能写死在测试里 —— 否则「只改 nginx 不改文档」时守卫照样绿（📎 变异验证时踩到）
+    """
+    code = _nginx_code()
+    pairs: dict[str, str] = {}
+    for status in re.findall(r"error_page (\d{3}) = @json_\d{3};", code):
+        match = re.search(r'"code":"([A-Z_]+)"', _nginx_internal_location(status))
+        assert match, f"@json_{status} 缺 code 字段"
+        pairs[status] = match.group(1)
+    return pairs
+
+
+def test_nginx_error_pages_emit_json_envelope() -> None:
+    """回归：nginx 自己产生的 413/502/504 必须回应用那种信封，不能回 HTML 页（#89）
+
+    【注意】：📎 修前实测：2 MB → `content-type: text/html` + `<title>413 ...`；
+        客户端按 `error.code` 分支的代码直接崩
+    """
+    codes = _nginx_error_codes()
+    # 【注意】：先钉住"该有哪几个状态码"—— 否则删掉一条 error_page，它就只是从循环里消失了
+    assert set(codes) == _EXPECTED_NGINX_ERROR_STATUSES, f"error_page 覆盖不全：{sorted(codes)}"
+    for status in _EXPECTED_NGINX_ERROR_STATUSES:
+        block = _nginx_internal_location(status)
+        assert "internal;" in block, f"@json_{status} 必须 internal，否则外部能直接访问"
+        # 【注意】：不写 default_type，nginx 会按 text/plain 回 —— 形状又不对了
+        assert "default_type application/json;" in block, "@json_* 必须声明 JSON"
+        # 信封字段与 app 的 `{"error":{"code","message","request_id"}}` 逐一对齐
+        assert '"message":' in block, f"@json_{status} 缺 message"
+        assert '"request_id":"$request_id"' in block, f"@json_{status} 缺 request_id"
+
+
+def test_nginx_error_headers_use_always() -> None:
+    """回归：4xx/5xx 上的 add_header 必须带 always —— 否则头根本不会发出去"""
+    for status in _EXPECTED_NGINX_ERROR_STATUSES:
+        block = _nginx_internal_location(status)
+        for header in ("X-Request-ID", "Access-Control-Allow-Origin"):
+            line = re.search(rf"add_header {header} .*;", block)
+            assert line, f"@json_{status} 缺 {header}"
+            # 【注意】：nginx 的 add_header 默认只对 2xx/3xx 生效
+            assert "always" in line.group(0), f"{header} 必须带 always，否则 413 上没有这个头"
+
+
+def test_nginx_error_codes_are_documented() -> None:
+    """回归：反代层的码名也要进 api.md —— 否则客户端不知道有这个分支
+
+    【注意】：码名从 nginx.conf 解析，不写死 —— 见 _nginx_error_codes() 的说明
+    """
+    api = (_ROOT / "docs" / "api.md").read_text(encoding="utf-8")
+    for status, err_code in _nginx_error_codes().items():
+        assert f"`{err_code}`" in api, f"api.md 未记录反代层码 {err_code}（状态码 {status}）"
+
+
+def test_nginx_cors_map_matches_app_allowlist() -> None:
+    """回归：nginx 的 CORS 白名单 == 应用的 ALLOWED_ORIGINS（同一份事实的两处副本）"""
+    from app.constants import ALLOWED_ORIGINS  # 局部 import：本文件其它用例不需要 app 包
+
+    block = re.search(r"map \$http_origin \$cors_origin \{(.*?)\n\}", _nginx_code(), re.DOTALL)
+    assert block, "缺 map $http_origin $cors_origin"
+    origins = set(re.findall(r'"(https?://[^"]+)"\s+"', block.group(1)))
+    assert origins == set(ALLOWED_ORIGINS), (
+        f"nginx 白名单 {sorted(origins)} != 应用 {sorted(ALLOWED_ORIGINS)} —— 改一边必须改另一边"
+    )
+
+
+def test_nginx_does_not_intercept_upstream_errors() -> None:
+    """回归：不要开 proxy_intercept_errors —— 它会把 app 自己的 413/502 也改写掉
+
+    【注意】：app 的 413 是 `UPSTREAM_PAYLOAD_TOO_LARGE`（上游嫌大），
+        与反代层的 `PAYLOAD_TOO_LARGE`（我们嫌大）含义不同，不能混
+    """
+    assert not re.search(r"proxy_intercept_errors\s+on\s*;", _nginx_code()), (
+        "proxy_intercept_errors on 会改写 app 的错误码，破坏「上游原样透传」"
+    )
