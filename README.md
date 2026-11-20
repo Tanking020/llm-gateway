@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-205%20passed-success)
+![Tests](https://img.shields.io/badge/tests-206%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-93%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -17,7 +17,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 205 tests · 93% branch coverage · CI on every push.
+> 206 tests · 93% branch coverage · CI on every push.
 
 ---
 
@@ -223,14 +223,14 @@ curl -s 'http://127.0.0.1:8000/v1/conversations?limit=20'      # 游标分页 + 
 uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
-uv run pytest -q        # 205 个用例，约 15 s
+uv run pytest -q        # 206 个用例，约 15 s
 ```
 
 | | 结果 |
 |---|---|
 | `ruff check` / `format --check` | 全绿（46 files） |
 | `mypy --strict` | 全绿（49 source files，含 `tests/`、`scripts/` 与 `playground/`） |
-| `pytest -q` | **205 passed** |
+| `pytest -q` | **206 passed** |
 | 分支覆盖 | **93%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
 
@@ -287,7 +287,7 @@ uv run pytest -q        # 205 个用例，约 15 s
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 205 个用例，按「测哪一层」分为 21 个文件
+├── tests/                  # 206 个用例，按「测哪一层」分为 21 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── Dockerfile              # 多阶段构建 + 非 root + exec 形式 CMD（13a-1）

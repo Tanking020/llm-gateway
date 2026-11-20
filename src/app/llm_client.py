@@ -155,6 +155,9 @@ class LlmCompletion:
 
     【注意】：usage 保证是 dict（上游给 null / 字符串时归一成 {}），
         但【不保证】字段齐全 —— 缺字段由路由层 `_as_int` 记 0
+    【注意】：usage 是【只读约定】—— 要加工先 `dict(usage)` 复制。
+        故意不换 MappingProxyType：frozen 只管事后替换，管不到「字段被声明成
+        什么类型」，换了会让下游 `isinstance(x, dict)` 静默失配（决策 54）
     """
 
     content: str
