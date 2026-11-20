@@ -20,8 +20,10 @@ _README = _ROOT / "README.md"
 _TESTS_README = _ROOT / "tests" / "README.md"
 _PRODUCTION_READINESS = _ROOT / "docs" / "production-readiness.md"
 
-# 文档路由不写进端点表：它们随 APP_ENV 关闭，不是业务契约
-_DOC_ROUTES = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+# 文档路由不写进端点表（它们随 APP_ENV 关闭，不是业务契约）
+# 【注意】：/metrics 同理 —— 它是运维端点，`include_in_schema=False`，
+#   且 nginx 硬阻断；写进对外契约反而会误导客户端（决策 50）
+_DOC_ROUTES = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc", "/metrics"}
 
 
 def test_api_md_documents_every_error_code() -> None:

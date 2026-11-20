@@ -86,6 +86,9 @@ _PUBLIC_ROUTES = {
     ("get", "/v1/models"),
     ("get", "/v1/models/latest"),
     ("get", "/v1/models/{model_name}"),
+    # 【注意】：/metrics 免鉴权，但【不是】对外暴露 —— nginx 用 `return 404` 硬阻断，
+    #   只有容器网络内的抓取方能连（决策 50）。app 端口本身也不发布到宿主（决策 46）
+    ("get", "/metrics"),
 }
 
 

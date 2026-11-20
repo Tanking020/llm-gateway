@@ -1192,6 +1192,43 @@ root  (WARNING, 有我们的 handler)
 
 ---
 
+## 10b. 指标形状（13e-3 / 决策 50）
+
+`GET /metrics`（Prometheus 文本格式，`include_in_schema=False`）：
+
+```text
+http_requests_total{method="GET",path="/v1/conversations",status="401"} 1.0
+http_request_duration_seconds_bucket{path="/v1/conversations",le="0.01"} 0.0
+app_errors_total{code="UNAUTHORIZED",status="401"} 1.0
+llm_tokens_total{direction="prompt"} 46.0
+db_pool_checked_out 0.0
+```
+
+| 指标 | 类型 | 标签 | 谁写它 |
+|---|---|---|---|
+| `http_requests_total` | Counter | `method` / **`path`（路由模板）** / `status` | `add_request_id` 中间件 |
+| `http_request_duration_seconds` | Histogram | `path` | 同上，**只非流式** |
+| `app_errors_total` | Counter | `code` / `status` | `_error_response()`（所有 HTTP 错误的单一出口） |
+| `llm_tokens_total` | Counter | `direction`（prompt / completion） | `record_usage()` |
+| `db_pool_checked_out` | Gauge | — | `/metrics` 路由**在生成输出前**采样 |
+
+**三条硬规则**（每条都有实测依据）：
+1. **`path` 用路由模板**，不是真实 URL —— 否则 `/v1/conversations/1`、`/2`… 各建一条时间序列
+2. **探针与抓取端点不计量**（`/health`、`/health/ready`、`/metrics`）—— 📎 实测 3 次 `/health` 就压过 1 次真实请求，会把 5xx 比例的分母撑大
+3. **流式不记总时长** —— 它由 `upstream_total_timeout`（120s）决定，混进来会让 p99 永久趴在 120s
+
+⚠️ **谁能看**：`deploy/nginx.conf` 里 `location = /metrics { return 404; }` —— 宿主访问 404（📎 实测），
+只有容器网络内的抓取方能连 `app:8000/metrics`（📎 实测 200）。**不用 `allow`/`deny` 的原因**：
+📎 外部请求的源 IP 在不同堆栈里分别是 `172.18.0.1` 与 `172.30.0.128`，写哪个白名单都会错。
+
+⚠️ **告警规则**在 `deploy/alerts.yml`（5xx > 1% / 429 > 10·min⁻¹ / 非流式 p99 > 8s），
+📎 用 `promtool check rules` 验过（`SUCCESS: 3 rules found`；故意拼错函数 → `FAILED`）。
+**但没有接收端** —— 没有 Alertmanager，规则不会自己发出来。
+
+⚠️ **进程内计数**：多 worker / 多副本时每个进程各一份，抓到的只是「被路由到的那一个进程」的账。
+
+---
+
 ## 11. 测试形状
 
 ### 11.1 目录形状：一层一个文件
@@ -1609,6 +1646,8 @@ app 等 `service_healthy` 最多等到健康检查判失败、nginx 的 `proxy_r
 | 46 | 入口只有 nginx，app 不发布宿主端口 | [docker-compose.yml](../docker-compose.yml) `proxy`、[deploy/nginx.conf](../deploy/nginx.conf) | ✅ `test_docker_assets.py` 4 条：`test_app_is_not_published_to_host` / `test_proxy_waits_for_healthy_app_and_exits_gracefully` / `test_nginx_conf_streams_and_reresolves` / `test_nginx_read_timeout_exceeds_app_budget`（📎 11 个变异全红：`buffering on` / 删 `resolver` / 去 `resolve` / 读超时 60s / 删 `proxy_cache` / app 加回 `ports` / `SIGTERM` / `service_started` / 端口改 8080 / `.dockerignore` 删 `deploy/` / `UPSTREAM_TOTAL_TIMEOUT=200`） |
 | 47 | 客户端 IP：只信代理那一跳 | [docker-compose.yml](../docker-compose.yml) `FORWARDED_ALLOW_IPS` / `networks.app_net`、[app.py](../src/app/api/app.py) `_client_label` | ✅ `test_access_log.py`（3 条，含**真 uvicorn** 的伪造头用例）+ `test_docker_assets.py::test_forwarded_allow_ips_matches_proxy_static_ip`（📎 7 个变异全红） |
 | 48 | 日志一行一 JSON；轮转归 Docker | [logging_setup.py](../src/app/logging_setup.py) `JsonFormatter`、[docker-compose.yml](../docker-compose.yml) `logging` | ✅ `test_log_json.py`（2 条：子进程逐行 `json.loads` / traceback 不换行）+ `test_docker_assets.py::test_every_service_rotates_its_logs`（📎 6 个变异全红） |
+| 49 | 文档里边数字用测试钉住 | [tests/test_docs_contract.py](../tests/test_docs_contract.py)、[tests/conftest.py](../tests/conftest.py) `pytest_collection_finish` | ✅ 4 条（📎 8 个变异全红；子集运行 2 passed + 2 skipped） |
+| 50 | 指标最小集 + `/metrics` 只给容器网络内抓 | [metrics.py](../src/app/metrics.py)、[app.py](../src/app/api/app.py) `/metrics` 路由、[deploy/nginx.conf](../deploy/nginx.conf)、[deploy/alerts.yml](../deploy/alerts.yml) | ✅ `test_metrics.py`（6 条，📎 4 个变异全红）+ `promtool check rules`（📎 SUCCESS / 故意拼错 → FAILED） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。

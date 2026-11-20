@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.constants import ALLOWED_ORIGINS, HEADER_REQUEST_ID
+from app.metrics import ERRORS
 
 
 class AppError(Exception):
@@ -115,6 +116,9 @@ def _error_response(
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     """所有错误响应的唯一出口：形状只在这里定义一次"""
+    # 【注意】：这也是【所有】HTTP 错误的单一埋点 —— 记一次就不会漏
+    #   ⚠️ 流内的 STREAM_* 帧不经过这里（它们已经回了 200），见决策 50 的代价②
+    ERRORS.labels(code, str(http_status)).inc()
     error: dict[str, object] = {
         "code": code,
         "message": message,
