@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-20 · 共 51 条
+**最后更新**：2026-11-20 · 共 52 条
 
 ---
 
@@ -72,6 +72,7 @@
 | [49](#49-文档与代码的重复事实用测试钉住锚定--命中次数--子集跳过) | 文档里的数字谁保证 | **锚定正则 + 预期命中次数 + 子集 skip** | 2026-11-20 |
 | [50](#50-指标最小集进程内计数metrics-只给容器网络内抓) | 指标怎么采、谁能看 | **5 个进程内指标 + `/metrics` 反代硬阻断** | 2026-11-20 |
 | [51](#51-压测不打真上游假上游--自己写的容量探针) | 容量怎么测 | **假上游 + 自写容量探针（含 PASS/FAIL 判据）** | 2026-11-20 |
+| [52](#52-反代层错误也按应用信封返回89) | 反代层错误长什么样 | **`error_page` + 内部 location 回 JSON 信封** | 2026-11-20 |
 
 ---
 
@@ -934,6 +935,17 @@
 
 ---
 
+## 52. 反代层错误也按应用信封返回（#89）
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 13a-2c 起 nginx 独占 80。它**自己**产生的错误（413/502/504）回 HTML 页，而 app 的错误是 `{"error":{"code","message","request_id"}}` —— 客户端按 `error.code` 分支的代码直接崩（#89）。📎 2026-11-20 实测三种形状：2 MB → **413 `text/html`**；200 KB（>20000 字符）→ **422 `application/json`**；app 停掉 → **504 `text/html`** |
+| **方案对比** | **A 抬高 `client_max_body_size`，让 app 成为唯一出口**：✅ 形状天然统一 ❌ 解决不了 502/504（app 根本没执行）❌ app 得先把 2 MB 读进内存才能判断大小<br>**B `proxy_intercept_errors on` + `error_page`**：❌ 会把 **app 自己**返回的 413/502 也改写掉，破坏「上游的意思原样透传」<br>**C `error_page <码> = @json_<码>`（named location）+ `return` 静态 JSON**：✅ 只接管 nginx 自己产生的错误 ✅ 不动 `proxy_intercept_errors`（保持默认 off）✅ `$request_id` 在 body 与响应头里可插值 |
+| **决定** | **C**。三个内部 location（413 `PAYLOAD_TOO_LARGE` / 502 `BAD_GATEWAY` / 504 `GATEWAY_TIMEOUT`），每个都带 `default_type application/json`、`X-Request-ID` 与 CORS 头（**全部 `always`**）；CORS 白名单用 `map $http_origin $cors_origin`，由守卫钉住与 `constants.ALLOWED_ORIGINS` 一致；同时把 `$request_id` 写进 nginx 访问日志（否则回给客户端的 id 在任何日志里都搜不到） |
+| **代价** ⚠️ | ① **CORS 白名单出现第二处副本**（nginx `map` vs `constants.ALLOWED_ORIGINS`）—— 靠 `test_nginx_cors_map_matches_app_allowlist` 兜住<br>② **两套 request_id 空间**（nginx 32 hex / app 12 hex）：nginx 错误在 app 日志里查不到，只能查 nginx 日志<br>③ 只覆盖 413/502/504 —— nginx 自身的 400/414/500/503 仍是 HTML（罕见，已记录）<br>④ **413 有两个码名**：`PAYLOAD_TOO_LARGE`（反代层嫌大）vs `UPSTREAM_PAYLOAD_TOO_LARGE`（上游嫌大）—— 客户端必须按 `code` 分支，不能按状态码 |
+| **重审条件** | ① 前端改同源部署 / 加 BFF → CORS 那段可删；② 引入 CDN 或第二层反代 → 错误页要在**最外层**统一，本层 `Vary: Origin` 与 `$request_id` 需重评；③ 换 K8s Ingress → 用 `default-backend` 方案，本决策作废；④ 要覆盖 nginx 全部错误码 → 同一套 named location 逐个加，成本线性 |
+
+---
 ## 待定 / 需要以后拍板的
 
 > 这些**还没定**，列在这里避免忘。定了之后移到上面。

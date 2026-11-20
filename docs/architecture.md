@@ -1625,6 +1625,27 @@ app 等 `service_healthy` 最多等到健康检查判失败、nginx 的 `proxy_r
 
 ---
 
+### 13.6 反代层错误也是契约（#89 / 决策 52）
+
+⭐ **一句话**：`502`/`504` 发生时 app **根本没执行** —— 所以「错误信封由 app 统一定义」必须扩展成
+「错误信封由**这条链**统一定义」。nginx 是唯一能替 app 说话的地方。
+
+| 谁产生 | 状态码 | `code` | 📎 怎么触发的（2026-11-20 实测） | 信封 |
+|---|---|---|---|---|
+| app | 422 | `VALIDATION_ERROR` | body 200 KB（> 20000 字符），< 1 MB | JSON |
+| **nginx** | 413 | `PAYLOAD_TOO_LARGE` | body 2 MB > `client_max_body_size 1m` | **JSON**（修前是 HTML） |
+| **nginx** | 502 | `BAD_GATEWAY` | 端口没在听（进程崩了）→ 连接被**拒绝** | JSON |
+| **nginx** | 504 | `GATEWAY_TIMEOUT` | ① 应用 130 s 没回完 ② **容器停掉 → SYN 被丢弃 → 握手超时** | JSON |
+
+⚠️ **两个 413 不是孪生兄弟**：`PAYLOAD_TOO_LARGE` 是**我们**嫌大（协议层体积），
+`UPSTREAM_PAYLOAD_TOO_LARGE` 是**上游**嫌大（我们把它的判断透传给你）。客户端必须按 `code` 分支，不能按状态码。
+
+⚠️ **两条 request_id 空间**：nginx 的是 32 位 hex（`$request_id`），app 的是 12 位 ——
+nginx 错误在 app 日志里查不到，只能 `grep rid=<id>` 查 nginx 访问日志（格式 `app_json_ext`）。
+
+🔴 **已知缺口（#92）**：`proxy_connect_timeout` 还是默认 **60 s** —— 应用下线时用户要等 60 秒才拿到 504。
+
+---
 ## 14. 决策 ↔ 代码 ↔ 钉住它的测试（一张对账表）
 
 > 用途有两个：读到一条决策想知道**它落在哪个符号**；改一个符号想知道**哪条决策会因此失效**。
@@ -1672,6 +1693,7 @@ app 等 `service_healthy` 最多等到健康检查判失败、nginx 的 `proxy_r
 | 49 | 文档里边数字用测试钉住 | [tests/test_docs_contract.py](../tests/test_docs_contract.py)、[tests/conftest.py](../tests/conftest.py) `pytest_collection_finish` | ✅ 4 条（📎 8 个变异全红；子集运行 2 passed + 2 skipped） |
 | 50 | 指标最小集 + `/metrics` 只给容器网络内抓 | [metrics.py](../src/app/metrics.py)、[app.py](../src/app/api/app.py) `/metrics` 路由、[deploy/nginx.conf](../deploy/nginx.conf)、[deploy/alerts.yml](../deploy/alerts.yml) | ✅ `test_metrics.py`（6 条，📎 4 个变异全红）+ `promtool check rules`（📎 SUCCESS / 故意拼错 → FAILED） |
 | 51 | 压测不打真上游；容量探针自带 PASS/FAIL | [scripts/fake_upstream.py](../scripts/fake_upstream.py)、[scripts/loadtest_chat_stream.py](../scripts/loadtest_chat_stream.py) | ⚠️ 无自动化用例（要真端口/真 key，与 `probe_graceful_shutdown.py` 同性质）—— 📎 但判据可失败：`--gate 2` → **FAIL exit 1**；指向假上游本身 → **FAIL**（全 404） |
+| 52 | 反代层 413/502/504 也回应用信封 | [deploy/nginx.conf](../deploy/nginx.conf) `error_page` + `@json_*`、`map $http_origin`、`log_format app_json_ext` | `test_docker_assets.py`（5 条，📎 6 变异全红） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
