@@ -199,6 +199,28 @@ docker run --rm --network llm-app_app_net --entrypoint python llm-app:dev -c "im
 docker run --rm -v "${PWD}\deploy:/rules:ro" --entrypoint promtool prom/prometheus:v3.6.0 check rules /rules/alerts.yml
 ```
 
+### 8.0e 压测（13f / 决策 51）：**不要打真上游**
+
+```powershell
+# ① 假上游（另开一个终端）
+$env:FAKE_PORT = "18099"; uv run python scripts/fake_upstream.py
+
+# ② 用独立库 + 放大限流 + 指向假上游，起 app
+$env:DATABASE_URL = "sqlite+aiosqlite:///$env:TEMP\lt.db"
+$env:LLM_BASE_URL = "http://127.0.0.1:18099"; $env:LLM_API_KEY = "sk-fake"
+$env:RATE_LIMIT_PER_MINUTE = "100000"; $env:RATE_LIMIT_BURST = "1000"
+uv run python -m alembic upgrade head
+uv run python -m app                  # ③ 另一个终端
+
+# ④ 签一把 key，然后压
+$key = (uv run python -m app.keys create --user lt --label bench) -match '^sk_'
+uv run python scripts/loadtest_chat_stream.py --key $key --concurrency 1,4,8,16,32
+```
+
+⚠️ **`RATE_LIMIT_*` 必须放大** —— 否则 📎 25 个请求就撞 429 `RATE_LIMITED`，测出来的是限流器不是容量。
+⚠️ 探针**只打 app 直连端口**（`/metrics` 在 nginx 那边是 404）。
+📎 本机基线（假上游 12 帧 × 20ms）：`c=4` → 首帧 p50 **47ms**、全 200；`c=16` → 503 开始出现；`db_pool_checked_out` 峰值**始终 4**（闸门值，池上限 15）。
+
 ⚠️ **迁移不用手工跑了**：`up` 会先起 `migrate` 容器执行 `python -m alembic upgrade head`，退出码 0 之后 app 才启动（决策 45）。手工 `exec app python -m alembic upgrade head` 仍可用来查看 / 补跑，但**不是部署步骤**。
 ⚠️ **迁移失败时 `docker compose ps` 看不到 app** —— 它停在 `created` 状态，必须 `docker compose ps -a`；`up` 本身会以**非 0**退出并打印 `app-1 not started: condition "service_completed_successfully" ... not met`。
 ⚠️ `up` **不带 `--build` 就用本地已有镜像**（改了代码必须显式 `--build`，或用 `up -d --build`）。

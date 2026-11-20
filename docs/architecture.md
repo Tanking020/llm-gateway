@@ -1504,10 +1504,33 @@ POST /v1/conversations
 | `--workers 4` | **16**（4 × 4） | 每进程各 15 | 单进程仍安全；但**上游配额按账号算**，16 条同时生成很可能直接打爆 → 429 |
 | 多机 | 16 × 机器数 | 每机独立 | 进程内计数 = 假上限，必须放 Redis / 网关层才作数（#44 的重审条件） |
 
+#### 13.3f 📎 实测（2026-11-20，13f / 决策 51）
+
+环境：**假上游**（12 帧 × 20ms ≈ 0.4s/请求）→ `scripts/loadtest_chat_stream.py`，单进程，
+限流放大到 60k/min（否则测到的是限流器），每档 3 轮：
+
+| 并发 | 状态码分布 | 首帧 p50 | 首帧 p95 | 总时长 p95 | 池峰值 |
+|---|---|---|---|---|---|
+| 1 | 200 × 3 | **19 ms** | 27 ms | 410 ms | 1 |
+| 4 | 200 × 12 | **47 ms** | 72 ms | 436 ms | **4** |
+| 8 | 200 × 24 | **398 ms** | 504 ms | 871 ms | **4** |
+| 16 | 200 × 36 + **503 × 12** | 463 ms | 884 ms | 1258 ms | **4** |
+| 32 | 200 × 44 + **503 × 52** | 761 ms | **1485 ms** | 1788 ms | **4** |
+
+⭐⭐ **三个结论（都是数字，不再是推导）**：
+
+1. **c=8 仍然全 200** —— 闸门 4 不等于「第 5 个用户被拒」，因为 `upstream_queue_timeout=1.0s`
+   允许排队：吞吐上限 ≈ `slots × (1 + queue_timeout / service_time)` = 4 × (1 + 1.0/0.4) ≈ **14**
+2. **首帧延迟随排队线性上升**（47ms → 398ms → 761ms）—— **排队不是免费的**，它把延迟从「上游时间」
+   变成「排队时间 + 上游时间」
+3. **池峰值始终 4**（上限 15）→ 先顶住的是**我们自己的闸门**，不是数据库池
+
+⚠️ 这三个数**只对「假上游 0.4s/请求」这一条件成立**：换成真上游（几十秒的流）时，
+吞吐上限会掉到个位数，而 p95 首帧会变成「排队 + 上游首帧」。
+
 ---
 
 ### 13.4 一次请求最多花多少钱（2026-11-04，📎 单价来自 DeepSeek 官方定价页）
-
 `deepseek-flash` 峰时价：**输入（cache miss）$0.30 / 1M tokens、输出 $1.20 / 1M tokens**（非峰时减半）。
 模型侧：context **1M**、最大输出 **384K（393216）**、并发上限 **2500**。
 
@@ -1648,6 +1671,7 @@ app 等 `service_healthy` 最多等到健康检查判失败、nginx 的 `proxy_r
 | 48 | 日志一行一 JSON；轮转归 Docker | [logging_setup.py](../src/app/logging_setup.py) `JsonFormatter`、[docker-compose.yml](../docker-compose.yml) `logging` | ✅ `test_log_json.py`（2 条：子进程逐行 `json.loads` / traceback 不换行）+ `test_docker_assets.py::test_every_service_rotates_its_logs`（📎 6 个变异全红） |
 | 49 | 文档里边数字用测试钉住 | [tests/test_docs_contract.py](../tests/test_docs_contract.py)、[tests/conftest.py](../tests/conftest.py) `pytest_collection_finish` | ✅ 4 条（📎 8 个变异全红；子集运行 2 passed + 2 skipped） |
 | 50 | 指标最小集 + `/metrics` 只给容器网络内抓 | [metrics.py](../src/app/metrics.py)、[app.py](../src/app/api/app.py) `/metrics` 路由、[deploy/nginx.conf](../deploy/nginx.conf)、[deploy/alerts.yml](../deploy/alerts.yml) | ✅ `test_metrics.py`（6 条，📎 4 个变异全红）+ `promtool check rules`（📎 SUCCESS / 故意拼错 → FAILED） |
+| 51 | 压测不打真上游；容量探针自带 PASS/FAIL | [scripts/fake_upstream.py](../scripts/fake_upstream.py)、[scripts/loadtest_chat_stream.py](../scripts/loadtest_chat_stream.py) | ⚠️ 无自动化用例（要真端口/真 key，与 `probe_graceful_shutdown.py` 同性质）—— 📎 但判据可失败：`--gate 2` → **FAIL exit 1**；指向假上游本身 → **FAIL**（全 404） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
