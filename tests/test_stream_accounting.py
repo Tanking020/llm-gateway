@@ -1,5 +1,6 @@
 """账单层的契约：一次流式调用必须留下一行【能对账】的记录"""
 
+import json
 import logging
 import sqlite3
 from collections.abc import AsyncIterator
@@ -49,6 +50,28 @@ def _run(client: TestClient, llm: FakeLlm) -> None:
 def _stream(client: TestClient, chunks: list[dict[str, Any]]) -> None:
     """按一段 chunk 列表造一个假上游"""
     _run(client, FakeLlm(chunks=chunks))
+
+
+def _frames(client: TestClient, chunks: list[dict[str, Any]]) -> list[Any]:
+    """发一次流式请求并返回解析后的帧列表（`data: <json>` 或 `[DONE]`）
+
+    【注意】：与 `_stream` 的区别是它保留响应体 —— 要断言「客户端到底看到了什么」时用它
+    """
+    app.dependency_overrides[get_llm_client] = lambda: FakeLlm(chunks=chunks)
+    try:
+        with client.stream("POST", "/v1/chat/stream", json=REQ) as response:
+            assert response.status_code == 200
+            body = "".join(response.iter_text())
+    finally:
+        app.dependency_overrides.clear()
+
+    frames: list[Any] = []
+    for block in body.split("\n\n"):
+        if not block:
+            continue
+        raw = block[len("data: ") :]
+        frames.append("[DONE]" if raw == "[DONE]" else json.loads(raw))
+    return frames
 
 
 def _rows(db: Path) -> list[tuple[Any, ...]]:
@@ -103,7 +126,12 @@ def test_as_int_rejects_bool() -> None:
 
 
 def test_index_not_zero_is_logged(client: TestClient) -> None:
-    """回归：丢弃非 0 候选时必须留一行 warning —— 静默丢弃等于「客户端只看到缺字」（#72）"""
+    """回归：丢弃非 0 候选时必须留一行 warning —— 目的是【服务端取证】（#72）
+
+    【注意】：不是「客户端缺字」—— 📎 实测 index=0 的帧本身构成完整答案；
+        只有当【全部】帧都是 index≠0 时客户端才拿不到内容，而那时它会收到
+        STREAM_NO_CONTENT 错误帧（下面第二条反向证据钉住这个既有行为）
+    """
 
     class _Collect(logging.Handler):
         def __init__(self) -> None:
@@ -125,6 +153,24 @@ def test_index_not_zero_is_logged(client: TestClient) -> None:
 
     assert any("index" in m for m in handler.messages), (
         f"丢弃非 0 候选时没有 warning，日志：{handler.messages}"
+    )
+
+    # 反向证据 1：交错 0/1 时主答案必须【完整】—— 丢的是备选候选，不是主答案里的字
+    frames = _frames(
+        client,
+        [
+            {"choices": [{"index": 0, "delta": {"content": "客"}}]},
+            {"choices": [{"index": 1, "delta": {"content": "别"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "户"}}]},
+        ],
+    )
+    text = "".join(f["delta"] for f in frames if "delta" in f)
+    assert text == "客户", f"主答案被破坏：{text!r}（完整帧：{frames}）"
+
+    # 反向证据 2：全部是 index≠0 时，客户端拿到的是 STREAM_NO_CONTENT，不是静默空答复
+    frames = _frames(client, [{"choices": [{"index": 1, "delta": {"content": "别"}}]}])
+    assert {"error": {"code": "STREAM_NO_CONTENT", "message": "上游未返回任何内容"}} in frames, (
+        f"帧全被丢弃时应当明确告知客户端，实际帧：{frames}"
     )
 
 
