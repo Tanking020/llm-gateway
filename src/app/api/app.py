@@ -36,6 +36,10 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# 只有 QueuePool 系（含文件库默认的 AsyncAdaptedQueuePool）才有 checkedout；
+# StaticPool / NullPool 没有，所以读池占用时必须先 isinstance 判断
+from sqlalchemy.pool import QueuePool
+
 from app.api.deps import CurrentUserDep, DbDep, LlmClientDep, SettingsDep, UpstreamSlotDep
 from app.config import Settings, settings, startup_config_summary
 from app.constants import ALLOWED_ORIGINS, HEADER_REQUEST_ID
@@ -246,12 +250,14 @@ async def health() -> dict[str, str]:
 def _pool_checked_out() -> int:
     """读连接池当前借出的连接数
 
-    【注意】：`AsyncEngine.pool` 的静态类型是 `Pool`（基类，没有 checkedout）；
-        运行时是 `AsyncAdaptedQueuePool`。换 PostgreSQL 换成 NullPool 之类时要退化成 0，
-        所以用 getattr 而不是 isinstance 硬转换
+    【注意】：`AsyncEngine.pool` 的静态类型是 `Pool` 基类，没有 `checkedout`；
+        只有 QueuePool 系才有。StaticPool 与 NullPool 一律退化成 0
     """
-    method = getattr(engine.pool, "checkedout", None)
-    return int(method()) if callable(method) else 0
+    # 【注意】：isinstance 不只判断运行时，还会把静态类型从 Pool 收窄成 QueuePool ——
+    #    换成 getattr + callable 会让 mypy 退化成 Any、pyright 退化成 object（两者分叉）
+    if isinstance(engine.pool, QueuePool):
+        return engine.pool.checkedout()
+    return 0
 
 
 @app.get("/metrics", include_in_schema=False)

@@ -220,6 +220,22 @@ uv run python scripts/loadtest_chat_stream.py --key $key --concurrency 1,4,8,16,
 ⚠️ **`RATE_LIMIT_*` 必须放大** —— 否则 📎 25 个请求就撞 429 `RATE_LIMITED`，测出来的是限流器不是容量。
 ⚠️ 探针**只打 app 直连端口**（`/metrics` 在 nginx 那边是 404）。
 📎 本机基线（假上游 12 帧 × 20ms）：`c=4` → 首帧 p50 **47ms**、全 200；`c=16` → 503 开始出现；`db_pool_checked_out` 峰值**始终 4**（闸门值，池上限 15）。
+### 8.0f 编辑器有红点、但 `mypy` 全绿 —— 先别改代码
+
+**顺序固定**，前三步都是取证，不是修：
+
+| 步 | 做什么 | 判据 |
+|---|---|---|
+| 1 | 证明代码**字节没变**：`git --no-pager diff` 为空，且 `git hash-object <文件>` == `git rev-parse HEAD:<文件>` | 两个 hash 相同 → 不是「改坏了」，也不是「回滚失败」 |
+| 2 | 查**引入这条错误的是哪个提交**：`git --no-pager blame -L <行起>,<行止> -- <文件>` | 若指向很久以前的提交 → 它一直都在，只是没人看过 |
+| 3 | 查**检查器有没有变**：`~/.vscode/extensions` 里 `ms-python.vscode-pylance-*` 的版本与安装时间 | 今天没更新 → 排除「升级导致」 |
+| 4 | 查**为什么不显示/为什么显示**：Pylance 设置里 `python.analysis.diagnosticMode` | 📎 默认 `openFilesOnly` → **没打开过的文件不产生诊断** |
+| 5 | 真跑一遍**两套检查器**：`uv run mypy .` 与 `uv run --with pyright pyright --pythonpath ".venv\Scripts\python.exe" src tests` | 两者结论不同 → 是**类型推断分叉**，不是运行时的 bug |
+
+⭐ **最常见的分叉点：按字符串/反射取属性。** 📎 实测 `getattr(pool, "checkedout", None)` 在 mypy 里是 `Any`、在 pyright 里是 `object`，于是 `int(method())` 一个放行一个报错。能写成 `isinstance(x, 具体类)` 时，两套检查器都认。详见 #91。
+
+⚠️ `pyright` 走 `uv --with`（临时装、**不进项目依赖**）—— 它自带 node，首次会多花几秒下载。
+
 
 ⚠️ **迁移不用手工跑了**：`up` 会先起 `migrate` 容器执行 `python -m alembic upgrade head`，退出码 0 之后 app 才启动（决策 45）。手工 `exec app python -m alembic upgrade head` 仍可用来查看 / 补跑，但**不是部署步骤**。
 ⚠️ **迁移失败时 `docker compose ps` 看不到 app** —— 它停在 `created` 状态，必须 `docker compose ps -a`；`up` 本身会以**非 0**退出并打印 `app-1 not started: condition "service_completed_successfully" ... not met`。

@@ -5,9 +5,14 @@
     所以这里只钉【形状与标签】，数值留给真栈验收。
 """
 
-from fastapi.testclient import TestClient
+from pathlib import Path
 
-from app.api.app import app
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool, StaticPool
+
+from app.api.app import _pool_checked_out, app
 from app.api.deps import get_llm_client
 from fakes import FakeLlm
 
@@ -86,3 +91,32 @@ def test_probe_paths_are_not_metered(client: TestClient) -> None:
     body = client.get("/metrics").text
     for path in ("/health", "/health/ready", "/metrics"):
         assert f'http_requests_total{{method="GET",path="{path}"' not in body, f"{path} 不该被计量"
+
+
+def test_pool_checked_out_reads_live_count(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """回归：池占用必须是【真读数】而不是恒 0 —— 否则这条指标是死的
+
+    【注意】：用同步 create_engine 造池，不进事件循环 —— 被测逻辑只看 `engine.pool` 的类型
+    """
+    sync_engine = create_engine(f"sqlite:///{tmp_path / 'pool.db'}")
+    # 先证明前提成立：文件库的池必须是 QueuePool，否则下面的断言测不到目标分支
+    assert isinstance(sync_engine.pool, QueuePool)
+    monkeypatch.setattr("app.api.app.engine", sync_engine)
+
+    assert _pool_checked_out() == 0
+    conn = sync_engine.connect()  # 借出一条连接且不还
+    try:
+        assert _pool_checked_out() == 1
+    finally:
+        conn.close()
+    assert _pool_checked_out() == 0  # 还回去之后必须归零
+
+
+def test_pool_checked_out_degrades_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：池没有 checkedout（StaticPool）时必须返回 0，而不是抛 AttributeError"""
+    static_engine = create_engine("sqlite://", poolclass=StaticPool)
+    # 先证明前提成立：StaticPool 确实不是 QueuePool（📎 实测它没有 checkedout 方法）
+    assert not isinstance(static_engine.pool, QueuePool)
+    monkeypatch.setattr("app.api.app.engine", static_engine)
+
+    assert _pool_checked_out() == 0
