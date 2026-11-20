@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-20 · 共 50 条
+**最后更新**：2026-11-20 · 共 51 条
 
 ---
 
@@ -71,6 +71,7 @@
 | [48](#48-日志一行一-json形状归-formatter体量归-docker) | 日志长什么样、写多久 | **JSON formatter（进程内）+ `logging` 轮转（Docker 侧）** | 2026-11-19 |
 | [49](#49-文档与代码的重复事实用测试钉住锚定--命中次数--子集跳过) | 文档里的数字谁保证 | **锚定正则 + 预期命中次数 + 子集 skip** | 2026-11-20 |
 | [50](#50-指标最小集进程内计数metrics-只给容器网络内抓) | 指标怎么采、谁能看 | **5 个进程内指标 + `/metrics` 反代硬阻断** | 2026-11-20 |
+| [51](#51-压测不打真上游假上游--自己写的容量探针) | 容量怎么测 | **假上游 + 自写容量探针（含 PASS/FAIL 判据）** | 2026-11-20 |
 
 ---
 
@@ -918,6 +919,18 @@
 | **决定** | **B + D**。5 个指标：`http_requests_total{method,path,status}`、`http_request_duration_seconds{path}`（**只非流式**）、`app_errors_total{code,status}`、`llm_tokens_total{direction}`、`db_pool_checked_out`（**抓取时采样**）。三条硬规则：① `path` 标签用**路由模板**（否则每个 id 建一条时间序列）；② **探针与抓取端点不计量**（`/health` `/health/ready` `/metrics`，否则稀释 5xx 比例）；③ nginx `location = /metrics { return 404; }`。告警 3 条写在 `deploy/alerts.yml`（5xx > 1% / 429 > 10·min⁻¹ / 非流式 p99 > 8s） |
 | **代价** ⚠️ | ① **进程内计数**：多 worker / 多副本时每个进程各一份，抓到的只是「被路由到的那一个进程」的账（与 #44 / 决策 42 同型）<br>② **流内 `STREAM_*` 帧不计入 `app_errors_total`** —— 它们已经回了 200、不经过 `_error_response`；要统计得在 yield 处单独埋点<br>③ **告警没有接收端**：`alerts.yml` 只被 `promtool check rules` 验过（📎 能真红），**没有任何东西会把告警发出来**<br>④ `db_pool_checked_out` 只在被抓取时刷新 —— 两次抓取之间的峰值看不到（要看峰值得用 `Max` 或直方图）<br>⑤ 换 PostgreSQL 若用 `NullPool`，`checkedout` 不存在 → 恒为 0（已用 `getattr` 兜底，但那个 0 不代表「没连接」） |
 | **重审条件** | ① 上多副本/多 worker → 改用 Prometheus 的 multiprocess 模式或把计数下沉到网关<br>② 有真监控栈（Prometheus + Alertmanager）→ 把 `alerts.yml` 接进去，并补 `for` 与真实阈值<br>③ 需要流式体验指标 → 加「首帧延迟」直方图（那才是用户感知的流式延迟，不是总时长）<br>④ 引入 CDN/WAF 后要重新设计 `path`/`client` 标签的基数 |
+
+---
+
+## 51. 压测不打真上游：假上游 + 自己写的容量探针
+
+| 项 | 内容 |
+|---|---|
+| **背景** | [#76](todos.md)：「能扛多少」至今是**推导值**（闸门 4 / 池 15 / HTTP 池 100 全是默认值）。要变成数字，必须真的并发打；但打真上游 = **花钱 + 触发真实限流 + 结果不可重复**（上游延迟本身在变） |
+| **方案对比** | **A 直接打真上游**：最真实，但 📎 一次 c=32 的测试就是 96 次真实调用（≈ $1~3）+ 必被限流，且数字混进上游波动<br>**B k6**：报表漂亮，但它是 Go 二进制要装；且「首帧延迟」要自己解析 SSE<br>**C locust**：📎 `uv --with locust` 能装（6.5s，41 个包），但它的 `requests` 栈量不到「首帧」要另写流式逻辑；也带不进项目依赖（只为探针加的 41 个包）<br>**D 假上游 + 自写 asyncio 探针**：✅ 零新依赖（`httpx` + `asyncio` 已有）、能精确量 TTFB、能直接读 `/metrics`、能给出 **PASS/FAIL** |
+| **决定** | **D**。`scripts/fake_upstream.py`（实现 `/models` + `/chat/completions` 的 SSE，帧间隔/帧数可配）把 `LLM_BASE_URL` 指过去；`scripts/loadtest_chat_stream.py` 按并发档位打 `/v1/chat/stream`，输出 `codes / ttfb p50·p95 / total p95 / wall / pool_peak`，并给**两条可失败判据**：① `c ≤ gate` 必须全 200；② `c ≥ 4×gate` 必须出现 503 |
+| **代价** ⚠️ | ① **测的是「我们的容量」，不是「上游的容量」** —— 假上游的帧间隔决定服务时长，进而决定闸门吞吐上限（`slots × (1 + queue_timeout / service_time)`），真上游换了这个数就变<br>② 探针**不在 CI**（要真端口、真 DB、真 key），与 `probe_graceful_shutdown.py` 同性质：手工跑、进仓库、结果贴进台账<br>③ 压测必须**先把限流旋钮放大**（📎 不改时 25 个请求就撞 429 `RATE_LIMITED`，测出来的是限流器不是容量）<br>④ 单机单进程结论，多副本 / 多 worker 要重测（`MAX_CONCURRENT_UPSTREAM_CALLS` 是**进程级**）<br>⑤ 假上游只实现两条路径，协议覆盖面远小于真上游（更多行为归 `tests/fakes.py`） |
+| **重审条件** | ① 上多副本 → 闸门变成 `N × 4`，必须重测；② 换 PostgreSQL → 池行为完全不同（写者不再串行），13f 要重跑；③ 需要「上游真实容量」→ 那是另一个问题（配额/限速规划），要用真上游少量采样 + 历史账单反推；④ 若要进 CI（回归性能）→ 先解决「CI 机器负载不可控」，否则数字会抖到无法判定 |
 
 ---
 
