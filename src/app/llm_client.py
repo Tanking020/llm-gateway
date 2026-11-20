@@ -30,6 +30,9 @@ import logging
 
 # AsyncIterator：异步生成器的返回类型
 from collections.abc import AsyncIterator
+
+# dataclass：给「一次补全的结果」定义一个不可变的小容器（见 LlmCompletion）
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -146,6 +149,18 @@ class LlmChatStream:
         await self._response.aclose()
 
 
+@dataclass(frozen=True, slots=True)
+class LlmCompletion:
+    """一次【非流式】补全的结果：正文 + 原始 usage
+
+    【注意】：usage 保证是 dict（上游给 null / 字符串时归一成 {}），
+        但【不保证】字段齐全 —— 缺字段由路由层 `_as_int` 记 0
+    """
+
+    content: str
+    usage: dict[str, Any]
+
+
 class LlmClient:
     """上游 LLM 服务的适配器。业务代码只认它，不认 httpx"""
 
@@ -195,6 +210,42 @@ class LlmClient:
         """
         response = await self._request("POST", "/chat/completions", json_body=body, stream=True)
         return LlmChatStream(response)
+
+    async def complete(self, body: dict[str, object]) -> LlmCompletion:
+        """非流式补全：一次拿全正文与用量
+
+        L1 / L2 由 `_request` 统一翻译（与 open_chat_stream 同一条路）；
+        这里只负责 L3 —— 状态码 2xx，但 body 结构不对
+        """
+        # 【注意】：与 list_models 一样给整次调用一个【总预算】——
+        #   request_timeout 只管"两次读取之间的间隔"，管不到总时长（滴答式慢响应会一直挂着）
+        try:
+            async with asyncio.timeout(settings.upstream_total_timeout):
+                response = await self._request("POST", "/chat/completions", json_body=body)
+        except TimeoutError as exc:
+            raise AppError(code="UPSTREAM_TIMEOUT", message="上游响应超时") from exc
+
+        # L3：四类"结构不对"都落这里
+        #   ValueError -> body 不是 JSON（网关 HTML / 空 body）；ValidationError 也在此列
+        #   KeyError   -> 字段改名（choices 变 data）或 200 里塞了 {"error": ...}
+        #   IndexError -> choices 是【空数组】（上游说成功，但一个候选都没有）
+        #   TypeError  -> 类型变了（choices 是 null / message.content 不是字符串）
+        try:
+            payload = response.json()
+            choice = payload["choices"][0]
+            content = choice["message"]["content"]
+            # 【注意】：必须显式判 —— json 的 null 会变成 None，
+            #   直接用会让 ChatResponse 的校验炸在很远的地方（栈里看不出是上游的问题）
+            if not isinstance(content, str):
+                raise TypeError(f"content 不是字符串：{type(content).__name__}")
+            raw_usage = payload.get("usage")
+        except (ValueError, KeyError, TypeError, IndexError) as exc:
+            logger.error("上游 /chat/completions 返回结构不合规: %s", exc)
+            raise AppError(code="UPSTREAM_MALFORMED", message="上游返回结构不合规") from exc
+
+        # usage 归一：null / 字符串 / 缺失 一律变 {}（字段级缺失交给路由记 0）
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        return LlmCompletion(content=content, usage=usage)
 
     async def _request(
         self,

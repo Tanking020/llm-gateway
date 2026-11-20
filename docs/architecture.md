@@ -494,7 +494,7 @@ CREATE INDEX ix_api_keys_user_id ON api_keys (user_id);
 | 点 | 说明 |
 |---|---|
 | `/v1/models` vs `/v1/upstream/models` | 前者读**硬编码常量** `KNOWN_MODELS = ["deepseek-flash", "deepseek-v4-pro"]`；后者**真调上游**。形状也不同（`items: [str]` vs `items: [ModelItem]`）—— 待办 #39 |
-| `/v1/chat` vs `/v1/chat/stream` | 前者是 **`echo` 占位**（`{"content": "[echo] hi"}`），后者才真调上游 |
+| `/v1/chat` vs `/v1/chat/stream` | **两条都真调上游**（决策 53）—— 前者一次拿全（非流式），后者 SSE 逐帧；两者共用 `ChatRequest`、同一条 pre-flight 顺序、同一个并发闸门 |
 
 ---
 
@@ -538,10 +538,10 @@ GET /v1/upstream/models   → 200
 | `items[].name` | str \| null | 供应商展示名，**可能没有** |
 | `items[].context_window` | int \| null | 上下文窗口 |
 
-### 6.3 非流式对话（当前是 echo 占位）
+### 6.3 非流式对话（真调上游，决策 53）
 
 ```json
-POST /v1/chat  → 200  {"content": "[echo] hi", "model": "deepseek-flash", "usage_tokens": 0}
+POST /v1/chat  → 200  {"content": "你好！有什么可以帮你？", "model": "deepseek-flash", "usage_tokens": 38}
 ```
 
 `ChatRequest` 的字段（📎 从 `model_fields` 导出）：
@@ -551,7 +551,7 @@ POST /v1/chat  → 200  {"content": "[echo] hi", "model": "deepseek-flash", "usa
 | `messages` | `list[Message]` | ✅ |
 | `model` | `str \| None` | 可选（None → 回落 `settings.llm_model`） |
 | `temperature` | `float` | 可选（默认 0.7） |
-| `max_tokens` | `int \| None` | 可选（None → **不放进上游请求体**） |
+| `max_tokens` | `int \| None` | 可选（None → **用 `max_tokens_ceiling` 兜底**；⚠️ `/v1/chat/stream` 是「不放进 body」，两处差异是**有意的**：省略等于让客户端绕过成本上限） |
 | `conversation_id` | `int \| None` | 可选（传了就先校验存在） |
 
 `Message` = `{role: "system"|"user"|"assistant", content: str}`
@@ -1694,6 +1694,7 @@ nginx 错误在 app 日志里查不到，只能 `grep rid=<id>` 查 nginx 访问
 | 50 | 指标最小集 + `/metrics` 只给容器网络内抓 | [metrics.py](../src/app/metrics.py)、[app.py](../src/app/api/app.py) `/metrics` 路由、[deploy/nginx.conf](../deploy/nginx.conf)、[deploy/alerts.yml](../deploy/alerts.yml) | ✅ `test_metrics.py`（6 条，📎 4 个变异全红）+ `promtool check rules`（📎 SUCCESS / 故意拼错 → FAILED） |
 | 51 | 压测不打真上游；容量探针自带 PASS/FAIL | [scripts/fake_upstream.py](../scripts/fake_upstream.py)、[scripts/loadtest_chat_stream.py](../scripts/loadtest_chat_stream.py) | ⚠️ 无自动化用例（要真端口/真 key，与 `probe_graceful_shutdown.py` 同性质）—— 📎 但判据可失败：`--gate 2` → **FAIL exit 1**；指向假上游本身 → **FAIL**（全 404） |
 | 52 | 反代层 413/502/504 也回应用信封 | [deploy/nginx.conf](../deploy/nginx.conf) `error_page` + `@json_*`、`map $http_origin`、`log_format app_json_ext` | `test_docker_assets.py`（5 条，📎 6 变异全红） |
+| 53 | 非流式 `/v1/chat` 接真上游 | [llm_client.py](../src/app/llm_client.py) `complete()` / `LlmCompletion`、[app.py](../src/app/api/app.py) `chat`、[conftest.py](../tests/conftest.py) `_forbid_real_upstream` | `test_upstream.py`（4）、`test_adapter_http.py`（6）、`test_limits.py` `test_gate_applies_to_non_stream_chat`、`test_source_rules.py`（`_READ_ONLY_ROUTES` 已空） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。

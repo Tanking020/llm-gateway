@@ -26,6 +26,7 @@ os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///" + _TEST_DB.as_posix()
 os.environ["APP_ENV"] = "dev"
 os.environ["DEBUG"] = "false"
 
+import httpx  # noqa: E402
 import pytest  # noqa: E402
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
@@ -34,6 +35,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.api.app import app  # noqa: E402
 from app.auth import hash_api_key  # noqa: E402
 from app.constants import HEADER_API_KEY  # noqa: E402
+from app.llm_client import LlmClient  # noqa: E402
 from app.models import Base  # noqa: E402
 
 # 测试套件固定使用的两把 key（明文只在这里出现；库里存的是它的 sha256）
@@ -161,3 +163,61 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         per_file[name] = per_file.get(name, 0) + 1
     COLLECTED_COUNTS["total"] = len(session.items)
     COLLECTED_COUNTS["per_file"] = per_file
+
+
+# ============ 哨兵：测试期间禁止真调上游（#8/#46 起 /v1/chat 会真花钱）============
+
+
+class RealUpstreamForbidden(RuntimeError):
+    """测试里试图真调上游模型服务 —— 通常意味着【漏了 override get_llm_client】
+
+    【注意】：用独立异常类型而不是 AssertionError —— 否则报错长得像"某条断言失败"，
+        排查时会先去看用例里的 assert，而不是"我忘了注入假上游"
+    """
+
+
+class _ForbiddenTransport(httpx.AsyncBaseTransport):
+    """一碰网络就报错的 transport（哨兵本体）
+
+    【注意】：只拦【真的发请求】这一刻，不拦"创建客户端对象"——
+        lifespan 每个用例都会创建客户端，在那里拦会把所有用例一起炸
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        raise RealUpstreamForbidden(
+            f"测试里尝试真调上游：{request.method} {request.url}。"
+            "如果你是在测路由：请在该用例里 "
+            "`app.dependency_overrides[get_llm_client] = lambda: FakeLlm(...)`"
+            "（见 tests/fakes.py）；如果你是想验证真实网络：那属于【集成测试】，"
+            "必须显式写、并在用例名与 tests/README.md 里标注 —— 不能靠让普通用例偷偷出网"
+        )
+
+
+def forbidden_llm() -> LlmClient:
+    """造一个「一碰网络就报错」的客户端（工厂的替代品）
+
+    【注意】：不重写 list_models / open_chat_stream / complete 中的任何一个 ——
+        它们全都走 self._http，所以将来新增的方法自动被保护
+    """
+    return LlmClient(httpx.AsyncClient(transport=_ForbiddenTransport()))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _forbid_real_upstream() -> Iterator[None]:
+    """全局哨兵：测试期间禁止真调上游（**报错**，不是静默替换成假数据）
+
+    【注意】：替换的是【工厂】create_llm_client 而不是 override get_llm_client ——
+        用例里的 app.dependency_overrides.clear() 会把 override 清掉，工厂不会被清
+    【注意】：lifespan 是 async with create_llm_client()，而 app.py 里是
+        `from app.llm_client import create_llm_client`，调用时查的是 app.api.app 的模块全局
+    """
+    from app.api import app as app_module
+
+    # 【注意】：用 setattr/getattr 而不是 `app_module.create_llm_client = ...` ——
+    #   mypy strict 的 no_implicit_reexport 会把「访问 app.api.app 里 import 进来的名字」判成错
+    original = getattr(app_module, "create_llm_client")  # noqa: B009
+    setattr(app_module, "create_llm_client", forbidden_llm)  # noqa: B010
+    try:
+        yield
+    finally:
+        setattr(app_module, "create_llm_client", original)  # noqa: B010

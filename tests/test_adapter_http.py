@@ -7,6 +7,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -14,7 +15,7 @@ import pytest
 from app import llm_client
 from app.config import Settings
 from app.errors import AppError
-from app.llm_client import MAX_ERROR_BODY_CHARS, LlmClient
+from app.llm_client import MAX_ERROR_BODY_CHARS, LlmClient, LlmCompletion
 
 BASE = "http://upstream.test"
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -246,6 +247,77 @@ def test_list_models_is_cut_by_total_timeout(monkeypatch: pytest.MonkeyPatch) ->
         async with httpx.AsyncClient(transport=transport, base_url=BASE) as http:
             with pytest.raises(AppError) as exc_info:
                 await LlmClient(http).list_models()
+        return exc_info.value
+
+    assert asyncio.run(scenario()).code == "UPSTREAM_TIMEOUT"
+
+
+# ============ 非流式补全 complete()（#8/#46）============
+
+
+def test_complete_returns_content_and_usage() -> None:
+    """适配器：200 且结构正常 -> 正文与 usage 原样取出"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "你好"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            },
+        )
+
+    async def scenario() -> LlmCompletion:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE) as http:
+            return await LlmClient(http).complete({"stream": False})
+
+    result = asyncio.run(scenario())
+    assert result.content == "你好"
+    assert result.usage == {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+    # 反向证据：usage 不能是空 dict —— 否则「永远返回 {}」的实现也能让上面那条变绿
+    assert result.usage
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"choices": []}, id="empty_choices"),
+        pytest.param({"choices": [{"message": {"content": None}}]}, id="content_null"),
+        pytest.param({"choices": [{"message": {"content": 123}}]}, id="content_int"),
+        pytest.param({"error": "boom"}, id="error_body"),
+    ],
+)
+def test_complete_malformed_becomes_malformed(payload: dict[str, Any]) -> None:
+    """适配器 L3：200 但结构不对 -> UPSTREAM_MALFORMED（不是 500）"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    async def scenario() -> AppError:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE) as http:
+            with pytest.raises(AppError) as exc_info:
+                await LlmClient(http).complete({})
+        return exc_info.value
+
+    assert asyncio.run(scenario()).code == "UPSTREAM_MALFORMED"
+
+
+def test_complete_is_cut_by_total_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归 #55 同款：非流式也必须有【总预算】，否则滴答式慢响应会一直挂着"""
+
+    async def _slow_complete(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "太慢了"}}]})
+
+    monkeypatch.setattr(llm_client, "settings", Settings(upstream_total_timeout=0.05))
+
+    async def scenario() -> AppError:
+        transport = httpx.MockTransport(_slow_complete)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE) as http:
+            with pytest.raises(AppError) as exc_info:
+                await LlmClient(http).complete({})
         return exc_info.value
 
     assert asyncio.run(scenario()).code == "UPSTREAM_TIMEOUT"

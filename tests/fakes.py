@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from app.errors import AppError
-from app.llm_client import LlmChatStream, LlmClient
+from app.llm_client import LlmChatStream, LlmClient, LlmCompletion
 from app.schemas import ModelItem
 
 
@@ -24,7 +24,7 @@ class FakeChatStream(LlmChatStream):
 
 
 class FakeLlm(LlmClient):
-    """冒充 LlmClient：只覆盖路由真正会调的两个方法"""
+    """冒充 LlmClient：只覆盖路由真正会调的三个方法"""
 
     def __init__(
         self,
@@ -32,6 +32,8 @@ class FakeLlm(LlmClient):
         chunks: list[dict[str, Any]] | None = None,
         models_error: AppError | None = None,
         stream_error: AppError | None = None,
+        completion: LlmCompletion | None = None,
+        complete_error: AppError | None = None,
     ) -> None:
         # 这样写是了避免传入可变默认对象，默认参数只创建一次，所有实例共享
         # 但要注意这样无法区分传了空列表和没传，只不过现有场景这俩没区别所以没事
@@ -39,7 +41,15 @@ class FakeLlm(LlmClient):
         self._chunks = chunks or []
         self._models_error = models_error
         self._stream_error = stream_error
+        self._completion = completion or LlmCompletion(
+            content="fake answer",
+            usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+        )
+        self._complete_error = complete_error
         self.last_body: dict[str, object] | None = None
+        # 【注意】：非流式的请求体单独一个字段 —— 与 last_body 混用会让
+        #   "流式那次"的 body 被覆盖，而 test_stream_* 里有断言 last_body 的用例
+        self.last_complete_body: dict[str, object] | None = None
 
     async def list_models(self) -> list[ModelItem]:
         if self._models_error is not None:
@@ -51,3 +61,9 @@ class FakeLlm(LlmClient):
         if self._stream_error is not None:
             raise self._stream_error
         return FakeChatStream(self._chunks)
+
+    async def complete(self, body: dict[str, object]) -> LlmCompletion:
+        self.last_complete_body = body
+        if self._complete_error is not None:
+            raise self._complete_error
+        return self._completion
