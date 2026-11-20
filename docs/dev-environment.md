@@ -220,6 +220,8 @@ uv run python scripts/loadtest_chat_stream.py --key $key --concurrency 1,4,8,16,
 ⚠️ **`RATE_LIMIT_*` 必须放大** —— 否则 📎 25 个请求就撞 429 `RATE_LIMITED`，测出来的是限流器不是容量。
 ⚠️ 探针**只打 app 直连端口**（`/metrics` 在 nginx 那边是 404）。
 📎 本机基线（假上游 12 帧 × 20ms）：`c=4` → 首帧 p50 **47ms**、全 200；`c=16` → 503 开始出现；`db_pool_checked_out` 峰值**始终 4**（闸门值，池上限 15）。
+
+📋 **压测结果统一填进** [notes/loadtest-record.md](../notes/loadtest-record.md) 的表单（前置条件 / 数据 / 判定 / 结论四节，缺一节结论就不可比）。
 ### 8.0f 编辑器有红点、但 `mypy` 全绿 —— 先别改代码
 
 **顺序固定**，前三步都是取证，不是修：
