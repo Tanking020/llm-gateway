@@ -1599,9 +1599,10 @@ docker compose up -d
                       └─ httpx → api.deepseek.com（闸门 4 个槽位；总预算 120s）
 ```
 
-⚠️ 代理这一跳**自己也会产生错误**，而它不受我们的 envelope 管：
-`client_max_body_size 1m` 超限 → **413 HTML 页**（`server: nginx/1.29.8`），
-而 app 自己的超限是 **422 JSON** → 两种形状并存（[#89](../docs/todos.md)）。
+⚠️ 代理这一跳**自己也会产生错误**（413 / 502 / 504）。它们**默认**是 nginx 的 HTML 页，
+不受我们的 envelope 管 —— 现已由 `error_page` + `@json_*` 内部 location 改成**同一个信封**
+（[#89](../docs/todos.md) 已解决、决策 52，详见 [§13.6](#136-反代层错误也是契约89--决策-52)）。
+body 超限在两层都还会拦，但形状现在一致：nginx 的 `1m` 上限 → **413 JSON**，app 自己的 422 不变。
 
 #### ③ `docker compose stop` —— 停机顺序（依赖者先停）
 
@@ -1752,6 +1753,7 @@ nginx 错误在 app 日志里查不到，只能 `grep rid=<id>` 查 nginx 访问
 | 51 | 压测不打真上游；容量探针自带 PASS/FAIL | [scripts/fake_upstream.py](../scripts/fake_upstream.py)、[scripts/loadtest_chat_stream.py](../scripts/loadtest_chat_stream.py) | ⚠️ 无自动化用例（要真端口/真 key，与 `probe_graceful_shutdown.py` 同性质）—— 📎 但判据可失败：`--gate 2` → **FAIL exit 1**；指向假上游本身 → **FAIL**（全 404） |
 | 52 | 反代层 413/502/504 也回应用信封 | [deploy/nginx.conf](../deploy/nginx.conf) `error_page` + `@json_*`、`map $http_origin`、`log_format app_json_ext` | `test_docker_assets.py`（5 条，📎 6 变异全红） |
 | 53 | 非流式 `/v1/chat` 接真上游 | [llm_client.py](../src/app/llm_client.py) `complete()` / `LlmCompletion`、[app.py](../src/app/api/app.py) `chat`、[conftest.py](../tests/conftest.py) `_forbid_real_upstream` | `test_upstream.py`（4）、`test_adapter_http.py`（6）、`test_limits.py` `test_gate_applies_to_non_stream_chat`、`test_source_rules.py`（`_READ_ONLY_ROUTES` 已空） |
+| 54 | `LlmCompletion.usage` 保持 `dict`，不换 `MappingProxyType` | [llm_client.py](../src/app/llm_client.py) `LlmCompletion` docstring | `test_adapter_http.py::test_complete_usage_stays_a_plain_dict`（📎 变异「换成 proxy」→ 该条红、既有 `==` 条仍绿） |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
