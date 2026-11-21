@@ -77,6 +77,7 @@
 | [54](#54-llmcompletionusage-保持-dict不换-mappingproxytype) | `usage` 要不要做成不可变 | **保持 `dict`；只读靠约定 + 一条 `isinstance` 反向用例** | 2026-11-21 |
 | [55](#55-质量门从-4-道变-5-道加-pyright-与编辑器对齐) | 要不要跑两套类型检查器 | **跑**：`mypy` 管严格度、`pyright` 管与编辑器一致，**并集**才算过 | 2026-11-21 |
 | [56](#56-让-docs-能填-api-key凭据改成-openapi-声明) | `/docs` 里怎么填 API key | **`APIKeyHeader` + `Security(...)`**，`/docs` 顶部出 Authorize 按钮 | 2026-11-21 |
+| [57](#57-请求-id-的单一真相在-nginx-边界) | 请求 ID 谁说了算 | **nginx 边界定 ID**：`map` 白名单校验 + 日志/错误页/透传统一用 `$rid` | 2026-11-21 |
 
 ---
 
@@ -995,6 +996,16 @@
 | **决定** | **B**。`deps.py` 加模块级 `api_key_header = APIKeyHeader(name=HEADER_API_KEY, auto_error=False, description=...)`；`require_user` 增加参数 `api_key: Annotated[str \| None, Security(api_key_header)] = None`，函数体改用 `api_key` 而不是 `request.headers.get(...)`。⭐ 两个关键选择：① **`auto_error=False`** —— 让缺头时返回 `None`，由我们自己的 `_unauthorized()` 抛 401，**保住单一错误出口 + `WWW-Authenticate: ApiKey`**；② **`Security(...)` 写在子依赖里而不是每条路由上** —— 📎 实测 FastAPI 会摊平依赖链收集 security，所以调用方写法不变，`test_source_rules` 的 AST 守卫也不受影响 |
 | **代价** ⚠️ | ① **对外契约的产物变了**：`/openapi.json` 多一个 `securitySchemes.APIKeyHeader`，每条受保护操作多一个 `security` 字段 —— 消费 OpenAPI 的代码生成器会按它生成「需要鉴权」的客户端（通常这是好事，但属于可观测变化）<br>② **多一条必须记住的约定**：`auto_error` 必须保持 `False`。📎 **实测（运行时翻转属性，不改代码）**：`False` → `{"error":{"code":"UNAUTHORIZED","message":"缺少 X-API-Key 请求头"}}` + `WWW-Authenticate: ApiKey`；`True` → 同一状态码但 message 变成 FastAPI 的英文 `Not authenticated`，且 **`WWW-Authenticate` 消失**。⚠️ **消失的原因不是 FastAPI 没带这个头**（它的 `make_not_authenticated_error()` 明确带了）—— 是**我们自己的 `_http_exception_handler` 调 `_error_response` 时没有透传 `exc.headers`**，把上游塞的头丢了。这条是读源码时发现的**独立缺陷**，已登记待办 **#95**<br>③ `require_user` 的签名多一个参数（虽然调用方不用改）<br>④ 依赖 `Security` 在子依赖里的传播行为 —— 这是 FastAPI 的实现细节，升级时要留意（已用用例钉住） |
 | **重审条件** | ① 要把 `/docs` 也关掉（`APP_ENV=prod` 已关）或换成自建文档站 → 本条的收益只对 `/docs` 有效，届时重新评估；② 若将来支持多种凭据（如 `Authorization: Bearer` 给浏览器、`X-API-Key` 给服务端）→ 变成多个 scheme，需要重写这段声明并考虑 `/docs` 里 Authorize 只能填一个的问题；③ 若 FastAPI 改变「子依赖里的 `Security` 是否传播到 operation」的行为 → 守卫用例 `test_openapi_declares_api_key_security` 会红，按新行为调整 |
+
+## 57. 请求 ID 的单一真相在 nginx 边界
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 2026-11-21 全量跑 RUNBOOK 时发现客户端会看到**两套号**：应用正常响应回的是应用生成的 12 位 hex（或客户端自带的），而 nginx access log 记的是它自己的 `$request_id`（32 位），三个 `@json_413/502/504` 也用 `$request_id`。📎 实测：请求带 `X-Request-ID: sse80-001` → 应用日志 `request_id=sse80-001`，nginx 日志 `rid=2fae8d87a435bb…` → **客户端拿到的号在 nginx 日志里搜不到**（#98）。根因：`location /` 没有 `proxy_set_header X-Request-ID`，而 access log 在盲写（它读不到上游响应头） |
+| **方案对比** | **A nginx 权威 + 格式白名单**：`map $http_x_request_id $rid { default $request_id; "~^[A-Za-z0-9._:-]{1,64}$" $http_x_request_id; }`，日志 / 错误页 / 透传统一用 `$rid`。✅ 一个号贯穿三处 ✅ 默认不可伪造 ✅ 应用零改动（它本来就「优先沿用传入头」）❌ 默认号从 12 位变 32 位（对外格式变化）<br>**B 沿用客户端的**：`proxy_set_header X-Request-ID $http_x_request_id`。✅ 客户端的串联 ID 一定生效 ❌ **客户端字串原样进 nginx 裸文本日志**（换行/引号可伪造日志行，CWE-117）❌ 客户端不传时 nginx 侧为空，仍是两套<br>**C 双记**：透传 `$request_id`，日志再记 `cid=$http_x_request_id`。✅ 信息最全 ❌ 客户端看到的号在 nginx 日志里仍然搜不到 —— 问题本身没解决<br>**D 应用生成后回写 nginx**：❌ nginx 写 access log 时读不到上游响应头，要 Lua/OpenResty，代价远超收益 |
+| **决定** | **A**。`deploy/nginx.conf`：新增 `map $http_x_request_id $rid`；`log_format` 的 `rid=`、三个 `@json_*` 的响应头与 body、`location /` 的 `proxy_set_header X-Request-ID` 全部改用 `$rid`。应用代码一行未改。守卫 `test_nginx_owns_request_id_at_the_edge` 同时钉住「白名单字符集 / 日志与错误页用 `$rid` / 不许残留裸 `$request_id`」 |
+| **代价** ⚠️ | ① **对外格式变化**：不走客户端 ID 时是 32 位 hex（原 12 位）—— 已写进 [api.md](api.md)<br>② **客户端 ID 会被静默替换**：不匹配 `^[A-Za-z0-9._:-]{1,64}$` 就用 nginx 的（不报错 —— 追踪 ID 不应让业务请求失败）<br>③ 每条请求多一次正则匹配（纳秒级）<br>④ **半迁移风险**：只要有一处还在用 `$request_id`，就又是一个网关两种号 —— 用「全局不许残留」的断言兜住，📎 变异（删 `proxy_set_header`）→ 守卫红 |
+| **重审条件** | ① 换成别的 ingress（k8s ingress-nginx / Envoy）→ `map` 写法要重写，且要确认它是否也回 `X-Request-ID`；② 要接 **W3C `traceparent`**（OpenTelemetry）→ 请求 ID 应让位给 trace-id/span-id，本条的 `$rid` 变成退化路径；③ 若出现**多级代理**（CDN → nginx → app）→ 「可信的那一跳」要重新定义，否则第一层 CDN 塞的 ID 会被当成客户端 ID |
 
 ---
 ## 待定 / 需要以后拍板的

@@ -388,7 +388,7 @@ def test_nginx_error_pages_emit_json_envelope() -> None:
         assert "default_type application/json;" in block, "@json_* 必须声明 JSON"
         # 信封字段与 app 的 `{"error":{"code","message","request_id"}}` 逐一对齐
         assert '"message":' in block, f"@json_{status} 缺 message"
-        assert '"request_id":"$request_id"' in block, f"@json_{status} 缺 request_id"
+        assert '"request_id":"$rid"' in block, f"@json_{status} 缺 request_id"
 
 
 def test_nginx_error_headers_use_always() -> None:
@@ -422,6 +422,30 @@ def test_nginx_cors_map_matches_app_allowlist() -> None:
     assert origins == set(ALLOWED_ORIGINS), (
         f"nginx 白名单 {sorted(origins)} != 应用 {sorted(ALLOWED_ORIGINS)} —— 改一边必须改另一边"
     )
+
+
+def test_nginx_owns_request_id_at_the_edge() -> None:
+    """回归：客户端看到的 request_id 必须与 nginx 日志里的是同一个号（#98 / 决策 57）
+
+    【注意】：改前 nginx 记自己的 `$request_id`、应用自己生成 12 位 ——
+        客户端拿到的号在 nginx access log 里根本搜不到（📎 实测 rid=2fae8d… vs sse80-001）
+    """
+    code = _nginx_code()
+    block = re.search(r"map \$http_x_request_id \$rid \{(.*?)\n\}", code, re.DOTALL)
+    assert block, "缺 map $http_x_request_id $rid —— 边界必须决定用哪个 ID"
+    # 【注意】：只放行安全字符集：空格 / 引号 / 换行进不来，access log 的行无法被伪造（CWE-117）
+    assert "~^[A-Za-z0-9._:-]{1,64}$" in block.group(1), "客户端 ID 必须按白名单字符集放行"
+    assert "default" in block.group(1), "缺默认分支 —— 客户端不传时要回落到 nginx 生成的号"
+    assert "rid=$rid " in code, "access log 必须记 $rid（不是 $request_id）"
+    assert "proxy_set_header X-Request-ID $rid;" in code, "必须把 $rid 透传给应用"
+    # 【注意】：半迁移比不迁移更糟 —— 一个网关两种号，排障时更混乱
+    assert "rid=$request_id" not in code, "access log 还在用 $request_id"
+    assert "add_header X-Request-ID $request_id" not in code, "错误页响应头还在用 $request_id"
+    assert '"request_id":"$request_id"' not in code, "错误页 body 还在用 $request_id"
+    for status in _EXPECTED_NGINX_ERROR_STATUSES:
+        assert "X-Request-ID $rid" in _nginx_internal_location(status), (
+            f"@json_{status} 的响应头必须是 $rid"
+        )
 
 
 def test_nginx_does_not_intercept_upstream_errors() -> None:

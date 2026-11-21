@@ -348,11 +348,10 @@ app 那行是 **`8000/tcp`**（不是 `0.0.0.0:8000->8000`），proxy 是 `0.0.0
 - `promtool check rules` → `SUCCESS: 3 rules found`
 - 容器网络内抓 `/metrics` → 200，含 `http_requests_total{method,path,status}` / `db_pool_checked_out` 等
 
-⛔ **两处「对不上号」，排查时别被骗**（都实测过）：
-1. **nginx 的 `rid=` 不是应用的 `request_id`**。我发请求时带了 `X-Request-ID: sse80-001`，
-   应用日志里是 `sse80-001`，但 nginx access log 记的是它自己生成的 `rid=2fae8d87a435…` ——
-   因为 `deploy/nginx.conf` 没有 `proxy_set_header X-Request-ID`。**所以拿 client 看到的 ID 只能搜 app 日志**
-   （见待办 #98）。
+✅ **「对不上号」已修一处、留一处**（都实测过）：
+1. ~~**nginx 的 `rid=` 不是应用的 `request_id`**~~ → **已修（#98 / 决策 57）**：`deploy/nginx.conf` 加 `map $http_x_request_id $rid`（白名单 `^[A-Za-z0-9._:-]{1,64}$`），
+   日志 / 三个错误页 / 透传统一用 `$rid`。📎 实测：带 `X-Request-ID: trace-abc123` → 响应头、nginx `rid=`、应用日志 `request_id` **三处同值**；
+   带非法 ID（含空格/引号）→ 三处一起变成同一个 32 位 hex，且 nginx 日志里搜不到那串原文。
 2. **从宿主 curl 时，应用日志的 `client` 是 Docker 网桥地址**（📎 `172.30.0.128`），不是 `127.0.0.1`；
    容器内 healthcheck 才是 `127.0.0.1`。只有**从另一台机器**访问，才能看到真实外部 IP。
 
@@ -498,9 +497,9 @@ curl.exe -s http://127.0.0.1/health/ready
 | 3 | **SSE 真流式**（不是攒着一次到） | `curl.exe -N -s http://127.0.0.1/v1/chat/stream -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"数到十"}]}'` | 逐帧到达（不是最后一次性出现） |
 | 4 | 反代层错误也是 JSON | 传 >1 MB body | `413` + `application/json`（不是 nginx HTML） |
 | 5 | `/metrics` 对宿主封死 | `curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1/metrics`（bash 用 `/dev/null`） | `404` |
-| 6 | 日志能追链路 | 拿响应里的 `request_id`，按 [§7](#7-看日志与指标) 搜 | 命中的那一行里 `client` 是**可信链解析后**的来源（⚠️ 从宿主测会是 Docker 网桥 IP，见 §7；nginx 自己的 `rid=` 是另一个号，别拿错） |
+| 6 | 日志能追链路 | 拿响应里的 `request_id`，按 [§7](#7-看日志与指标) 搜 | app 与 nginx **两处都能搜到**（#98 起 nginx `rid=` 与它同源）；`client` 是可信链解析后的来源（⚠️ 从宿主测会是 Docker 网桥 IP，见 §7） |
 | 7 | 实例下线快速失败 | `docker compose stop app` 后请求一次 | **3 秒内** `504` JSON（不是等 60 秒） |
-| 8 | 起回来 | `docker compose start app` | healthy，请求恢复 200 |
+| 8 | 起回来 | `docker compose start app` | healthy，请求恢复 200（⚠️ **刚起回来第一次可能 502**：nginx 还握着重启前的上游连接，📎 实测 `upst=502 rt=0.000`，等 ~3s 再判） |
 
 📎 **11c 逐条实测（2026-11-21，全过）**：无 key → `401` + `www-authenticate: ApiKey` + 我们的信封；
 带 key → `201`；SSE 经 nginx 逐帧（`ttfb=0.249s / total=0.705s`，末帧 `[DONE]`）；
@@ -575,7 +574,7 @@ uv run alembic downgrade -1                # ⚠️ 只撤结构，撤不回被�
 
 | 想知道 | 去哪 |
 |---|---|
-| 为什么这么设计、放弃了什么、何时重审 | [docs/decisions.md](docs/decisions.md)（56 条 ADR） |
+| 为什么这么设计、放弃了什么、何时重审 | [docs/decisions.md](docs/decisions.md)（57 条 ADR） |
 | 系统长什么样（中间件栈 / ER / 帧序 / 状态机 / 两层接缝） | [docs/architecture.md](docs/architecture.md) |
 | 端点契约与真实响应样本 | [docs/api.md](docs/api.md) |
 | 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |
