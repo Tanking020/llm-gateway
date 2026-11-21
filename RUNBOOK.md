@@ -289,7 +289,7 @@ uv run alembic downgrade base; uv run alembic upgrade head
 ## §6 容器（生产形态）
 
 ```bash
-docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+docker compose build            # 索引与 uv.lock 绑定，见 dev-environment §8.0c
 docker compose up -d            # ① migrate 跑完 → ② app healthy → ③ proxy 起
 docker compose ps               # app / proxy 都 healthy；migrate 是 exited 0
 curl.exe -s http://127.0.0.1/health # 入口是 nginx 的 80，不是 8000
@@ -497,7 +497,7 @@ uv run python scripts/probe_graceful_shutdown.py --hold 5   # 把窗口顶穿
 | 1 | 五道门全绿 | `uv run ruff format --check . ; uv run ruff check . ; uv run mypy . ; uv run pyright ; uv run pytest -q` | 0 error / `pyright` 0 errors / 全 passed（📎 当前 **208 passed**） |
 | 2 | 模型与迁移一致 | `uv run alembic check` | `No new upgrade operations detected` |
 | 3 | 生产配置正确 | 检查 `.env` | `APP_ENV=prod`、`DEBUG=false`、`LLM_API_KEY` 已填（⚠️ **本地演示用 `dev` 即可**，切 `prod` 会关掉 `/docs`） |
-| 4 | 镜像能构建 | `docker compose build --build-arg PIP_INDEX_URL=...` | exit 0，镜像 **284 MB**（⚠️ 别接 PowerShell 管道，否则退出码会假报 1，见 §6） |
+| 4 | 镜像能构建 | `docker compose build` | exit 0，镜像 **284 MB**（⚠️ 别接 PowerShell 管道，否则退出码会假报 1，见 §6）。**不许加 `--build-arg PIP_INDEX_URL`** —— 索引必须与 `uv.lock` 一致（#101） |
 | 5 | 工作区干净 | `git status --short` | 无多余文件；`git log --oneline -1` 记下这次的提交号 |
 | 6 | 优雅停机探针 PASS | `uv run python scripts/probe_graceful_shutdown.py` | `PASS` + 退出码 0（⚠️ 它**不在 CI 里**，只能靠这条清单保证「有人跑」，见坑 K100） |
 

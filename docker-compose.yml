@@ -8,9 +8,11 @@ services:
   app:
     build:
       context: .
-      args:
-        # 【注意】：默认回落到 pypi.org，本机实测 10s 超时；构建时传 --build-arg（见 dev-environment §8.0c）
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+      # 【注意】：这里【不再】传 PIP_INDEX_URL —— 索引默认值只在 Dockerfile 一处（#101 / 坑 K102）。
+      #   原因：uv 把「包从哪个索引来」也锁进了 uv.lock；compose 里写死 `:-https://pypi.org/simple`
+      #   会**覆盖** Dockerfile 的默认值 → `uv sync --locked` 判定索引不一致 → 构建直接 exit 1。
+      #   海外要换源：`UV_DEFAULT_INDEX=<index> uv lock` 后把 uv.lock 一起提交，再 build。
+      #   守卫：tests/test_docker_assets.py::test_dockerfile_default_index_matches_uv_lock
     image: llm-app:dev
     env_file:
       - .env

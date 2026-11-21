@@ -11,8 +11,11 @@ ARG PYTHON_VERSION=3.12
 ARG UV_VERSION=0.12.23
 # 【注意】：COPY --from= 的镜像引用在解析期当阶段名处理，不展开 ARG（实测两种写法都报
 #   invalid reference format）；且部分网络拉不到 ghcr.io 的 blob —— 所以 uv 走 pip 装。
-#   本地构建带 --build-arg PIP_INDEX_URL=<镜像源>，CI 用默认值即可
-ARG PIP_INDEX_URL=https://pypi.org/simple
+# 【注意】：这个默认值【必须】与 uv.lock 里记录的 registry 一致 —— uv 把「包从哪个索引来」
+#   也锁进了 lockfile，两者不一致时容器里的 `uv sync --locked` 直接 exit 1（#101 / 坑 K102）。
+#   守卫：tests/test_docker_assets.py::test_dockerfile_default_index_matches_uv_lock
+#   换源 = 换锁文件：`$env:UV_DEFAULT_INDEX="<index>"; uv lock`，两者一起改、一起提交
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 
 # ============ 阶段 1：builder ============

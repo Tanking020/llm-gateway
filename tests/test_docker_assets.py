@@ -203,6 +203,39 @@ def test_every_copy_source_survives_dockerignore() -> None:
     assert dropped == [], f"这些 COPY 源被 .dockerignore 排掉了，构建会失败：{sorted(dropped)}"
 
 
+def test_dockerfile_default_index_matches_uv_lock() -> None:
+    """回归 #101：Dockerfile 的默认索引必须等于 `uv.lock` 里记的 registry
+
+    【注意】：uv 把「包从哪个索引来」也锁进了 lockfile —— 两者不一致时，容器里的
+    `uv sync --locked` 直接 exit 1（构建必失败），而 CI 只跑 pytest 不 build 镜像，没人会发现。
+    📎 2026-11-21 实测：默认 pypi.org + lock 记清华源 → build 失败；只改 `--build-arg` 就成功。
+    """
+    lock = (_ROOT / "uv.lock").read_text(encoding="utf-8")
+    registries = set(re.findall(r'source = \{ registry = "([^"]+)" \}', lock))
+    assert len(registries) == 1, f"uv.lock 里混了多个索引源：{sorted(registries)}"
+
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    default = re.search(r"^ARG PIP_INDEX_URL=(\S+)$", dockerfile, re.MULTILINE)
+    assert default is not None, "Dockerfile 里找不到 `ARG PIP_INDEX_URL=<默认值>`"
+    assert default.group(1) == registries.pop(), (
+        "Dockerfile 的默认索引与 uv.lock 记录的不一致 → `uv sync --locked` 会失败（#101）"
+    )
+
+
+def test_compose_does_not_override_the_index() -> None:
+    """回归 #101：compose 不许再给 `PIP_INDEX_URL` 设默认值
+
+    【注意】：compose 的 `build.args` 会**覆盖** Dockerfile 的 `ARG` 默认值 —— 📎 2026-11-21 实测：
+    同一份代码 `docker build` 成功、`docker compose build` 必失败，唯一差别就是
+    compose 里那句 `PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}`。
+    ⭐ 判据：**默认值只能有一处** —— 两处都写，就会在「一个改了另一个没改」时静默变成构建失败。
+    """
+    args = _compose()["services"]["app"]["build"].get("args") or {}
+    assert "PIP_INDEX_URL" not in args, (
+        "compose 不要覆盖 PIP_INDEX_URL：默认值放 Dockerfile 一处（索引还必须与 uv.lock 一致）"
+    )
+
+
 def test_final_stage_runs_as_non_root_and_uses_exec_form() -> None:
     """回归：非 root + exec 形式 CMD —— 后者决定 SIGTERM 能不能直达应用（决策 39）"""
     text = _DOCKERFILE.read_text(encoding="utf-8")
