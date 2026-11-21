@@ -94,7 +94,7 @@ uv 报 `warning: Ignoring unsupported Python request ﻿3.12 in version file`，
 |---|---|---|---|
 | **WSL / WSL2** | ✅ **3.0.5.0**（2026-11-18） | `wsl --version`；`Test-Path "$env:WINDIR\System32\vmcompute.exe"` = True | — |
 | **Docker / Docker Desktop** | ✅ **4.99.0 / engine 29.9.3**（2026-11-18，WSL2 后端，数据盘在 `D:\Docker\wsl`） | `docker --version`；`docker info --format '{{.OSType}}'` = linux | 已解除。⚠️ 新装的 bin 目录要**重启 VS Code** 才进 PATH |
-| 管理员权限 | ❌ 助手会话里没有 | `WindowsPrincipal.IsInRole(Administrator)` = False | 只能由学习者本人在**管理员终端**操作 |
+| 管理员权限 | ❌ 助手会话里没有 | `WindowsPrincipal.IsInRole(Administrator)` = False | 只能由开发者本人在**管理员终端**操作 |
 | 虚拟化 | ✅ 已开启（VBS Running） | `Win32_ComputerSystem.HypervisorPresent` = True | — |
 | 磁盘 | ✅ C 剩 174 GB / D 剩 455 GB（**同一块 NVMe**） | `Get-CimInstance Win32_LogicalDisk` | 装 Docker 时把**镜像存储位置**指到 D（已做：`D:\Docker\wsl`） |
 | 系统版本 | Windows 11 **家庭版** 26200 | `Win32_OperatingSystem.Caption` | 家庭版**只能**用 WSL2 后端 |
