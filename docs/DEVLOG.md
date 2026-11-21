@@ -474,7 +474,7 @@
 
 ---
 
-## 三、踩坑清单（编号 `K1..K98`，任何文件可引用 `坑 K7`）
+## 三、踩坑清单（编号 `K1..K100`，任何文件可引用 `坑 K7`）
 
 | # | 日期 | 现象 | 原因 | 解决 |
 |---|---|---|---|---|
@@ -576,6 +576,8 @@
 | K96 | 11-18 | 🔴 **BuildKit 的 `.dockerignore` 只匹配**顶层**；一个「错误的近似实现」的守卫比没有守卫更危险** | 📎 实测上下文里混进 **23 个 `.pyc`**（含 `cpython-314`，镜像里根本用不上），而 `tests/test_docker_assets.py` 报绿。📎 隔离实验（同一棵树，顶层/一层/三层各一个 `__pycache__`）：`__pycache__` → 排顶层、**留嵌套**；`__pycache__/` → 同；`*.pyc` / `*.py[cod]` → **全留**；`**/__pycache__` / `**/*.pyc` → **全排**。根因：守卫把「不含 `/` 的模式」实现成「匹配任意一层路径片段」（那是**经典 builder** 的语义），于是它以为排掉了、Docker 其实没排 | ✅ **2026-11-18 已修**：`.dockerignore` 凡「任意层都不要」的全部加 `**/`；守卫重写成「glob → 正则 + 祖先前缀」按真实语义判定，并用上面这组**实测矩阵**做回归（`test_matcher_follows_measured_buildkit_semantics`）。📎 修后 **26 文件 / 471 KB / 0 `.pyc`**。⭐ 判据：**守卫的语义必须由真工具取证过**，凭记忆写的「近似实现」会给出虚假安全感 |
 | K97 | 11-18 | 🔴 **`uv sync` 默认 editable → 多阶段镜像里 `import app` 直接 `ModuleNotFoundError`** | 📎 `docker run --rm llm-app:dev python -m alembic upgrade head` → `File "/app/alembic/env.py", line 14, in <module> from app.config import settings` / `No module named 'app'`。取证：`cat .../_editable_impl_llm_app_engineering.pth` → `/build/src`；`test -d /build` → **MISSING**。根因：builder 里有 `/build`，runtime 只 `COPY /opt/venv` → 指针悬空 | ✅ 第二段 `uv sync --locked --no-dev --no-editable`。📎 修后 `app.__file__ = /opt/venv/lib/python3.12/site-packages/app/__init__.py`、site-packages 里 editable 文件 **0 个**、`alembic upgrade head` **exit 0**（三条迁移全跑）。⭐ 判据：**「等价环境手工验证」验不出指针类问题** —— 只要不是真镜像，`/build` 存不存在这件事就没人管 |
 | K98 | 11-19 | 🔴 **`docker compose config` 会把 `env_file` 里的密钥明文解析出来** | 📎 实测：执行 `docker compose config` 输出里 `LLM_API_KEY: sk-…` **明文可见**（它做的是「合并 env_file + environment + 默认值」并展开成最终 YAML）。我当场整份贴进对话 = 密钥进入聊天记录 | **处置**：以后核对 compose 只取白名单字段 —— `docker compose config \| Select-String "stop_grace_period\|HOST\|DATABASE_URL"`。⚠️ 更硬的做法是 `docker compose config --no-interpolate`（保留 `${VAR}` 不展开），但本项目的 `env_file` 是**文件注入**不是插值，仍需过滤。★ 判据：**凡是「把配置展开给人看」的命令都要先问「里面有没有密钥」** —— 与 `print(pydantic 对象)` 是同一类错 |
+| K99 | 11-21 | 🔴 **PowerShell 5.1 会把原生命令参数里的双引号剥掉 → `curl -d '{"k":"v"}'` 发出去的是 `{k:v}`** | 📎 实测（PS **5.1.26100.9818**，用 `python -c "import sys;print(sys.argv[1:])"` 看真实 argv）：`'{"title":"x"}'` → `['{title:x}']`；`'{\"title\":\"x\"}'` → `['{"title":"x"}']`；先赋给变量再传 → **同样被剥**。服务端表现：`422 {"loc":["body",1],"type":"json_invalid"}`。⚠️ **值里含空格时连 `\"` 也会坏**（`{"title":"runbook verify"}` 实测 422）；含中文还会按 ANSI 代码页编码成乱码 | **修法**：body 一律 `[IO.File]::WriteAllText($tmp, $json, UTF8无BOM)` + `--data-binary "@$tmp"`（RUNBOOK §3 已整节改成这种写法）。📎 顺带实测出 FastAPI 的两层顺序：**JSON 解码在鉴权之前**（坏 body + 无 key = 422）、**schema 校验在鉴权之后**（好 body + 类型错 + 无 key = 401）。★ 判据：**「命令行里带引号」这件事，先确认是哪个 shell、它怎么重建命令行** |
+| K100 | 11-21 | 🟠 **横切能力（鉴权）上线后，写得更早的独立验收脚本会静默腐坏** | 📎 实测：`scripts/probe_graceful_shutdown.py`（13c-6）裸发 `POST /v1/chat/stream`；13d-4 给所有业务路由加 `CurrentUserDep` 之后，它第一步就 **401**，然后连带报「没收到帧 / 没等到发信号 / 子进程没退出」→ **FAIL exit 1**。📎 反证：把同一脚本复制到 `%TEMP%`，只加「签一把临时 key + 请求头」两处，其余一字不动 → **PASS**（信号后 2.36s 切断） | ⬜ **未修（#97）**：探针自己签 key + 带 `X-API-Key`。★ 判据：**加一个横切关注点（鉴权/限流/日志）时，要 grep `scripts/` 与 `tests/` 里「自己造请求」的地方** —— 单元测试有 `conftest` 的 fixture 兜着，独立脚本没有；而且它不在 CI 里，红了也没人看 |
 
 ---
 
