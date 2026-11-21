@@ -56,7 +56,7 @@ pydantic-settings · uv（锁文件 + 独立解释器）· ruff · mypy `--stric
 | 约束 | 落地方式 | 怎么证明 |
 |---|---|---|
 | **上游可替换** | 所有上游调用穿过 `LlmClient` / `LlmChatStream`；路由层零 `httpx` | lint 规则 `TID251` 把「绕过适配器」变成 CI 会红的事 |
-| **失败可解释** | 单一错误出口，业务码与 HTTP 码解耦，`X-Request-ID` 恒等于 body 里的 `request_id` | 错误形状被 7 个契约用例钉住 |
+| **失败可解释** | 单一错误出口，业务码与 HTTP 码解耦，`X-Request-ID` 恒等于 body 里的 `request_id` | 错误形状被 17 个契约用例钉住（`tests/test_errors.py`） |
 | **成本可核算** | 每次调用落一行账单；流式记账两阶段提交 | 并发 6 条流时数据库连接池峰值 **2** |
 
 ## 能力一览
@@ -196,7 +196,7 @@ data: {"usage": {"prompt_tokens": 44, "completion_tokens": 63, "total_tokens": 1
 data: [DONE]
 ```
 
-帧契约（7 类，含 2 类错误帧）见 [docs/api.md](docs/api.md)。
+帧契约（7 类：4 类正常 + 3 类错误帧）见 [docs/api.md](docs/api.md)。
 两个容易被误读的点：
 
 - **`200` 不代表成功**：响应头一旦发出就改不了状态码，所以流中途失败只能表达成 `error` 帧。
@@ -232,7 +232,7 @@ curl -s http://127.0.0.1:8000/v1/conversations?limit=20 \
 
 ## 关键设计决策
 
-每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，60 条 ADR）。以下是影响最大的几条：
+每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，61 条 ADR）。以下是影响最大的几条：
 
 | 决策 | 选择 | 为什么 | 代价 / 何时重审 |
 |---|---|---|---|
@@ -279,7 +279,7 @@ uv run pytest -q        # 226 个用例，约 15 s
 | 分支覆盖 | **94%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面五条 + `uv sync --locked` |
 
-测试策略有三条判据（细节见 [tests/README.md](tests/README.md)）：
+测试策略有五条判据（细节见 [tests/README.md](tests/README.md)）：
 
 | 判据 | 做法 | 为什么必须这样 |
 |---|---|---|
@@ -333,16 +333,23 @@ uv run pytest -q        # 226 个用例，约 15 s
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
 ├── tests/                  # 226 个用例，按「测哪一层」分为 21 个文件
-├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
-
+├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线评估
+├── README.md               # 首屏：能力 / 架构 / 快速开始 / 实测数字
+├── CHANGELOG.md            # 版本变更（能力清单 / 关键取舍 / 已知边界）
+├── CONTRIBUTING.md         # 质量门 · 提交规范 · 「改了什么要更新什么」
+├── RUNBOOK.md              # 命令速查与发版检查清单
 ├── Dockerfile              # 多阶段构建 + 非 root + exec 形式 CMD（13a-1）
 ├── .dockerignore           # 构建上下文只有 26 个文件 / 471 KB（排掉 .venv 113 MB、.env）
 ├── docker-compose.yml      # 单机栈：migrate（一次性）→ app（不发布端口）→ proxy（nginx 独占 80）
 ├── deploy/nginx.conf       # 反代：关缓冲（SSE）、上游重解析、body 上限、健康端点、**反代层 413/502/504 回 JSON 信封**（决策 52）、`/metrics` 404 硬阻断
-
 ├── scripts/                # 验收探针（手工跑、不进 CI）：probe_graceful_shutdown.py（决策 39）、fake_upstream.py + loadtest_chat_stream.py（决策 51）
 ├── pyproject.toml          # 依赖、工具配置、lint 边界的唯一来源
-└── .github/workflows/ci.yml
+└── .github/
+    ├── workflows/ci.yml     # push / PR：五道门 + uv sync --locked
+    ├── SECURITY.md          # 私有报告通道 + 部署前提
+    ├── PULL_REQUEST_TEMPLATE.md
+    ├── ISSUE_TEMPLATE/      # bug / feature 表单
+    └── dependabot.yml       # 只更 github-actions
 ```
 
 ## Roadmap

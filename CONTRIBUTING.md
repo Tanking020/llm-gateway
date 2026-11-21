@@ -164,9 +164,20 @@ uv run alembic downgrade base && uv run alembic upgrade head
 | 踩了一个可复现的坑 | [docs/DEVLOG.md](docs/DEVLOG.md) §三 加一行（`K<n>`），**写出复现方式** |
 | 学到一条跨项目结论或原理 | **不属于本仓库** —— 写进跨项目笔记，不要写进 `docs/` |
 | 改了阶段进度 | [docs/roadmap.md](docs/roadmap.md) |
+| **改版本号 / 发版** | 只改 [pyproject.toml](pyproject.toml) 一处 —— 运行时从打包元数据读（`app/api/app.py` 的 `_app_version()`），`uv lock` 会同步 `uv.lock`；同时补 [CHANGELOG.md](CHANGELOG.md)。⚠️ **不要在代码里写死版本号**，`test_openapi_version_comes_from_the_packaging_metadata` 会红 |
 
 **单一真相**：一条事实只在一个文件里展开，其它地方只引用编号（`#38` / `决策 28` / `坑 K7` / `1.138`）。
 判据：**改一处会不会漏另一处？** 会 → 说明写重复了。
+
+**已经收敛成单一真相的几处**（改的时候别在别处再抄一份）：
+
+| 事实 | 唯一来源 | 谁在读 |
+|---|---|---|
+| 版本号 | [pyproject.toml](pyproject.toml) | `importlib.metadata`（`/openapi.json` 的 version） |
+| 错误码 → HTTP 状态码 | `src/app/errors.py` 的 `_STATUS_BY_CODE` | 异常处理器；`api.md` 与 `test_docs_contract.py` 跟它比 |
+| 模型白名单 | `src/app/api/app.py` 的 `KNOWN_MODELS` | `/v1/models*` 与两条 chat 的校验（#48） |
+| 镜像索引 | `Dockerfile` 的 `ARG PIP_INDEX_URL` | `uv sync --locked`（必须等于 `uv.lock` 的 registry，决策 60） |
+| 用例数 | pytest 实际收集 | `test_docs_contract.py` 拿它比对 README / tests-README / production-readiness |
 
 ## 7. 安全
 
