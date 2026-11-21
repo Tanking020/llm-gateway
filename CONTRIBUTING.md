@@ -26,7 +26,8 @@ cp .env.example .env    # Windows: Copy-Item .env.example .env
 uv run ruff format .     # 1. 格式化
 uv run ruff check .       # 2. lint（E/F/I/UP/B/TID）
 uv run mypy .             # 3. 类型检查（strict）
-uv run pytest -q          # 4. 回归测试（不碰真上游、不碰开发库）
+uv run pyright            # 4. 类型检查（与编辑器 Pylance 对齐，只拦 error）
+uv run pytest -q          # 5. 回归测试（不碰真上游、不碰开发库）
 ```
 
 | 门槛 | 标准 |
@@ -34,7 +35,12 @@ uv run pytest -q          # 4. 回归测试（不碰真上游、不碰开发库�
 | `ruff format --check .` | 0 diff |
 | `ruff check .` | 0 error（`--fix` 后仍报的必须手改） |
 | `mypy .` | `--strict` 0 error；**不允许静默加** `# type: ignore`（要加必须写原因） |
+| `pyright` | 0 error。**规则是「并集」**：`mypy` 与 `pyright` 都过才算过。若 pyright 报的写法 mypy 允许 → **改代码**，不加 `# pyright: ignore` |
 | `pytest` | 全绿；**新增行为必须带用例** |
+
+⚠️ **为什么两道类型检查都要跑**（[决策 55](docs/decisions.md)）：两者对**同一个写法**的推断会分叉。
+📎 实测 `getattr(obj, "名字", None)`：`mypy` 把它当 `Any` 从此什么错都放行，`pyright` 当 `object` 于是 `int(object)` 报错。
+**只跑 `mypy` 会出现「质量门全绿、编辑器一片红」** —— 那不是配置问题，是它真的看不见那个错。
 
 **三条容易踩的规则**：
 
@@ -172,7 +178,7 @@ uv run alembic downgrade base && uv run alembic upgrade head
 ## 8. Pull Request
 
 - 标题与提交信息同规范；正文写「为什么」+「怎么验证的」。
-- 提交前自查：四道质量门全绿、`git status` 无多余文件、文档已按 §6 更新。
+- 提交前自查：五道质量门全绿、`git status` 无多余文件、文档已按 §6 更新。
 - CI（`.github/workflows/ci.yml`）会在 push 与 PR 上跑：`uv sync --locked` → `ruff format --check` → `ruff check` → `mypy` → `pytest`。
   **`--locked` 是刻意的**：它断言 `uv.lock` 与 `pyproject.toml` 同步 —— 改了依赖却忘了 `uv lock`，CI 立刻红。
 

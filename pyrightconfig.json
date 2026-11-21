@@ -1,0 +1,10 @@
+{
+  "include": ["src", "tests", "scripts", "playground"],
+  "exclude": ["**/__pycache__", ".venv", "alembic/versions"],
+  "pythonVersion": "3.12",
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "standard",
+  "reportMissingImports": "error",
+  "reportMissingTypeStubs": "none"
+}

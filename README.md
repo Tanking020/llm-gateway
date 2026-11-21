@@ -237,6 +237,7 @@ curl -s http://127.0.0.1:8000/v1/conversations?limit=20 \
 uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
+uv run pyright          # 类型检查（与编辑器 Pylance 对齐，只拦 error）
 uv run pytest -q        # 206 个用例，约 15 s
 ```
 
@@ -244,9 +245,10 @@ uv run pytest -q        # 206 个用例，约 15 s
 |---|---|
 | `ruff check` / `format --check` | 全绿（51 files） |
 | `mypy --strict` | 全绿（54 source files，含 `tests/`、`scripts/` 与 `playground/`） |
+| `pyright`（`pyrightconfig.json`） | 0 errors（与编辑器同一套判断；📎 变异「改回 `getattr` 写法」→ mypy 仍绿而 pyright **红**） |
 | `pytest -q` | **206 passed** |
 | 分支覆盖 | **93%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
-| CI | `.github/workflows/ci.yml`：push / PR 跑上面四条 + `uv sync --locked` |
+| CI | `.github/workflows/ci.yml`：push / PR 跑上面五条 + `uv sync --locked` |
 
 测试策略有三条判据（细节见 [tests/README.md](tests/README.md)）：
 

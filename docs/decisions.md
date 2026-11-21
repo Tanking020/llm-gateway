@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-21 · 共 54 条
+**最后更新**：2026-11-21 · 共 55 条
 
 ---
 
@@ -75,6 +75,7 @@
 | [52](#52-反代层错误也按应用信封返回89) | 反代层错误长什么样 | **`error_page` + 内部 location 回 JSON 信封** | 2026-11-20 |
 | [53](#53-非流式-v1chat-接真上游一次调用--闸门--记账) | 非流式怎么调上游 | **适配器加 `complete()`；同闸门、成功记一行账单、失败不记** | 2026-11-20 |
 | [54](#54-llmcompletionusage-保持-dict不换-mappingproxytype) | `usage` 要不要做成不可变 | **保持 `dict`；只读靠约定 + 一条 `isinstance` 反向用例** | 2026-11-21 |
+| [55](#55-质量门从-4-道变-5-道加-pyright-与编辑器对齐) | 要不要跑两套类型检查器 | **跑**：`mypy` 管严格度、`pyright` 管与编辑器一致，**并集**才算过 | 2026-11-21 |
 
 ---
 
@@ -969,6 +970,18 @@
 | **决定** | **C**。`usage: dict[str, Any]` 不动；docstring 写明「`usage` 是只读约定，要加工先 `dict(usage)` 复制」；新增 `test_complete_usage_stays_a_plain_dict` 断言 `isinstance(result.usage, dict)`，作为**决策守卫**（谁换成 `Mapping` 就红） |
 | **代价** ⚠️ | ① **这不是类型强制**：docstring 挡不住"读完还往里写"，只是提高门槛。判据是四象限 —— 「需故意才触发 + 触发后一定看得见」的东西不值得用右下的风险去换<br>② 📎 **方案 A 的三笔账**（`MappingProxyType` 实测）：`isinstance(x, dict)` → **False**（`_as_dict()` 与 `complete()` 里的 usage 归一都靠这条判断，会**静默**把记账变成 0，接口照常 200、日志无异常）；`json.dumps(proxy)` → `TypeError`；`copy.deepcopy(proxy)` → `TypeError`（cannot pickle）<br>③ **`frozen` 连硬屏障都不算**：📎 实测 `object.__setattr__(c, "usage", {...})` 能直接改冻结字段 —— 它的真实身份是「防手滑」，所以任何"要防重构"的诉求都得另加守卫<br>④ 用例只钉「是 dict」，不钉「别往里写」 —— 后者写不成用例（无法断言"未来没人写"） |
 | **重审条件** | ① 出现**真实的写入路径**（有代码往 `usage` 里写，不只是"能写"）→ 重新评估，并且要连带改 `_as_dict` 的收窄方式（不能只换类型）② `usage` 需要跨进程/跨请求传递或被缓存复用 → 那时「两次 `complete()` 是否共享同一对象」才成为真问题（现在每次 `response.json()` 都新解析，天然不共享）③ 换成 Pydantic 模型统一校验时 → 不可变性由 `model_config(frozen=True)` + 真实字段承担，本条作废 |
+
+---
+
+## 55. 质量门从 4 道变 5 道：加 `pyright` 与编辑器对齐
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 2026-11-20 学习者问「app.py 怎么还是红的」—— `mypy .` 全绿，但编辑器（Pylance）在 `app.py` 报 `reportArgumentType`。根因是 `getattr(obj, "名字", None)` 在 mypy 里退化成 `Any`（**逃逸口**）、在 pyright 里退化成 `object`，于是 `int(method())` 一个放行一个报错（#91）。代码侧当天用 `isinstance` 修掉，**工具侧当时判断「先不加 pyright」** |
+| **方案对比** | **A 加 `pyright` 进质量门**：✅ 唯一能让 CI 看见「编辑器在报什么」的办法（Pylance 就是 pyright）❌ 多一个开发依赖 + CI 时间<br>**B 不加，靠 `dev-environment.md` §8.0f 的五步排查手册**：❌ 靠人记得去查 —— 📎 这次是**学习者自己发现的**，不是流程发现的<br>**C 加但 `--level warning` 不阻塞**：❌ 等于没加（人不看警告）<br>**D 只加一条 AST 守卫禁 `src/` 里用字符串 `getattr`**：❌ 太窄 —— mypy 的逃逸口还有 `cast` / `# type: ignore` / 未注解装饰器 / `Callable[..., Any]`，D 只堵一个语法形态<br>**E 让 pyright 也跑 strict**：❌ 那是另一个工程（要补大量注解），与「与编辑器一致」这个目标不同 |
+| **决定** | **A**。定 `pyrightconfig.json`（`include` 四个目录 / `pythonVersion 3.12` / `venvPath` / **`typeCheckingMode: standard`** / `reportMissingTypeStubs: none`），CI 加独立一步 `Type check (editor parity)`。⭐ **规则定为「并集」**：mypy 与 pyright 都过才算过；若 pyright 报的写法 mypy 允许 → **改代码**，不加 `# pyright: ignore` |
+| **代价** ⚠️ | ① **+1 个开发依赖**（`pyright` 1.1.414，连带 `nodeenv`），📎 冷启 **10.3s** / 缓存后 **7.9s**；CI 每跑一次多约 20~40s<br>② **两套严格度要维护**：并集意味着「比任何一个都严」，某天可能出现「mypy 认为合法、pyright 认为不合法」的写法 → 那时必须改代码，不能加 ignore（这条规则本身是负担）<br>③ pyright 发版极快（1.1.4xx 周更）→ **无代码改动也可能变红**，靠 `uv sync --locked` 冻结版本兜住<br>④ `standard` 模式**不是**「比 mypy strict 更严」，它是**另一种**严格度 —— 本条只买「与编辑器一致」，不买「更严的类型检查」 |
+| **重审条件** | ① 出现「mypy 合法 / pyright 报错」且**确实是 pyright 误报**（不是我们代码问题）→ 才考虑降级为 `--level error` 之外的手段，并在本条记下具体案例；② CI 时间成为瓶颈（>5 min）→ 把 pyright 拆成只在 `push` 跑、PR 不跑；③ 将来改成「用 Pylance CLI / basedpyright」→ 只需换命令与配置，规则不变；④ 如果 pyright 因版本升级连续两次「无代码改动变红」→ 改成显式钉死版本号并用 renovate 类工具评审升级 |
 
 ---
 ## 待定 / 需要以后拍板的

@@ -1421,7 +1421,7 @@ POST /v1/conversations
 | 数据库池 | `AsyncAdaptedQueuePool`：`size=5` + `max_overflow=10` = **15**，等连接 `pool_timeout=30s` | [database.py](../src/app/database.py) |
 | 上游 HTTP 池 | `max_connections=100`（httpx 默认 `Limits`） | [llm_client.py](../src/app/llm_client.py) |
 | SQLite 忙等 | `busy_timeout = 5000ms` | SQLite/`sqlite3` 默认 |
-| 部署产物 | **CI 已有**（`.github/workflows/ci.yml`，push/PR 跑四道门）；**镜像 + compose 栈已就绪**（13a-1 / 13a-2a / 13a-2b / 13a-2c，📎 真 `docker build` + 空库部署 + 经 nginx 验过）；**没有**灰度与回滚 | 待办 #49（灰度） |
+| 部署产物 | **CI 已有**（`.github/workflows/ci.yml`，push/PR 跑五道门）；**镜像 + compose 栈已就绪**（13a-1 / 13a-2a / 13a-2b / 13a-2c，📎 真 `docker build` + 空库部署 + 经 nginx 验过）；**没有**灰度与回滚 | 待办 #49（灰度） |
 
 ⭐ 一句话：**第一道顶不住的是我们自己设的闸门（`max_concurrent_upstream_calls`，默认 4）**；
 闸门之后才是「15 条数据库连接」和「SQLite 只能有一个写者」；上游 HTTP 池（100）永远排最后。
@@ -1758,6 +1758,7 @@ nginx 错误在 app 日志里查不到，只能 `grep rid=<id>` 查 nginx 访问
 | 52 | 反代层 413/502/504 也回应用信封 | [deploy/nginx.conf](../deploy/nginx.conf) `error_page` + `@json_*`、`map $http_origin`、`log_format app_json_ext` | `test_docker_assets.py`（5 条，📎 6 变异全红） |
 | 53 | 非流式 `/v1/chat` 接真上游 | [llm_client.py](../src/app/llm_client.py) `complete()` / `LlmCompletion`、[app.py](../src/app/api/app.py) `chat`、[conftest.py](../tests/conftest.py) `_forbid_real_upstream` | `test_upstream.py`（4）、`test_adapter_http.py`（6）、`test_limits.py` `test_gate_applies_to_non_stream_chat`、`test_source_rules.py`（`_READ_ONLY_ROUTES` 已空） |
 | 54 | `LlmCompletion.usage` 保持 `dict`，不换 `MappingProxyType` | [llm_client.py](../src/app/llm_client.py) `LlmCompletion` docstring | `test_adapter_http.py::test_complete_usage_stays_a_plain_dict`（📎 变异「换成 proxy」→ 该条红、既有 `==` 条仍绿） |
+| 55 | 质量门 4 道 → 5 道：加 `pyright` 与编辑器对齐 | [pyrightconfig.json](../pyrightconfig.json)、[.github/workflows/ci.yml](../.github/workflows/ci.yml)、[pyproject.toml](../pyproject.toml) dev 组 | CI 独立一步 `Type check (editor parity)`。📎 **变异 A**（`_pool_checked_out` 改回 `getattr`）→ mypy 仍绿 / pyright **2 errors**；📎 **变异 B**（`constants.py` 加 `int = "x"`）→ 两边都红 |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。
