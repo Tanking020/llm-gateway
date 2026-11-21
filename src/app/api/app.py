@@ -25,6 +25,10 @@ from contextlib import asynccontextmanager
 # datetime 只用于 _conversation_stats_stmt 的返回类型注解（元组里那两个时间列）
 from datetime import datetime
 
+# 版本号只写在 pyproject.toml —— 这里读打包元数据，避免出现第二处真相
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
+
 # Annotated：用于给函数签名中参数的 "类型位" 扩容
 from typing import Annotated, Any
 
@@ -132,12 +136,24 @@ def _client_label(request: Request) -> str:
 _DOCS_ENABLED = settings.app_env == "dev"
 
 
+def _app_version() -> str:
+    """从打包元数据读版本；没装包（直接跑源码树）时给一个明显的占位值
+
+    【注意】：不要在这里写死版本号 —— 发版时改了 pyproject 却忘了改这里，
+        `/openapi.json` 会一直报旧版本，而且没有任何守卫会红
+    """
+    try:
+        return _dist_version("llm-gateway")
+    except PackageNotFoundError:  # pragma: no cover - 只在没安装包时发生
+        return "0.0.0+unknown"
+
+
 # app 就是 uvicorn 要托管的那个对象
 # 命令行里写 app.api.app:app 的读法：包 app -> 子包 api -> 模块 app -> 里面的变量 app
 app = FastAPI(
     title="LLM Gateway",
-    description="LLM 应用后端（学习项目，阶段 1）",
-    version="0.1.0",
+    description="多租户 LLM 调用接入层：统一鉴权、限流、SSE 流式与可对账账单",
+    version=_app_version(),
     # 只有开发才开：debug=True 时异常处理器被绕过，traceback 直接进响应体
     #   （APP_ENV=prod 时 config.py 已禁止 DEBUG=true，这里才敢直接接）
     debug=settings.debug,

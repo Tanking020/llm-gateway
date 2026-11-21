@@ -5,7 +5,7 @@
 name = "llm-gateway"
 
 # 本项目 llm-gateway 自己的版本号
-version = "0.1.0"
+version = "1.0.0"
 
 # 本项目自己的一句话说明
 description = "LLM application backend, built from scratch"

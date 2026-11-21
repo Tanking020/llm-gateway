@@ -32,6 +32,20 @@ def test_health_accepts_head(client: TestClient) -> None:
     assert r.content == b""
 
 
+def test_openapi_version_comes_from_the_packaging_metadata() -> None:
+    """回归：`/openapi.json` 的版本必须是 pyproject 里那个，不是源码里写死的旧值
+
+    【注意】：写死版本时改了 pyproject 却忘了改代码，没有任何东西会红 —— 只能靠人发现
+    """
+    import tomllib
+
+    from app.api.app import app
+
+    pyproject = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert app.version == pyproject["project"]["version"]
+    assert app.version != "0.0.0+unknown", "读不到打包元数据：镜像里项目没被安装？"
+
+
 def test_create_conversation(client: TestClient) -> None:
     r = client.post("/v1/conversations", json={"title": "测试对话"})
     assert r.status_code == 201
