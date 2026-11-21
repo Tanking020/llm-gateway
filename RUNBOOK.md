@@ -436,38 +436,30 @@ uv run python -m app.keys revoke --id 3                    # 打时间戳，不�
 
 ## §10 优雅停机验收
 
-> ⛔ **2026-11-21 实测：这条命令现在 FAIL（退出码 1），原因已定位，不是停机逻辑坏了。**
+> ✅ **2026-11-21 修复（#97）并实测通过**：探针现在会自己签一把临时 key 再开流。
 
 ```bash
 uv run python scripts/probe_graceful_shutdown.py            # 默认 --hold 1.0
 uv run python scripts/probe_graceful_shutdown.py --hold 5   # 把窗口顶穿
 ```
 
-📎 实跑输出（原样）：
+期望 `PASS` + 退出码 **0**。`FAIL` = 「窗口内该跑完的没跑完」或「超窗口没被切断」。
 
-```text
-[父进程] 响应码=401 帧数=0 末帧=''
-!! 响应码 401，不是 200 —— 日志末尾：
-{"msg": "request", "method": "POST", "path": "/v1/chat/stream", "status": 401, ...}
-==> 结论：FAIL
-```
-
-**根因**：探针写于 13c-6，**13d-4 给所有业务路由加了鉴权之后它没跟着改** —— 子进程用的是临时库（没有 key），
-父进程发流时也**没带 `X-API-Key`**，于是第一步就 401，后面「没收到帧 / 没机会发信号」全是连带现象。
-
-✅ **停机机制本身是好的**：我把探针复制到 `%TEMP%`，只加两处（签发一把 key + 请求头带上它），
-其余逻辑一字不动 → **PASS**：
+📎 修后实跑输出（原样）：
 
 ```text
 [父进程] 1.08s 已投递信号
 [父进程] 响应码=200 帧数=16 末帧='{"delta": "滴"}'
 [父进程] 客户端结局=客户端异常 RemoteProtocolError（流被切断时属正常）
-[父进程] 总耗时=3.44s 信号后=2.36s 子进程退出码=3
+[父进程] 总耗时=3.24s 信号后=2.16s 子进程退出码=3
 ==> 结论：PASS 窗口生效（在途流按窗口被掐断）
 ```
 
-修法（**要改代码，需步骤卡**）已登记待办 **#97**：在 `drive()` 里用 `python -m app.keys create` 签一把临时 key，
-再给 `client.stream(...)` 加 `headers={"X-API-Key": key}`。修好之前，本节的期望结果**不可用**。
+📎 **变异验证**（证明「变绿」确实是这一行带来的）：把 `headers={"X-API-Key": key}` 删掉跑副本 →
+`POST /v1/chat/stream` **401** → 「没收到任何帧」→ **FAIL exit 1**。
+
+> 背景（别再踩）：探针写于 13c-6，13d-4 给业务路由加鉴权后它没跟上，裸发请求 → 401 → 连带报
+> 「没收到帧 / 没机会发信号 / 子进程没退出」。这类**不在 CI 里的独立脚本**最容易这样静默腐坏（坑 K100）。
 
 ---
 
@@ -484,6 +476,7 @@ uv run python scripts/probe_graceful_shutdown.py --hold 5   # 把窗口顶穿
 | 3 | 生产配置正确 | 检查 `.env` | `APP_ENV=prod`、`DEBUG=false`、`LLM_API_KEY` 已填（⚠️ **本地演示用 `dev` 即可**，切 `prod` 会关掉 `/docs`） |
 | 4 | 镜像能构建 | `docker compose build --build-arg PIP_INDEX_URL=...` | exit 0，镜像 **284 MB**（⚠️ 别接 PowerShell 管道，否则退出码会假报 1，见 §6） |
 | 5 | 工作区干净 | `git status --short` | 无多余文件；`git log --oneline -1` 记下这次的提交号 |
+| 6 | 优雅停机探针 PASS | `uv run python scripts/probe_graceful_shutdown.py` | `PASS` + 退出码 0（⚠️ 它**不在 CI 里**，只能靠这条清单保证「有人跑」，见坑 K100） |
 
 ### 11b 发版（一条命令 + 三步确认）
 
