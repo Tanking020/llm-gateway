@@ -58,4 +58,5 @@ Thumbs.db
 *.db-wal
 
 # 本地 AI 协作指令（每台机器自行配置；Copilot 从磁盘读取，不进版本控制）
+# 本地 AI 助手指令文件（与具体机器/协作方式绑定，不入库）
 .github/copilot-instructions.md
