@@ -7,7 +7,7 @@
 > | 逐条历史（做了什么 / 证据 / 坑） | [DEVLOG.md](DEVLOG.md) |
 > | 未完成的编号清单 | [todos.md](todos.md) |
 > | 离上线还差什么（七道门 / 档期） | [production-readiness.md](production-readiness.md) |
-> | 学习规划与阶段判据（个人向） | [../notes/career-plan.md](../notes/career-plan.md) |
+> | 能力路线与阶段判据（个人向） | [../notes/career-plan.md](../notes/career-plan.md) |
 
 **最后更新**：2026-11-21
 
@@ -103,8 +103,8 @@
 ## 三、阶段定义与验收判据
 
 > 每个阶段的**内容 / 产出 / 验收标准 / 状态**在
-> [../notes/career-plan.md](../notes/career-plan.md) §三「学习路线」。
-> 这里不复制 —— 那份文件是「我要学什么」，本文件是「这个项目做到哪」。
+> [../notes/career-plan.md](../notes/career-plan.md) §三「能力路线」。
+> 这里不复制 —— 那份文件是「能力缺口与下一步」，本文件是「这个项目做到哪」。
 
 ---
 
