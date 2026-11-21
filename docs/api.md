@@ -270,6 +270,12 @@ Remove-Item "$env:TEMP\chat_stream.json"
 
 **请求追踪**（Step 7a 起）：每个响应都带 `X-Request-ID` 头。
 
+> ⭐ **经过 nginx（容器形态）时，ID 由边界决定**（#98 / [决策 57](decisions.md)）：
+> 客户端传的 ID 若匹配 `^[A-Za-z0-9._:-]{1,64}$` 就**原样沿用**；否则（含空格 / 引号 / 换行 / 超长）
+> **静默替换**成 nginx 生成的 32 位 hex。三种情况下 **`x-request-id` 响应头 == nginx access log 的 `rid=` == 应用日志的 `request_id`**，
+> 包括 413/502/504 这类反代层自己产生的错误。
+> ⚠️ 开发者直连 `python -m app`（8000，无 nginx）时没有这一层：不带 ID 会得到应用生成的 **12 位** hex —— 格式不同但语义相同。
+
 ```text
 # 客户端可自带 ID，服务端会原样沿用（跨服务串联用）
 curl.exe -i http://127.0.0.1:8000/health -H "X-Request-ID: my-trace-001"
