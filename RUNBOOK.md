@@ -223,11 +223,11 @@ uv run pytest -q              # 5 回归（不碰真上游、不碰开发库）
 📎 **2026-11-21 实测（五道门全绿）**：
 
 ```text
-ruff format --check  51 files already formatted          exit 0
+ruff format --check  45 files already formatted          exit 0
 ruff check           All checks passed!                  exit 0
-mypy                 Success: no issues found in 54 source files
+mypy                 Success: no issues found in 48 source files
 pyright              0 errors, 0 warnings, 0 informations
-pytest -q            208 passed in 17.90s                exit 0
+pytest -q            225 passed in 14.12s                exit 0
 ```
 
 📎 子集命令实测：`tests/test_adapter_http.py` → **28 passed**；
@@ -609,5 +609,3 @@ uv run alembic downgrade -1                # ⚠️ 只撤结构，撤不回被�
 | 测试怎么跑、两个连接池谁占谁 | [tests/README.md](tests/README.md) |
 | 提交规范 / 「改了什么就要更新什么」 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | 本机命令与环境陷阱（PowerShell / Docker / 编码） | [docs/dev-environment.md](docs/dev-environment.md) |
-| 哪些操作要先确认 | [docs/tool-approval.md](docs/tool-approval.md) |
-| 原理与实测（换个项目也成立） | [notes/](notes/) |

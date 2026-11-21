@@ -6,7 +6,7 @@
 
 > 不写「为什么这么设计」（→ [decisions.md](../docs/decisions.md)）、
 
-> 不写框架原理与推导（→ [stage1-fastapi.md](../notes/stage1-fastapi.md)）、
+> 不写框架原理与推导（→ stage1-fastapi.md（`notes/stage1-fastapi.md`））、
 
 > 不写「做到哪了」（→ [roadmap.md](../docs/roadmap.md)）。
 
@@ -16,7 +16,6 @@
 
 | 内容 | 唯一出处 |
 |---|---|
-| 每个用例的**答案与原理** | [self-check-questions.md](../notes/self-check-questions.md) Step 12（第 1~17 题） |
 | 踩坑的**完整过程与实测** | [DEVLOG.md](../docs/DEVLOG.md) 流水 + 踩坑记录 + 重要结论 |
 | 待办的**编号、现状、证据** | [roadmap.md](../docs/roadmap.md) |
 | 线上一族症状的**档期与过门判据** | [production-readiness.md](../docs/production-readiness.md) 门 1 |
@@ -391,7 +390,7 @@ httpx.AsyncClient
 
 ## 6. 重要问答索引（答案不在这里，指过去）
 
-完整题目与答案唯一出处：[self-check-questions.md](../notes/self-check-questions.md) 的 **Step 12**（17 题）+ **Step 13b-2a**（4 题，迁移守卫）。
+完整题目与答案在跨项目笔记（不在本仓库）：self-check-questions.md（`notes/self-check-questions.md`） 的 **Step 12**（17 题）+ **Step 13b-2a**（4 题，迁移守卫）。
 
 这里只给**主题**，方便你要查的时候知道去哪一条：
 
