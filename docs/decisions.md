@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-21 · 共 59 条
+**最后更新**：2026-11-21 · 共 60 条
 
 ---
 
@@ -80,6 +80,7 @@
 | [57](#57-请求-id-的单一真相在-nginx-边界) | 请求 ID 谁说了算 | **nginx 边界定 ID**：`map` 白名单校验 + 日志/错误页/透传统一用 `$rid` | 2026-11-21 |
 | [58](#58-容器入口默认只绑-loopback明文-http-不作为对外形态) | 入口默认暴露范围 | **只绑 `127.0.0.1`** + 容器 `APP_ENV` 默认 `prod`；TLS 见 #100 | 2026-11-21 |
 | [59](#59-封板前把错误契约的三处软化点硬化) | 错误契约的边界怎么划 | **未知 model 404 / 未登记码 500 / 缺 key 503**，各配一条可失败的用例 | 2026-11-21 |
+| [60](#60-构建必须可复现镜像源只能是一处真相且与-uvlock-绑定) | 镜像源与锁文件的关系 | **默认值只留 Dockerfile 一处**，且必须 == `uv.lock` 的 registry；换源=换锁 | 2026-11-21 |
 
 ---
 
@@ -1032,6 +1033,18 @@
 | **决定** | **C**，具体：① `_http_exception_handler` 透传 `exc.headers`，且 `_error_response` 改为**最后写** `X-Request-ID`（别人的头只能补、不能改追踪 id）；② 未登记码 → **500 + `logger.error`**；③ 新增 `_resolve_model`，未知 `model` → **404 `MODEL_NOT_FOUND`**（与 `/v1/models/{name}` 同一份 `KNOWN_MODELS`）；④ 两条 chat 的 pre-flight 加 `_ensure_upstream_configured` → 缺 key **503 `LLM_NOT_CONFIGURED`**，超时拆成 `request_timeout`（读间隔）+ `llm_connect_timeout`（建连）；⑤ 用 **AST 守卫**替代 `StrEnum`（扫描 `AppError(...)` 的字面量码）；⑥ 应用侧补上 nginx 那条 request-id 正则。 |
 | **代价** ⚠️ | ① **新增一个对外业务码** `LLM_NOT_CONFIGURED`，客户端多一条分支（但部署事故本来就要能被区分）<br>② 未登记码从 400 变 500：**历史日志里 400 的统计数据与现在不可直接对比**<br>③ AST 守卫扫不到动态拼出来的码（当前无此写法），且它是「源码约定」类检查 —— 改文件名/重构调用形态时要同步维护<br>④ 测试环境必须配 `LLM_API_KEY`（conftest 已加），否则所有 chat 用例会 503 —— 这是**测试环境与生产环境假设必须一致**的代价<br>⑤ `config.llm_model` 例外放行白名单：理论上留下「改了环境变量就绕过白名单」的口子，换来的是不会把自己 404 掉 |
 | **重审条件** | ① 要接**多供应商 + 真实模型清单**（阶段 2）→ `KNOWN_MODELS` 应从上游/配置读，`_resolve_model` 改成查表 + 缓存<br>② 错误码超过 ~25 个或需要按类别分组 → 重新评估 `StrEnum` 方案（此时重构收益 > 风险）<br>③ 上游开始返回结构化的模型不存在错误 → 可考虑透传其 code，但仍需保留我方 404 语义<br>④ 接入前置 LB 做 request-id 注入 → 应用侧正则退化为兜底，可简化 |
+
+---
+
+## 60. 构建必须可复现：镜像源只能是**一处**真相，且与 `uv.lock` 绑定
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 封板验证时 `docker compose build` **必然失败**：`uv sync --locked` 报 `The lockfile at uv.lock needs to be updated` → `exit 1`。📎 三层 A/B 取证：① `docker build`（不传 arg）成功；② `docker compose build` 失败；③ 唯一差别是 compose 的 `build.args.PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}` —— 它**覆盖**了 Dockerfile 的 `ARG` 默认值 → `UV_DEFAULT_INDEX` 变成 pypi，而 `uv.lock` 里每个包都记着 `source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }` |
+| **方案对比** | **A 只改 Dockerfile 默认值为镜像源**：被 compose 覆盖，**无效**（📎 实测仍失败）<br>**B compose 与 Dockerfile 都写镜像源**：今天能过，但两处默认值 = 下次只改一处又会失败<br>**C 默认值只留 Dockerfile 一处（删掉 compose 的 `build.args`）**：单点真相，`docker compose build` 无参数即通<br>**D 去掉 `--locked`**：容器里静默重锁，可复现性归零<br>**E 用 pypi 重新 `uv lock`**：本机连 pypi 会挂（📎 实测 180s 无返回），且日常走镜像的人反而天天被判「lock 过期」 |
+| **决定** | **C** + 两条静态守卫：① `Dockerfile` 的 `ARG PIP_INDEX_URL` 默认值 == `uv.lock` 里的 registry；② compose 的 `build.args` 不许出现 `PIP_INDEX_URL`。`UV_DEFAULT_INDEX` 仍从同一个 ARG 派生（pip 与 uv 共用一个旋钮）。 |
+| **代价** ⚠️ | ① **换索引 = 换锁文件**：`--build-arg PIP_INDEX_URL=<别的源>` 这种「只换构建时索引」的用法不再可用（会被 `--locked` 拒绝），必须 `UV_DEFAULT_INDEX=<index> uv lock` 后把 `uv.lock` 一起提交<br>② 海外构建默认走清华源（可达但慢），想要快就得按上一条换锁<br>③ 守卫只覆盖「两处默认值」与「锁文件记录」，**不会真跑 build** —— 镜像不在 CI 里，仍要靠发版清单里的 `docker compose build` 兜底（RUNBOOK §11a 第 4 条）<br>④ 作废了 [决策 44](#44-镜像里的-uv-用-pip-装项目用---no-editable-装) 代价②「本地构建必须记得传 `--build-arg`」—— 那句现在反过来：**不许传** |
+| **重审条件** | ① CI 加上镜像构建（或 `docker buildx bake` 在 PR 里跑）→ 守卫可换成真构建，删掉静态检查<br>② 迁到私有索引/多索引（`[[tool.uv.index]]`）→ 本条退化为「索引清单与锁文件一致」<br>③ 需要「同一份锁文件在多地区构建」→ 重新评估 `--locked` 是否该降级为 `--frozen`（后者只校验不重解，语义不同） |
 
 ---
 

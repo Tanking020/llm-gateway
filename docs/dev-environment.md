@@ -155,21 +155,23 @@ Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" | ForEach-O
 ### 8.0c 构建镜像（只有两条命令要记）
 
 ```powershell
-# 首次 / 换基础镜像后（会用清华 PyPI 源装 uv，避免撞 pypi.org 超时）
-docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t llm-app:dev .
+# 首次 / 换基础镜像后（uv 与依赖都从 Dockerfile 里那个索引装）
+docker build -t llm-app:dev .
 
 # 跑起来看看
 docker run --rm llm-app:dev whoami                       # 必须 app，不是 root
 docker run --rm llm-app:dev python -m alembic upgrade head
 ```
 
-⚠️ `--build-arg PIP_INDEX_URL` **不能省**：省掉就是 `Dockerfile` 里 `ARG` 的默认值 `https://pypi.org/simple`，本机会慢到以为卡死（📎 `pypi.org/simple/uv/` 实测 10s 超时）。CI / 海外构建反而不该传它。
+⚠️ **不要传 `--build-arg PIP_INDEX_URL`**：`uv.lock` 里记着「包来自哪个索引」，换索引会让
+`uv sync --locked` 直接 exit 1（[#101](../docs/todos.md) / 坑 K102）。要换源就得
+`$env:UV_DEFAULT_INDEX="<index>"; uv lock` 并把 `uv.lock` 一起提交，两者必须同时改。
 📎 参考实测：全量构建约 **14~20s**（依赖层命中缓存时 5.5s），镜像 **283 MB**，构建上下文 **26 文件 / 471 KB**。
 
 ### 8.0d 用 compose 起整套（13a-2a / 2b / 2c 起）
 
 ```powershell
-docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+docker compose build                                 # 不带 --build-arg（索引在 Dockerfile 一处）
 docker compose up -d                                 # migrate 先跑完 → app healthy → proxy 起
 docker compose ps                                    # app/proxy 都 healthy；migrate 是 exited 0
 docker compose exec app whoami                       # app

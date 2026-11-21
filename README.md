@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-223%20passed-success)
+![Tests](https://img.shields.io/badge/tests-225%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-94%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -17,7 +17,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 223 tests · 94% branch coverage · CI on every push.
+> 225 tests · 94% branch coverage · CI on every push.
 
 ---
 
@@ -125,7 +125,7 @@ uv run python -m app           # 监听地址 / 端口 / reload 全部读 .env
 前置：Docker Desktop（Linux 容器）。
 
 ```bash
-docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+docker compose build            # 索引默认值在 Dockerfile 一处，且与 uv.lock 一致（#101）
 docker compose up -d            # ① 一次性迁移 → ② app 健康 → ③ nginx 就绪
 docker compose ps               # app / proxy 都是 healthy；migrate 是 exited 0
 ```
@@ -245,7 +245,7 @@ uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
 uv run pyright          # 类型检查（与编辑器 Pylance 对齐，只拦 error）
-uv run pytest -q        # 223 个用例，约 15 s
+uv run pytest -q        # 225 个用例，约 15 s
 ```
 
 | | 结果 |
@@ -253,7 +253,7 @@ uv run pytest -q        # 223 个用例，约 15 s
 | `ruff check` / `format --check` | 全绿（51 files） |
 | `mypy --strict` | 全绿（54 source files，含 `tests/`、`scripts/` 与 `playground/`） |
 | `pyright`（`pyrightconfig.json`） | 0 errors（与编辑器同一套判断；📎 变异「改回 `getattr` 写法」→ mypy 仍绿而 pyright **红**） |
-| `pytest -q` | **223 passed** |
+| `pytest -q` | **225 passed** |
 | 分支覆盖 | **94%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面五条 + `uv sync --locked` |
 
@@ -310,7 +310,7 @@ uv run pytest -q        # 223 个用例，约 15 s
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 223 个用例，按「测哪一层」分为 21 个文件
+├── tests/                  # 225 个用例，按「测哪一层」分为 21 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── Dockerfile              # 多阶段构建 + 非 root + exec 形式 CMD（13a-1）
