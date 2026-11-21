@@ -9,7 +9,7 @@
 
 | 我要做什么 | 去哪 |
 |---|---|
-| 第一次把项目跑起来 | [§1](#1-第一次跑起来一次性) |
+| 第一次把项目跑起来（含**建表 + 签 key + 三个库**） | [§1](#1-第一次跑起来一次性) |
 | 日常起服务 / 改配置 | [§2](#2-日常起服务) |
 | curl 调接口（鉴权 / 流式 / 会话 / 账单） | [§3](#3-调接口curl-配方) |
 | 提交前跑质量门 / 只跑某条测试 | [§4](#4-质量门与测试) |
@@ -33,9 +33,35 @@
 | 还原依赖 | `uv sync` | `uv sync` |
 | 建配置 | `Copy-Item .env.example .env` | `cp .env.example .env` |
 | 填密钥 | 编辑 `.env`，把 `LLM_API_KEY` 那行改成真值 | 同左 |
+| **建表**（新库才有） | `uv run alembic upgrade head` | 同左 |
 | 验上游连通 | `uv run python -m app.main ping` | 同左 |
+| **签一把 API key** | `uv run python -m app.keys create --user me --label laptop` | 同左 |
 
-成功标志：`可用模型 N 个：...`。
+成功标志：`可用模型 N 个：...` + `sk_` 开头的明文（**只显示这一次**）。
+
+### §1.1 三个库：它们在哪儿、什么时候用哪个 ⚠️
+
+**这是最容易撞 401 的地方** —— key 签在 A 库，服务连的是 B 库，就会「key 明明对却说无效」。
+
+| 库 | 位置 | 谁在用 | 怎么确认自己在用哪个 |
+|---|---|---|---|
+| **开发库** | 仓库根 `./app.db` | `uv run python -m app`（`.env` 没写 `DATABASE_URL` 时的默认值） | `Select-String -Path .env -Pattern DATABASE_URL` —— **没这一行**就是它 |
+| **测试库** | `%TEMP%\llm-app-test-<进程号>.db` | `pytest`（`conftest.py` 在 import app **之前**改环境变量，一进程一个） | 跑测试时自动建；手工看不到很正常 |
+| **容器库** | 命名卷 `llm-app_app_data` 里的 `/app/data/app.db` | `docker compose` 起的 app / migrate | `docker compose exec app ls -ln /app/data` |
+
+三者**完全不互通**（key、用户、会话、账单都各算各的）：
+
+```powershell
+# 确认「我这个终端签的 key 会进哪个库」
+uv run python -m app.keys list          # 列出来的就是当前 DATABASE_URL 指向的那个库
+
+# 容器里那把 key（要在容器里签，或者把库指过去）
+docker compose exec app python -m app.keys list
+```
+
+⚠️ `uv run python -m app.keys create` 和 `docker compose exec app python -m app.keys create` **是两个不同的库**，不要混。
+
+---
 
 ⚠️ `ping` 不带密钥只会打印「未配置 LLM_API_KEY」并以 **1** 退出 —— 故意的（避免拿 `Bearer None` 去请求，报成误导性的 401）。
 ✅ **17 个旋钮全部在 `.env.example` 里有注释**（默认值 + 取值范围 + 反向约束）。`.env` 里只留你真正要改的那几行即可，其余删掉也照样生效。
