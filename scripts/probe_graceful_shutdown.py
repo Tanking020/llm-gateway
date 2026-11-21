@@ -115,6 +115,21 @@ def drive(port: int, grace: int, hold: float) -> int:
         check=True,
     )
 
+    # 【注意】：13d-2 起所有 /v1/* 都要 X-API-Key，而子进程用的是空临时库 ——
+    #   这里必须现签一把，否则第一步就 401（#97 / 坑 K100）
+    key_result = subprocess.run(
+        [sys.executable, "-m", "app.keys", "create", "--user", "probe", "--label", "graceful"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=True,
+    )
+    api_key = next(
+        line.strip() for line in key_result.stdout.splitlines() if line.strip().startswith("sk_")
+    )
+
     log_path = workdir / "child.log"
     # 【注意】：必须独立进程组，否则 CTRL_BREAK 会打到我们自己所在的组（Linux 上该常量为 0）
     flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -142,7 +157,12 @@ def drive(port: int, grace: int, hold: float) -> int:
     try:
         with httpx.Client(timeout=30.0) as client:
             body = {"messages": [{"role": "user", "content": "hi"}]}
-            with client.stream("POST", f"{base}/v1/chat/stream", json=body) as resp:
+            with client.stream(
+                "POST",
+                f"{base}/v1/chat/stream",
+                json=body,
+                headers={"X-API-Key": api_key},
+            ) as resp:
                 status = resp.status_code
                 for line in resp.iter_lines():
                     if not line.startswith("data: "):
