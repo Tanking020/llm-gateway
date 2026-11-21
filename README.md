@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-209%20passed-success)
+![Tests](https://img.shields.io/badge/tests-211%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-93%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -17,7 +17,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 209 tests · 93% branch coverage · CI on every push.
+> 211 tests · 93% branch coverage · CI on every push.
 
 ---
 
@@ -134,6 +134,11 @@ docker compose ps               # app / proxy 都是 healthy；migrate 是 exite
 app 只在 compose 网络内被反代访问（[决策 46](docs/decisions.md)）。空库首启由 `migrate` 服务先跑完迁移，
 app 通过 `depends_on: service_completed_successfully` 等它（[决策 45](docs/decisions.md)）。
 
+⚠️ **入口只绑 `127.0.0.1`**（[决策 58](docs/decisions.md)）：同网段与公网都访问不到 ——
+明文 HTTP 上的 `X-API-Key` 可被抓包。要公网演示先加 TLS（[#100](docs/todos.md)），
+或临时用 `ssh -L 80:127.0.0.1:80 <host>` / cloudflared 隧道。
+⚠️ 容器内默认 `APP_ENV=prod`（交互文档关闭）；要演示 `/docs` 用 `APP_ENV_CONTAINER=dev` 起容器。
+
 细节（构建参数、日志打平命令、四处联动的网络/信任名单）见 [docs/dev-environment.md](docs/dev-environment.md) §8.0d。
 
 ## 使用
@@ -240,7 +245,7 @@ uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
 uv run pyright          # 类型检查（与编辑器 Pylance 对齐，只拦 error）
-uv run pytest -q        # 209 个用例，约 15 s
+uv run pytest -q        # 211 个用例，约 15 s
 ```
 
 | | 结果 |
@@ -248,7 +253,7 @@ uv run pytest -q        # 209 个用例，约 15 s
 | `ruff check` / `format --check` | 全绿（51 files） |
 | `mypy --strict` | 全绿（54 source files，含 `tests/`、`scripts/` 与 `playground/`） |
 | `pyright`（`pyrightconfig.json`） | 0 errors（与编辑器同一套判断；📎 变异「改回 `getattr` 写法」→ mypy 仍绿而 pyright **红**） |
-| `pytest -q` | **209 passed** |
+| `pytest -q` | **211 passed** |
 | 分支覆盖 | **93%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面五条 + `uv sync --locked` |
 
@@ -305,7 +310,7 @@ uv run pytest -q        # 209 个用例，约 15 s
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 209 个用例，按「测哪一层」分为 21 个文件
+├── tests/                  # 211 个用例，按「测哪一层」分为 21 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── Dockerfile              # 多阶段构建 + 非 root + exec 形式 CMD（13a-1）
