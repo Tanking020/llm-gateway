@@ -14,6 +14,7 @@ _WHITELIST = {
     "upstream_queue_timeout",
     "max_tokens_ceiling",
     "request_timeout",
+    "llm_connect_timeout",
     "upstream_total_timeout",
     "graceful_shutdown_timeout",
     "rate_limit_per_minute",

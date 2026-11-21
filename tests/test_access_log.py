@@ -38,6 +38,30 @@ def test_access_log_line_has_client_and_request_id(
 
 
 @pytest.mark.parametrize(
+    ("raw", "echoed"),
+    [
+        ("abc-123", True),
+        ("abc123\nFAKE LOG LINE", False),
+        ("x" * 65, False),
+        ("bad id", False),
+    ],
+)
+def test_client_request_id_is_reused_only_when_safe(
+    client: TestClient, raw: str, echoed: bool
+) -> None:
+    """回归 #47：客户端的 X-Request-ID 只在「≤64 字符且无空格/引号/换行」时沿用
+
+    【注意】：nginx 边界已经拦一次（决策 57）；这里守的是「直连 app」那条路径 ——
+        否则一个换行就能伪造出第二条日志行
+    """
+    response = client.get("/health", headers={"X-Request-ID": raw})
+    rid = response.headers["x-request-id"]
+    assert (rid == raw) is echoed
+    assert "\n" not in rid
+    assert len(rid) <= 64
+
+
+@pytest.mark.parametrize(
     ("raw", "expected"),
     [
         ("203.0.113.7", "203.0.113.7"),

@@ -278,7 +278,7 @@ POST /v1/chat/stream
 📌 闸门这一行有个反直觉点：**槽位持有到「整条流结束」**，比 `DbDep` 还长一截 ——
 而这一点是**要的**（"同时在生成的上游调用数"本来就该按整条流算）；同一个 `yield` 机制在 `get_db` 那里却是缺陷（#59）。
 
-### 2.5 `app.py` 内部调用链（857 行怎么读）
+### 2.5 `app.py` 内部调用链（1051 行怎么读）
 
 `app.py` 是**组合层**：全部路由 + 装配 + SSE 生成器都在同一个文件里，没有 `services/` 层（待办 #63）。
 所以"改一处会影响谁"只能靠文件内部的调用关系看。
@@ -292,7 +292,12 @@ GET   /v1/models ──────────────→ list_models（读
 GET   /v1/models/latest ───────→ latest_model
 GET   /v1/models/{model_name} ─→ get_model ─────────────→ AppError(MODEL_NOT_FOUND)
 POST  /v1/chat ────────────────→ chat ──┬───────────────→ ensure_last_message_is_user
-                                        └─(传了 id 才走)→ require_conversation
+                                        ├───────────────→ ensure_max_tokens_within_ceiling
+                                        ├───────────────→ _resolve_model（未知 model → 404）
+                                        ├───────────────→ _ensure_upstream_configured（缺 key → 503）
+                                        ├─(传了 id 才走)→ require_conversation
+                                        ├───────────────→ client.complete(body)
+                                        └───────────────→ LlmCall(...) + commit（账单）
 GET   /v1/upstream/models ─────→ upstream_models ───────→ client.list_models()
 POST  /v1/conversations ───────→ create_conversation ───→ _fetch_conversation_stats
 GET   /v1/conversations/{id} ──→ get_conversation ──────→ _fetch_conversation_stats
@@ -302,6 +307,9 @@ DELETE /v1/conversations/{id} ─→ delete_conversation ──→ require_conve
 GET   /v1/conversations ───────→ list_conversations ──┬─→ _conversation_stats_stmt
                                                       └─→ _row_to_stats
 POST  /v1/chat/stream ─────────→ chat_stream ────────┬─→ ensure_last_message_is_user
+                                                     ├─→ ensure_max_tokens_within_ceiling
+                                                     ├─→ _resolve_model（未知 model → 404）
+                                                     ├─→ _ensure_upstream_configured（缺 key → 503）
                                                      ├─→ require_conversation
                                                      ├─→ client.open_chat_stream()  ← pre-flight
                                                      └─→ event_source()  ← 生成器，逐帧 yield
@@ -314,14 +322,17 @@ POST  /v1/chat/stream ─────────→ chat_stream ─────
 
 | 函数 | 行 | 被几处调用 | 谁在调 | 改了要回归什么 |
 |---|---|---|---|---|
-| `ensure_last_message_is_user` | 263 | 2 | `chat` / `chat_stream` | 两个 chat 端点的 400 语义 |
-| `_conversation_not_found` | 286 | 2 | `_fetch_conversation_stats` / `require_conversation` | **5 个对话读写端点的 404 文案** |
-| `_conversation_stats_stmt` | 298 | 2 | `_fetch_conversation_stats` / `list_conversations` | 详情 / PATCH / POST / 列表 **四处统计口径** |
-| `_row_to_stats` | 320 | 2 | 同上 | 同上（**加字段只改这一处**） |
-| `_fetch_conversation_stats` | 337 | 3 | `create_conversation` / `get_conversation` / `update_conversation` | 这三个端点的响应形状 |
-| `require_conversation` | 346 | 4 | `chat` / `chat_stream` / `update_conversation` / `delete_conversation` | 存在性校验，**含两条流的 pre-flight** |
-| `_as_dict` | 363 | 1（2 次） | `event_source` 里的 `usage` / `delta` | 上游字段类型守卫 |
-| `_as_int` | 377 | 1（3 次） | `record_usage` 的三个 token 字段 | 账单金额 |
+| `ensure_last_message_is_user` | 346 | 2 | `chat` / `chat_stream` | 两个 chat 端点的 400 语义 |
+| `ensure_max_tokens_within_ceiling` | 369 | 2 | 同上 | 两个 chat 端点的 400 语义（成本上限） |
+| `_resolve_model` | 385 | 2 | 同上 | 两个 chat 端点的 **404 `MODEL_NOT_FOUND`**（#48） |
+| `_ensure_upstream_configured` | 401 | 2 | 同上 | 两个 chat 端点的 **503 `LLM_NOT_CONFIGURED`**（#18） |
+| `_conversation_not_found` | 410 | 2 | `_fetch_conversation_stats` / `require_conversation` | **5 个对话读写端点的 404 文案** |
+| `_conversation_stats_stmt` | 422 | 2 | `_fetch_conversation_stats` / `list_conversations` | 详情 / PATCH / POST / 列表 **四处统计口径** |
+| `_row_to_stats` | 444 | 2 | 同上 | 同上（**加字段只改这一处**） |
+| `_fetch_conversation_stats` | 461 | 3 | `create_conversation` / `get_conversation` / `update_conversation` | 这三个端点的响应形状 |
+| `require_conversation` | 478 | 4 | `chat` / `chat_stream` / `update_conversation` / `delete_conversation` | 存在性校验，**含两条流的 pre-flight** |
+| `_as_dict` | 498 | 1（2 次） | `event_source` 里的 `usage` / `delta` | 上游字段类型守卫 |
+| `_as_int` | 512 | 1（3 次） | `record_usage` 的三个 token 字段 | 账单金额 |
 
 ⭐ 判据：**「改 `_conversation_stats_stmt` 要回归 4 个端点，改 `require_conversation` 要回归 4 条路由」**
 —— 这是 `app.py` 里仅有的"扇出"结构，`services/` 层就是为了拆它（#63）。
@@ -506,14 +517,14 @@ CREATE INDEX ix_api_keys_user_id ON api_keys (user_id);
 | GET | `/v1/models` | `?prefix=&limit=`(1..100, 默认 20) | `{"total", "items": [str]}` | 200 | 422 | **公开** |
 | GET | `/v1/models/latest` | — | `{"model_name"}` | 200 | — | **公开** |
 | GET | `/v1/models/{model_name}` | 路径参数 | `{"model_name"}` | 200 | 404 `MODEL_NOT_FOUND` | **公开** |
-| POST | `/v1/chat` | `ChatRequest` | `ChatResponse` | 200 | 401 / 400 / 404 / 422 | key |
+| POST | `/v1/chat` | `ChatRequest` | `ChatResponse` | 200 | 401 / 400 / 404 / 422 / **503 `LLM_NOT_CONFIGURED`** | key |
 | GET | `/v1/upstream/models` | — | `ModelListResponse` | 200 | 401 / 502 `UPSTREAM_*` | key |
 | POST | `/v1/conversations` | `ConversationIn` | `ConversationStatsOut` | **201** | 401 / 422 | key |
 | GET | `/v1/conversations/{conv_id}` | 路径参数 | `ConversationStatsOut` | 200 | 401 / 404 / 422 | key |
 | PATCH | `/v1/conversations/{conv_id}` | `ConversationPatch` | `ConversationStatsOut` | 200 | 401 / 404 / 422 | key |
 | DELETE | `/v1/conversations/{conv_id}` | 路径参数 | **无 body** | **204** | 401 / 404 / 422 | key |
 | GET | `/v1/conversations` | `?limit=`(1..100, 默认 20) `&after_id=`(≥0) | `ConversationPageOut` | 200 | 401 / 422 | key |
-| POST | `/v1/chat/stream` | `ChatRequest` | **SSE**（`text/event-stream`） | 200 | 401 / **502（pre-flight）** / 400 / 404 / 422 | key |
+| POST | `/v1/chat/stream` | `ChatRequest` | **SSE**（`text/event-stream`） | 200 | 401 / **502（pre-flight）** / 400 / 404 / 422 / **503 `LLM_NOT_CONFIGURED`** | key |
 | GET | `/docs` `/redoc` `/openapi.json` `/docs/oauth2-redirect` | — | — | 200 | **prod 下全 404** | **公开** |
 
 > **鉴权**：请求头 `X-API-Key: sk_…`（13d-2）。库里只存 `sha256`，明文只在签发时给一次。
@@ -711,7 +722,8 @@ content-type: application/json
 | `UPSTREAM_BAD_STATUS` | 502 | 稍后重试（5xx）/ 不要重试（3xx 接口搬家） |
 | `UPSTREAM_MALFORMED` | 502 | 报错给运维（上游改了结构） |
 | `DB_UNAVAILABLE` | 503 | 稍后重试 |
-| （未登记的码） | **400**（兜底防"漏登记"，不是"猜对"） | —— |
+| `LLM_NOT_CONFIGURED` | 503 | 报障（我方漏配上游 key，重试无用） |
+| （未登记的码） | **500** + error 日志（这是我们自己的 bug，不是客户端的错；守卫 `test_every_app_error_code_is_registered`） | —— |
 
 #### 7.4b 上游状态码 → 我们的业务码（📎 2026-11-04 实测）
 
@@ -798,8 +810,8 @@ ServerErrorMiddleware          ← 这里跑 500 处理器（📎 打印到 hand
 
 | 异常类 | 处理器 | HTTP | 出口 |
 |---|---|---|---|
-| `AppError` | `_app_error_handler` | `_STATUS_BY_CODE` 查表，**未登记 → 400** | envelope |
-| `StarletteHTTPException` | `_http_exception_handler` | 原状态码（404 / 405） | envelope，码由 `_CODE_BY_STATUS` 兜底 |
+| `AppError` | `_app_error_handler` | `_STATUS_BY_CODE` 查表，**未登记 → 500 + error 日志**（#21） | envelope |
+| `StarletteHTTPException` | `_http_exception_handler` | 原状态码（404 / 405），**`exc.headers` 一并透传**（#95） | envelope，码由 `_CODE_BY_STATUS` 兜底 |
 | `RequestValidationError` | `_validation_error_handler` | 422 | envelope + `details` |
 | `WebSocketRequestValidationError` | 框架默认 | — | 本项目没有 WS 路由 |
 | `Exception` | `_unhandled_error_handler` | 500 | envelope（**无 CORS 头**，见 §7.6） |
@@ -809,9 +821,10 @@ ServerErrorMiddleware          ← 这里跑 500 处理器（📎 打印到 hand
 | `code` | 谁产生 | 位置 | 出口 |
 |---|---|---|---|
 | `LAST_MESSAGE_NOT_USER` | `ensure_last_message_is_user` | [app.py](../src/app/api/app.py) | 400 envelope |
-| `MODEL_NOT_FOUND` | `get_model` | [app.py](../src/app/api/app.py) | 404 envelope |
+| `MODEL_NOT_FOUND` | `get_model`（`/v1/models/{name}`）、`_resolve_model`（`/v1/chat*` 的 `model` 字段，**同一份 `KNOWN_MODELS` 白名单**） | [app.py](../src/app/api/app.py) | 404 envelope |
 | `CONVERSATION_NOT_FOUND` | `_conversation_not_found`（**5 个端点共用这一处**） | [app.py](../src/app/api/app.py) | 404 envelope |
 | `DB_UNAVAILABLE` | `health_ready` | [app.py](../src/app/api/app.py) | 503 envelope |
+| `LLM_NOT_CONFIGURED` | `_ensure_upstream_configured`（两条 chat 的 pre-flight） | [app.py](../src/app/api/app.py) | 503 envelope |
 | `UPSTREAM_UNREACHABLE`（L1） | `LlmClient._request` | [llm_client.py](../src/app/llm_client.py) | 502 envelope |
 | `UPSTREAM_BAD_STATUS`（L2） | `LlmClient._request` | [llm_client.py](../src/app/llm_client.py) | 502 envelope |
 | `UPSTREAM_MALFORMED`（L3） | `LlmClient.list_models` | [llm_client.py](../src/app/llm_client.py) | 502 envelope |
@@ -1095,10 +1108,11 @@ recorded = True; call.status = "completed"
 | `host` | str | `127.0.0.1` | 监听地址 |
 | `port` | int | `8000` | 监听端口 |
 | `database_url` | str | `sqlite+aiosqlite:///./app.db` | 相对**当前工作目录** |
-| `llm_api_key` | `str \| None` | `None` | 缺了不报错，但会拼出假 token → 401（所以 `ping` 先查它） |
+| `llm_api_key` | `str \| None` | `None` | 缺了**不报 401**：`/v1/chat*` 的 pre-flight 直接回 503 `LLM_NOT_CONFIGURED`（#18）；`ping` 也先查它 |
 | `llm_base_url` | str | `https://api.deepseek.com` | 末尾不带斜杠 |
 | `llm_model` | str | `deepseek-flash` | 客户端没指定时兜底 |
 | `request_timeout` | float | `30.0` | httpx 默认只有 5 秒，LLM 不够；⚠️ 只是**读取间隔**，不是总时长 |
+| `llm_connect_timeout` | float | `3.0`（`gt=0, le=60`） | 建连（DNS + TCP + TLS）单独收紧 —— 与读取间隔分开，否则「连不上」要等满 30s 才报错（#18） |
 | `graceful_shutdown_timeout` | **int** | `30`（`gt=0, le=300`） | **优雅停机窗口**：收到 SIGINT/SIGTERM 后最多再等多久（决策 39）；⚠️ 必须小于编排宽限期；⚠️ 只在 `python -m app` 生效 |
 | `upstream_total_timeout` | float | `120.0`（`gt=0, le=600`） | **单次上游调用的总时长预算** —— 慢速滴答的唯一防线（决策 37）；超时非流式 504 / 流式 `STREAM_TIMEOUT` 帧 |
 | `max_concurrent_upstream_calls` | int | `4` | `ge=1, le=100`。**进程级**闸门，`--workers N` 就是 N 倍 |
@@ -1120,13 +1134,15 @@ APP_ENV=prod + DEBUG=true
 ```text
 lifespan 启动段[1]
    └─ logger.info("生效配置：%s", startup_config_summary(settings))
-        └─ 白名单 7 项：app_env / debug / database / max_concurrent_upstream_calls
-                        / upstream_queue_timeout / max_tokens_ceiling / request_timeout / upstream_total_timeout
-                        / graceful_shutdown_timeout
+        └─ 白名单 12 项：app_env / debug / database / max_concurrent_upstream_calls
+                        / upstream_queue_timeout / max_tokens_ceiling / request_timeout
+                        / llm_connect_timeout / upstream_total_timeout / graceful_shutdown_timeout
+                        / rate_limit_per_minute / rate_limit_burst
         └─ 📎 database 只打「方言://…/库名」—— 不出现 用户名:密码@主机
 ```
 
-📎 真进程第一屏样本（`MAX_CONCURRENT_UPSTREAM_CALLS=7`；13e-2 起是 JSON，下面是展开后的可读形式）：
+📎 真进程第一屏样本（`MAX_CONCURRENT_UPSTREAM_CALLS=7`；13e-2 起是 JSON，下面是展开后的可读形式；
+采集于 2026-11-19，之后新增 `llm_connect_timeout`，实际取值以启动日志为准）：
 
 ```json
 {"ts": "2026-11-19T12:34:20.077+00:00", "level": "INFO", "logger": "app.api.app",
@@ -1136,11 +1152,12 @@ lifespan 启动段[1]
         'upstream_total_timeout': 120.0, 'graceful_shutdown_timeout': 30}"}
 ```
 
-⚠️ 白名单的「漏项」目前没有机械兜底（见 [#85](../docs/todos.md)）：`Settings` 新增字段而忘了加进摘要，测试不会红。
+✅ 白名单的「漏项」有机械兜底（[#85](../docs/todos.md) 已修）：`test_startup_config.py::test_every_setting_is_printed_or_has_a_reason`
+—— `Settings` 新增字段既没打印、也没写进 `_NOT_PRINTED`（附理由）时会红。
 
 ### 9.5 配置项 → 读取点（改一个字段，谁的行为会变）
 
-📎 从源码里 `settings.<字段>` / `config.<字段>` 实读（2026-11-04）：
+📎 从源码里 `settings.<字段>` / `config.<字段>` 实读（2026-11-04，2026-11-21 复核）：
 
 | 字段 | 谁读 | 怎么读 | 生效时机 |
 |---|---|---|---|
@@ -1148,14 +1165,16 @@ lifespan 启动段[1]
 | `debug` | [api/app.py](../src/app/api/app.py)（`FastAPI(debug=…)`）、[__main__.py](../src/app/__main__.py)（`reload=`） | 直读 | import 时 / 启动时 |
 | `host` / `port` / `graceful_shutdown_timeout` | [__main__.py](../src/app/__main__.py) | 直读 | **只走 `python -m app` 才生效**（`uvicorn app.api.app:app` 会绕过） |
 | `database_url` | [database.py](../src/app/database.py) | 直读（建 engine） | import 时；**一个进程只能绑一个库** |
-| `llm_base_url` / `request_timeout` / `upstream_total_timeout` / `llm_api_key` | [llm_client.py](../src/app/llm_client.py)（`create_llm_client`） | 直读 | lifespan 启动段造 client |
-| `llm_model` | `chat` / `chat_stream` | ⭐ **经 `SettingsDep` 注入**（`config.llm_model`） | 每请求，且**可被 `dependency_overrides` 换掉** |
+| `llm_base_url` / `request_timeout` / `llm_connect_timeout` / `upstream_total_timeout` | [llm_client.py](../src/app/llm_client.py)（`create_llm_client` / `asyncio.timeout`） | 直读 | lifespan 造 client；总时长预算每次上游调用读 |
+| `llm_api_key` | [llm_client.py](../src/app/llm_client.py)（拼 `Authorization`）+ `_ensure_upstream_configured` | 前者直读，后者 ⭐ **经 `SettingsDep`** | 启动 / 每请求（pre-flight） |
+| `llm_model` | `_resolve_model`（`chat` / `chat_stream` 共用） | ⭐ **经 `SettingsDep` 注入** | 每请求，且**可被 `dependency_overrides` 换掉** |
 | `app_name` | 只有 [main.py](../src/app/main.py) 打印 | 直读 | ⚠️ 服务自己的 `FastAPI(title=…)` 是**硬编码**，不读这个字段 |
-| `max_concurrent_upstream_calls` / `upstream_queue_timeout` | 🟡 [api/deps.py](../src/app/api/deps.py)（`get_upstream_slot`，**12g-2 才落地**） | 直读 | 每请求 |
-| `max_tokens_ceiling` | 🟡 `chat` / `chat_stream` 路由层（**12g-3 才落地**） | 待定（倾向于经 `SettingsDep`，这样测试能换） | 每请求 |
+| `max_concurrent_upstream_calls` / `upstream_queue_timeout` | [api/deps.py](../src/app/api/deps.py)（`get_upstream_slot`） | ⭐ 经 `SettingsDep` | 每请求 |
+| `max_tokens_ceiling` | `ensure_max_tokens_within_ceiling` / `chat` / `chat_stream` | ⭐ 经 `SettingsDep` | 每请求 |
+| `rate_limit_per_minute` / `rate_limit_burst` | [api/deps.py](../src/app/api/deps.py)（限流依赖） | ⭐ 经 `SettingsDep` | 每请求 |
 
-⭐ 判据：**只有 `llm_model` 走依赖注入**，所以测试能换的也只有它；
-其余全是模块级单例直读 → **改环境变量必须重启**（import 之后改 `os.environ` 无效，见 §9.1）。
+⭐ 判据：**走 `SettingsDep` 的字段，测试能换、行为每请求可变**（`llm_model` / `llm_api_key` / 成本上限 / 闸门与限流参数）；
+`create_llm_client` 与超时预算读的是模块级单例 → **改这些环境变量必须重启**（import 之后改 `os.environ` 无效，见 §9.1）。
 
 ---
 

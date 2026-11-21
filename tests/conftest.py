@@ -25,6 +25,9 @@ for _suffix in ("", "-wal", "-shm"):
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///" + _TEST_DB.as_posix()
 os.environ["APP_ENV"] = "dev"
 os.environ["DEBUG"] = "false"
+# 【注意】：上游 key 必须存在 —— 路由的 pre-flight 会拦「未配置」（#18），
+#   没有这行则所有 /v1/chat 用例都会拿到 503。要测「缺 key」的用例自己 override get_settings
+os.environ.setdefault("LLM_API_KEY", "sk-test-upstream")
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402

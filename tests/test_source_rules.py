@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+from app.errors import _STATUS_BY_CODE
+
 # 【注意】：这是源码检查，不是行为测试 —— 它拦的是「四道门都看不见的那类错」
 #   （忘了 commit 时，get_db 的收尾提交会悄悄救回来，见决策 38）
 _APP_PY = Path(__file__).resolve().parents[1] / "src" / "app" / "api" / "app.py"
@@ -166,3 +168,43 @@ def test_no_deprecated_http_constants() -> None:
         text = path.read_text(encoding="utf-8")
         offenders.extend(f"{path.name}:{name}" for name in _DEPRECATED_NAMES if name in text)
     assert offenders == [], f"源码里还有弃用常量（改用 {_DEPRECATED_NAMES}）：{offenders}"
+
+
+# ============ 业务码登记（#58）============
+_SRC_APP = Path(__file__).resolve().parents[1] / "src" / "app"
+
+
+def _app_error_codes(path: Path) -> set[str]:
+    """收集文件里 AppError(...) 的字面量 code（位置参数或 code= 关键字）
+
+    【注意】：动态拼出来的码（变量 / f-string）这里看不见，所以它只覆盖「写死」的那部分
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    codes: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Name) and node.func.id == "AppError"):
+            continue
+        literal: ast.expr | None = node.args[0] if node.args else None
+        if literal is None:
+            literal = next((kw.value for kw in node.keywords if kw.arg == "code"), None)
+        if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
+            codes.add(literal.value)
+    return codes
+
+
+def test_every_app_error_code_is_registered() -> None:
+    """回归 #58：AppError 的字面量业务码必须都在 _STATUS_BY_CODE 里
+
+    【注意】：漏登记的后果是静默降级（以前 400、现在 500）—— 只有线上某个分支被走到才会发现
+    """
+    used: set[str] = set()
+    for path in _SRC_APP.rglob("*.py"):
+        used |= _app_error_codes(path)
+
+    # 【注意】：先断言「扫到了东西」—— 否则匹配规则失效时这条用例会假绿
+    assert used, "没扫到任何 AppError：AST 匹配规则可能已过时（先修这条用例本身）"
+
+    missing = used - set(_STATUS_BY_CODE)
+    assert not missing, f"这些业务码没登记到 _STATUS_BY_CODE：{sorted(missing)}"

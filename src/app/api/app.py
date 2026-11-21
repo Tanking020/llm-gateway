@@ -173,6 +173,10 @@ app.add_middleware(
 register_exception_handlers(app)
 
 
+# 与 deploy/nginx.conf 里 map 的正则一致：客户端 ID 只有「足够短、且无空格/引号/换行」才敢沿用
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+
+
 # 【中间件】：包在【所有路由】外面的一层管道，每个请求都会经过
 #   请求方向：中间件前半段 -> 路由
 #   响应方向：路由 -> 中间件后半段
@@ -185,7 +189,10 @@ async def add_request_id(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
     """给每个请求分配 request_id：优先沿用上游传来的，没有就新生成，并且记录耗时"""
-    request_id = request.headers.get(HEADER_REQUEST_ID) or uuid.uuid4().hex[:12]
+    # 【注意】：客户端传来的值必须过与 nginx 同一条正则 —— 否则换行能伪造日志行、
+    #   超长能撑日志（#47）。边界已经拦一次，应用侧再拦一次，直连 app 时也不会漏
+    incoming = request.headers.get(HEADER_REQUEST_ID) or ""
+    request_id = incoming if _REQUEST_ID_RE.fullmatch(incoming) else uuid.uuid4().hex[:12]
     # 存进 request.state —— 这一次请求的"口袋"，异常处理器里也能读到
     request.state.request_id = request_id
     # 先声明为 None: 里层抛异常时 response 永远不会被赋值，
@@ -382,6 +389,31 @@ def ensure_max_tokens_within_ceiling(request: ChatRequest, config: Settings) -> 
         )
 
 
+def _resolve_model(request: ChatRequest, config: Settings) -> str:
+    """把请求里的 model 解析成实际发给上游的名字；未知模型直接 404（#48）
+
+    【注意】：不校验的后果有两个 —— 上游回 400（排障时看不出是我方放行的），
+        以及客户端可以点单任意贵的模型（成本护栏 max_tokens 管不到单价）
+    【注意】：config.llm_model 也放行 —— 否则改了 LLM_MODEL 却没同步 KNOWN_MODELS 时，默认模型会 404
+    """
+    model = request.model or config.llm_model
+    if model not in KNOWN_MODELS and model != config.llm_model:
+        raise AppError(
+            code="MODEL_NOT_FOUND",
+            message=f"未知模型：{model}（可用：{' / '.join(KNOWN_MODELS)}）",
+        )
+    return model
+
+
+def _ensure_upstream_configured(config: Settings) -> None:
+    """没有上游 key 就不要发请求 —— 否则会拼出 `Authorization: Bearer None`（#18）
+
+    【注意】：这类错误是【我方配置事故】，不是客户端的错，所以 503 而不是 4xx
+    """
+    if not config.llm_api_key:
+        raise AppError(code="LLM_NOT_CONFIGURED", message="服务端未配置上游 API key")
+
+
 def _conversation_not_found(conv_id: int) -> AppError:
     """
     404 的唯一来源：改文案或者状态码只改这里
@@ -506,12 +538,14 @@ async def chat(
     # 【注意】：必须放在打开上游之前：否则会白花一次上游调用（真金白银）
     ensure_last_message_is_user(request)
     ensure_max_tokens_within_ceiling(request, config)
+    # 模型名与上游凭据都是「打上游之前必须成立」的前提，与上面两条放在一起（#48/#18）
+    actual_model = _resolve_model(request, config)
+    _ensure_upstream_configured(config)
 
     # pre-flight：对话存在性必须在【打上游之前】查（放后面 = 白花一次调用）
     if request.conversation_id is not None:
         await require_conversation(db, request.conversation_id, user.id)
 
-    actual_model = request.model or config.llm_model
     # 客户端没指定 max_tokens 时用服务端上限兜底 —— 不能"不传 = 不限制"
     max_tokens = request.max_tokens if request.max_tokens is not None else config.max_tokens_ceiling
 
@@ -725,13 +759,14 @@ async def chat_stream(
     # 【注意】：必须放在 pre-flight 之前：否则会白花一次上游调用（真金白银）
     ensure_last_message_is_user(request)
     ensure_max_tokens_within_ceiling(request, config)
+    # 与 /v1/chat 同一条规则：模型名 / 上游凭据都在开流之前验（#48/#18）
+    actual_model = _resolve_model(request, config)
+    _ensure_upstream_configured(config)
 
     # pre-flight：对话存在性必须在【打开上游流之前】查。放后面的话
     #   会白花一次上游调用，而且响应头已经发出，改不了 404
     if request.conversation_id is not None:
         await require_conversation(db, request.conversation_id, user.id)
-
-    actual_model = request.model or config.llm_model
 
     # 客户端没指定 max_tokens 时用服务端上限兜底
     # 【注意】：不能"不传" = "不限制" —— 那样成本上限形同虚设（客户端只要不写这个字段就绕过去了）

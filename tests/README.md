@@ -26,12 +26,12 @@
 
 ## 1. 二十一个文件各测什么
 
-**211 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+**223 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
 
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
 | `test_smoke.py` | 7 | 地基：应用能起、lifespan 跑过、独立临时库生效、**健康检查两态**（`/health/ready` 200 / DB 挂时 503）、**测试库一进程一个**（#87）、**清表真的清干净**（每张表都写脏数据再断言 0） | 不涉及 | ❌ |
-| `test_access_log.py` | 8 | **访问日志层**（13e-1，决策 47）：每行都有 `client=` 与 `request_id=` / `_client_label` 对六种输入的处理（`None`·空串·**换行注入**·控制字符·超长截断）/ **真 uvicorn** 验证「不可信对端伪造 `X-Forwarded-For` 被忽略」 | 不涉及（第 3 条**起真 uvicorn + 真 TCP**） | ❌ 起服务但不起容器 |
+| `test_access_log.py` | 12 | **访问日志层**（13e-1，决策 47）：每行都有 `client=` 与 `request_id=` / **客户端 `X-Request-ID` 只在安全时沿用（4 例：正常·换行注入·超长·含空格，#47）** / `_client_label` 对六种输入的处理（`None`·空串·**换行注入**·控制字符·超长截断）/ **真 uvicorn** 验证「不可信对端伪造 `X-Forwarded-For` 被忽略」 | 不涉及（最后几条**起真 uvicorn + 真 TCP**） | ❌ 起服务但不起容器 |
 | `test_log_json.py` | 2 | **日志格式层**（13e-2，决策 48）：**子进程**真跑 `configure_logging()` 后每行都能 `json.loads`（含中文 / `extra` / traceback）/ `JsonFormatter` 的 traceback **不含真实换行**、`extra` 字段不被吞 | 不涉及（第 1 条**起子进程**） | ❌ |
 | `test_keys_cli.py` | 6 | **API key 运维 CLI**（13d-5）：签发的 key 真能过鉴权 / 明文绝不进库 / 自动建用户 / 同人两把 key 都可用 / `list` 不暴露明文与完整 hash / 撤销后立刻 401 / 撤销幂等且不存在的 id 退出码 1 | 不涉及 | ❌ |
 | `test_rate_limit.py` | 9 | **每用户限流**（13d-4）：5 条桶数学（突发耗尽 / 随时间补充 / **封顶** / **按 key 隔离** / `Retry-After` 取整） + 4 条过 HTTP（第 3 个请求 429 + `Retry-After` / **配额按用户隔离** / 假时钟快进恢复 / 401 不消耗任何人的配额） | 不涉及 | ❌ |
@@ -41,16 +41,16 @@
 | `test_auth.py` | 16 | **鉴权与归属**（13d-2）：6 个端点的 401 / 公开路由免鉴权 / 错 key / **已撤销 key** / 越权读改写删全 **404** / 列表与 `total` 不泄露 / 聊天挂别人对话 id / **库里只有 sha256** | 不涉及（`FakeLlm` 只用于 chat 两条） | ❌ |
 | `test_conversations.py` | 12 | 对话 CRUD 契约：全生命周期 / 游标分页 / 422 校验 / 404 语义 / **提交失败必须 5xx（不能先回 201）** | 不涉及 | ❌ |
 | `test_upstream.py` | 11 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、**上游 429 → 429 + `Retry-After`**、pre-flight 能改状态码 | `FakeLlm` | ❌ |
-| `test_errors.py` | 11 | **错误形状契约**：envelope 三键 / 三种 404 靠业务码分 / 422 的 `details` 只留三键 / 500 不泄漏 / **500 的 CORS 头与 404 一致且不外泄给外来源** / **DB 连不上 → 503（SQL 错仍 500）** | `FakeLlm` | ❌ |
+| `test_errors.py` | 17 | **错误形状契约**：envelope 三键 / 三种 404 靠业务码分 / 422 的 `details` 只留三键 / 500 不泄漏 / **500 的 CORS 头与 404 一致且不外泄给外来源** / **DB 连不上 → 503（SQL 错仍 500）** / **HTTPException 自带的头透传、但改不了 `X-Request-ID`（#95）** / **未登记业务码 → 500（#21）** / **未知 model → 404（#48）** / **缺上游 key → 503（#18）** | `FakeLlm` | ❌ |
 | `test_stream_frames.py` | 12 | **路由层**字段守卫：7 种怪 chunk + 帧序 + 终止条件（用假 chunk，不经 SSE 文本） | `FakeLlm` | ❌ |
 | `test_stream_adapter.py` | 11 | **适配器协议层**：原始 SSE 字节 → `aiter_chunks()`，`data:{` 无空格 / 空 data / 非 dict / `[DONE]` 之后 | **直接喂 `httpx.Response`** | ❌ |
 | `test_stream_accounting.py` | 12 | **账单四态**：completed / aborted / no_content / pending + 枚举值守卫 | `FakeLlm` | ❌ |
-| `test_adapter_http.py` | 28 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
+| `test_adapter_http.py` | 29 | **适配器真实 HTTP 路径**：L1 连不上 / L2 状态码不对（含 3xx、429）/ L3 结构不合规 / 错误正文截断 | 从**下面**换掉传输层：`httpx.MockTransport` | ❌ |
 | `test_concurrency.py` | 4 | **并发与连接池**：串行化、首字节延迟、流跑到一半时 `pending` 已落库 | `FakeLlm`（慢速版） | ✅ **真 uvicorn** |
 | `test_limits.py` | 14 | **护栏上限**：并发闸门 503 / 槽位归还（正常+异常）/ `max_tokens` 三分支 / 输入三条上限 / **上游总时长超预算 → `STREAM_TIMEOUT`** / `UPSTREAM_TIMEOUT` → 504 | `FakeLlm` | ❌ |
 | `test_migrations.py` | 2 | **迁移层**：`alembic check` 无漂移 + 迁移建出的**结构**（列/外键/索引/唯一约束，用 `PRAGMA` 读）与 `create_all` 一致 | 不涉及（**起子进程跑 alembic CLI**） | ❌ |
 | `test_startup_config.py` | 6 | **启动摘要层 + 启动接线**：白名单恰好这几项 / **每个 `Settings` 字段要么打出来、要么写明为何不打** / 连接串只留方言 + 库名 / 密钥与主机绝不出现 / **优雅窗口真的传给 uvicorn** | 不涉及 | ❌ |
-| `test_source_rules.py` | 5 | **源码约定（静态检查）**：用 `ast` 断言每个写路由函数体里有 `await db.commit()`（#86）+ **每个非公开路由都声明了 `CurrentUserDep`**（13d-2）；两条白名单都不许留过期项 | 不涉及（**只读源码，不跑应用**） | ❌ |
+| `test_source_rules.py` | 6 | **源码约定（静态检查）**：用 `ast` 断言每个写路由函数体里有 `await db.commit()`（#86）+ **每个非公开路由都声明了 `CurrentUserDep`**（13d-2）+ **每个 `AppError("…")` 的字面量码都已登记**（#58）；白名单都不许留过期项 | 不涉及（**只读源码，不跑应用**） | ❌ |
 
 > ⚠️ **`fakes.py` 不是测试文件**，是共用的假对象：
 
