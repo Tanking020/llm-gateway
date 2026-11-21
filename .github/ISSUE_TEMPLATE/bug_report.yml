@@ -1,0 +1,54 @@
+name: Bug report
+description: 报告一个可复现的行为错误（不是提问、不是漏洞）
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        漏洞请走 **Security → Advisories → Report a vulnerability**（见 SECURITY.md），不要开 issue。
+        报错前先看 `docs/todos.md` 里有没有已登记的同类问题。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 实际发生了什么
+      description: '贴响应体原文（那段 {"error": ...}），不要只写「报错了」'
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望的是什么
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 最小复现
+      description: 一条能跑的命令（含请求头与请求体）
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 提交
+      description: "`git rev-parse --short HEAD` 或 Release 标签"
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 怎么跑的
+      options:
+        - '本机 `uv run python -m app`'
+        - '`docker compose up`'
+        - 其他（在下面说明）
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 带 `request_id` 的那几行（访问日志是 JSON 一行一条）。**注意先把 key 打码**
+      render: json
