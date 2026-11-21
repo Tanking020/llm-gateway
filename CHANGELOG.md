@@ -25,7 +25,7 @@
 | **会话与统计** | 游标分页（不用 offset）；账单聚合语句数与条目数无关（📎 N=100 时 2 条，朴素写法 101 条） |
 | **可观测性** | 一行一 JSON 的访问日志（含客户端 IP / request_id）；5 个进程内指标；`/metrics` 由 nginx `return 404` 硬阻断；3 条告警规则（`promtool check rules` 验过） |
 | **生产部署** | 多阶段镜像（**283 MB**、非 root uid 10001、exec 形式 CMD）+ nginx 独占入口（关缓冲，SSE 不被攒块）+ 一次性迁移服务 + 优雅停机（30 s 窗口，真信号验收） |
-| **质量门** | 5 道（`ruff format` / `ruff check` / `mypy --strict` / `pyright` / `pytest`）：**225 个用例**、**94% 分支覆盖**、关键路径做过变异验证 |
+| **质量门** | 5 道（`ruff format` / `ruff check` / `mypy --strict` / `pyright` / `pytest`）：**226 个用例**、**94% 分支覆盖**、关键路径做过变异验证 |
 
 ### 关键取舍
 

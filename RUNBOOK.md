@@ -227,7 +227,7 @@ ruff format --check  45 files already formatted          exit 0
 ruff check           All checks passed!                  exit 0
 mypy                 Success: no issues found in 48 source files
 pyright              0 errors, 0 warnings, 0 informations
-pytest -q            225 passed in 14.12s                exit 0
+pytest -q            226 passed in 14.70s                exit 0
 ```
 
 📎 子集命令实测：`tests/test_adapter_http.py` → **28 passed**；
