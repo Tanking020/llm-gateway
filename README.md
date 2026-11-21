@@ -1,6 +1,8 @@
-# llm-app-engineering
+# LLM Gateway
 
-[![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
+> LLM 调用接入层：鉴权 · 限流 · SSE 流式 · 计费对账 · 可观测
+
+[![CI](https://github.com/Tanking020/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-gateway/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-225%20passed-success)
@@ -103,8 +105,8 @@ flowchart TB
 前置：[uv](https://docs.astral.sh/uv/)（唯一需要手动准备的工具）。
 
 ```bash
-git clone https://github.com/Tanking020/llm-app-engineering.git
-cd llm-app-engineering
+git clone https://github.com/Tanking020/llm-gateway.git
+cd llm-gateway
 
 uv sync                        # 按 uv.lock 还原依赖（含 Python 3.12）
 cp .env.example .env           # Windows: Copy-Item .env.example .env

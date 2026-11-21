@@ -1102,7 +1102,7 @@ recorded = True; call.status = "completed"
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `app_name` | str | `llm-app-engineering` | 应用名 |
+| `app_name` | str | `llm-gateway` | 应用名 |
 | `app_env` | `Literal["dev","prod"]` | `dev` | 写别的**直接校验失败** |
 | `debug` | bool | `False` | 接进 `FastAPI(debug=…)` |
 | `host` | str | `127.0.0.1` | 监听地址 |

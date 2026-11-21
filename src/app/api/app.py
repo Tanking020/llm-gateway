@@ -135,7 +135,7 @@ _DOCS_ENABLED = settings.app_env == "dev"
 # app 就是 uvicorn 要托管的那个对象
 # 命令行里写 app.api.app:app 的读法：包 app -> 子包 api -> 模块 app -> 里面的变量 app
 app = FastAPI(
-    title="llm-app-engineering",
+    title="LLM Gateway",
     description="LLM 应用后端（学习项目，阶段 1）",
     version="0.1.0",
     # 只有开发才开：debug=True 时异常处理器被绕过，traceback 直接进响应体
