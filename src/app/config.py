@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # 【注意】：它【不是】请求总时长 —— 上游每 0.9s 滴一帧就能无限期挂着（实测见 #55）
     request_timeout: float = 30.0
 
+    # 建立连接（DNS + TCP + TLS）的超时时间（秒）
+    # 【注意】：必须与 request_timeout 分开 —— 单一值会让「对端连不上」和「模型正在生成」
+    #   等一样久（30s 才报错 vs 3s 就报错），排障时看不出是哪一类（#18）
+    llm_connect_timeout: float = Field(default=3.0, gt=0.0, le=60.0)
+
     # 单次上游调用的【总时长】预算（秒）：从开始消费到结束，超过就掐断
     # 【注意】：这是「慢速滴答」的唯一防线（request_timeout 管不到总时长）
     # 数值依据：max_tokens_ceiling=4096，慢模型约 30 tok/s → 上限 ≈ 137s，留余量取 120s；
@@ -149,6 +154,7 @@ def startup_config_summary(config: Settings) -> dict[str, object]:
         "upstream_queue_timeout": config.upstream_queue_timeout,
         "max_tokens_ceiling": config.max_tokens_ceiling,
         "request_timeout": config.request_timeout,
+        "llm_connect_timeout": config.llm_connect_timeout,
         "upstream_total_timeout": config.upstream_total_timeout,
         "graceful_shutdown_timeout": config.graceful_shutdown_timeout,
         "rate_limit_per_minute": config.rate_limit_per_minute,

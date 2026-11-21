@@ -346,3 +346,19 @@ def test_complete_is_cut_by_total_timeout(monkeypatch: pytest.MonkeyPatch) -> No
         return exc_info.value
 
     assert asyncio.run(scenario()).code == "UPSTREAM_TIMEOUT"
+
+
+def test_client_factory_splits_connect_timeout_and_omits_empty_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归 #18：建连超时单独收紧；没有 key 时不能拼出 `Bearer None`
+
+    【注意】：直接调工厂 —— 「拼头」发生在工厂里，而测试哨兵只替换了 `app.api.app` 里那一份引用
+    """
+    monkeypatch.setattr(llm_client, "settings", Settings(llm_api_key=None))
+
+    http = llm_client.create_llm_client()._http
+
+    assert "authorization" not in http.headers
+    assert http.timeout.connect == pytest.approx(3.0)
+    assert http.timeout.read == pytest.approx(30.0)

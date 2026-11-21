@@ -328,7 +328,12 @@ def create_llm_client() -> LlmClient:
     return LlmClient(
         httpx.AsyncClient(
             base_url=settings.llm_base_url,
-            timeout=settings.request_timeout,
-            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            # 【注意】：read/write/pool 用 request_timeout，只有建连单独收紧（#18）
+            timeout=httpx.Timeout(settings.request_timeout, connect=settings.llm_connect_timeout),
+            # 【注意】：key 为空时不要拼出 "Bearer None" —— 上游回 401 会被误读成「密钥错」（#18）
+            #   正常路径上 pre-flight 已经拦住了，这里是第二道
+            headers=(
+                {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}
+            ),
         )
     )

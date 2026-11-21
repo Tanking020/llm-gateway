@@ -41,7 +41,8 @@ class AppError(Exception):
         self.headers = headers or {}
 
 
-# 错误码 -> HTTP 状态码。没登记的码默认 400（"你的请求有问题"这一类）
+# 错误码 -> HTTP 状态码。
+# 【注意】：没登记的码按 500 处理（见 _app_error_handler）—— 不是 400，见 #21
 _STATUS_BY_CODE: dict[str, int] = {
     "LAST_MESSAGE_NOT_USER": status.HTTP_400_BAD_REQUEST,
     # 以下三个都属于【上游的错】，必须与 500（我方的错）区分开
@@ -64,6 +65,8 @@ _STATUS_BY_CODE: dict[str, int] = {
     "UPSTREAM_MALFORMED": status.HTTP_502_BAD_GATEWAY,
     # 503 = 我暂时不能服务（不是我的错误，依赖挂了）—— 负载均衡看到它会摘掉本实例
     "DB_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+    # 我方漏配了上游凭据（部署事故）：同样 503 —— 实例配置修好前服务不了任何请求（#18）
+    "LLM_NOT_CONFIGURED": status.HTTP_503_SERVICE_UNAVAILABLE,
     # 我方容量：并发闸门顶穿 —— 既不是上游的错，也不是客户端的错
     # 【注意】：必须 503，不能 429 —— 429 的意思是"你请求太多了"，现在是"我们暂时满了"
     "SERVER_BUSY": status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -126,10 +129,10 @@ def _error_response(
     }
     if details is not None:
         error["details"] = details
-    # 【注意】：合并而不是覆盖 —— X-Request-ID 那一份任何错误响应都必须有
-    merged = {HEADER_REQUEST_ID: str(error["request_id"])}
-    if headers:
-        merged.update(headers)
+    # X-Request-ID 必须是我们的—— 调用方（含 HTTPException 自带的头）只能补，不能改
+    # 【注意】：合并顺序反了的话，一条链路的追踪 id 会被上游随手改掉（#95 的遗留问题）
+    merged: dict[str, str] = dict(headers or {})
+    merged[HEADER_REQUEST_ID] = str(error["request_id"])
     return JSONResponse(
         status_code=http_status,
         content={"error": error},
@@ -164,8 +167,12 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         """把业务异常 AppError 翻译成统一形状的错误响应（HTTP 状态码由 _STATUS_BY_CODE 决定）"""
-        # 用业务码去查表；查不到就用默认 400 —— 兜底防的是"漏登记"，不是"猜对"
-        http_status = _STATUS_BY_CODE.get(exc.code, status.HTTP_400_BAD_REQUEST)
+        http_status = _STATUS_BY_CODE.get(exc.code)
+        if http_status is None:
+            # 【注意】：未登记是我们的 bug，不能当成「客户端的错」回 400 ——
+            #   回 500 让监控看见；test_every_app_error_code_is_registered 会先在 CI 里红（#21）
+            logger.error("未登记的业务码 %s，按 500 处理", exc.code)
+            http_status = status.HTTP_500_INTERNAL_SERVER_ERROR
         return _error_response(
             request, http_status, exc.code, exc.message, headers=exc.headers or None
         )
@@ -179,7 +186,15 @@ def register_exception_handlers(app: FastAPI) -> None:
         """框架自己抛的 HTTPException（路径不存在 / 405）：detail 当 message，状态码兜底出码"""
         detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
         code = _CODE_BY_STATUS.get(exc.status_code, f"HTTP_{exc.status_code}")
-        return _error_response(request, exc.status_code, code, detail)
+        # 【注意】：HTTPException 自带的 headers 必须透传 —— 401 的 WWW-Authenticate、
+        #   429 的 Retry-After 都在里面；吞掉它 = 错误契约缺一块（#95）
+        return _error_response(
+            request,
+            exc.status_code,
+            code,
+            detail,
+            headers=dict(exc.headers) if exc.headers else None,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(

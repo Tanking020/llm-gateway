@@ -127,14 +127,14 @@ curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
 `src/app/errors.py` 的 `_STATUS_BY_CODE`，所有错误响应经同一个出口 `_error_response()` 生成，
 `X-Request-ID` 响应头**恒等于** body 里的 `request_id`。
 
-**全部业务码（16 个，📎 从 `_STATUS_BY_CODE` 实读）** —— 「谁的责任」决定客户端该**等**、**改**还是**重试**：
+**全部业务码（17 个，📎 从 `_STATUS_BY_CODE` 实读）** —— 「谁的责任」决定客户端该**等**、**改**还是**重试**：
 
 | 状态码 | `code` | 什么时候出现 | 客户端该做什么 |
 |---|---|---|---|
 | 400 | `LAST_MESSAGE_NOT_USER` | 最后一条消息不是 `user` | 改请求 |
 | 400 | `INVALID_MAX_TOKENS` | `max_tokens` 非正 / 超上限 | 改小 |
 | 401 | `UNAUTHORIZED` | 没带 / 无效 / 已撤销的 `X-API-Key`（响应带 `WWW-Authenticate`） | 换 key |
-| 404 | `MODEL_NOT_FOUND` | `/v1/models/{name}` 的名字不在清单里 | 改名字 |
+| 404 | `MODEL_NOT_FOUND` | `model` 不在 `/v1/models` 清单里（`/v1/chat`、`/v1/chat/stream`、`/v1/models/{name}` 共用同一份白名单） | 改名字 |
 | 404 | `CONVERSATION_NOT_FOUND` | 对话不存在**或不属于本人**（同形，不确认存在性） | 别重试 |
 | 413 | `UPSTREAM_PAYLOAD_TOO_LARGE` | **上游**说请求体太大 | 缩短内容 |
 | 429 | `RATE_LIMITED` | **我们**限这个客户端（按 `user.id`） | 等 `Retry-After` |
@@ -145,6 +145,7 @@ curl.exe -s http://127.0.0.1:8000/v1/conversations -H "X-API-Key: sk_xxx"
 | 502 | `UPSTREAM_BAD_STATUS` | 上游回了意料外的 3xx / 5xx（兜底） | 5xx 可重试 |
 | 502 | `UPSTREAM_MALFORMED` | 上游 200 但 body 不是约定结构（HTML / 空 / 字段改名） | 重试无用，报障 |
 | 503 | `DB_UNAVAILABLE` | 数据库连不上（**不是** `no such table`，那是我们的 bug） | 等 |
+| 503 | `LLM_NOT_CONFIGURED` | **我方**没配上游 API key（部署事故，不是客户端的错） | 报障，等修复 |
 | 503 | `SERVER_BUSY` | 我方并发闸门顶穿（不是「你请求太多」—— 那是 429） | 等 `Retry-After` |
 | 504 | `UPSTREAM_TIMEOUT` | 超出 `upstream_total_timeout` 的总时长预算 | 缩短问题后重试 |
 | 500 | `INTERNAL_ERROR` | **我们的** bug（没有对应业务码时兜底） | 报障，附 `request_id` |
@@ -267,6 +268,10 @@ Remove-Item "$env:TEMP\chat_stream.json"
 | 上游报错时状态码改不了 | 客户端看到 `200` + 断连（头早已发出） | ✅ 已补（9b-4）：**pre-flight** 在开流前先探上游，L1/L2 → **502**；流内错误用 `error` 帧表达 |
 | 客户端断开未处理 | 用户走了仍在烧 token | ✅ 已补（9b-4）：📎 实测 `aclose()` 让上游 **4ms 内停止生成**（40 帧只发出 3 帧）；账单落 `aborted` |
 | 窗口外的在途流会被切断 | 发版时若 30s 内没跑完 | ✅ 已表达（13c-5，决策 39）：连接关闭、**无 `[DONE]`**，前端必须按「流断了」处理 |
+
+📌 **客户端断开后的账单边界**（#43）：那一刻上游还没回 usage，所以 `llm_calls` 落 `status=aborted`、
+`completion_tokens=0` —— **只记状态，不计用量**。统计口径据此写：`aborted` 不参与 token 汇总，
+但出现在调用次数里（否则「用户跑了多少次」会少算）。
 
 **请求追踪**（Step 7a 起）：每个响应都带 `X-Request-ID` 头。
 

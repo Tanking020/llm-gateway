@@ -1,16 +1,20 @@
 """错误响应契约测试：任何错误都必须是同一种形状"""
 
+import logging
 from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
 from conftest import AUTH_HEADERS
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.app import app
 from app.api.deps import get_settings
+from app.config import Settings
+from app.errors import AppError, register_exception_handlers
 
 
 def _assert_error_envelope(
@@ -195,3 +199,80 @@ def test_sql_level_failure_stays_500() -> None:
             response = raw.post("/v1/conversations", json={"title": "x"})
 
     _assert_error_envelope(response, 500, "INTERNAL_ERROR")
+
+
+# ============ 封板前修复（#95 / #21 / #48 / #18）============
+
+
+def _bare_app() -> FastAPI:
+    """只有异常处理器的空 app：测「处理器本身」时不该依赖真实路由"""
+    bare = FastAPI()
+    register_exception_handlers(bare)
+    return bare
+
+
+def test_http_exception_keeps_its_headers() -> None:
+    """回归 #95：HTTPException 自带的头必须活到响应里
+
+    📎 401 的 WWW-Authenticate、429 的 Retry-After 都在这里；吞掉它 = 契约缺一块
+    """
+    bare = _bare_app()
+
+    @bare.get("/boom")
+    async def boom() -> None:
+        raise HTTPException(status_code=401, detail="nope", headers={"WWW-Authenticate": "ApiKey"})
+
+    @bare.get("/hijack")
+    async def hijack() -> None:
+        raise HTTPException(status_code=400, detail="x", headers={"X-Request-ID": "evil"})
+
+    with TestClient(bare) as c:
+        response = c.get("/boom")
+        hijacked = c.get("/hijack")
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "ApiKey"
+    assert response.json()["error"]["code"] == "UNAUTHORIZED"
+    # 反面：别人的头可以补，但 X-Request-ID 必须还是我们的
+    assert hijacked.headers["x-request-id"] != "evil"
+
+
+def test_unregistered_error_code_becomes_a_500(caplog: pytest.LogCaptureFixture) -> None:
+    """回归 #21：未登记的业务码是【我们的 bug】→ 500 + error 日志，不能伪装成 400（客户端的错）"""
+    bare = _bare_app()
+
+    @bare.get("/boom")
+    async def boom() -> None:
+        raise AppError(code="NOT_REGISTERED_YET", message="x")
+
+    with caplog.at_level(logging.ERROR, logger="app.errors"):
+        with TestClient(bare) as c:
+            response = c.get("/boom")
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "NOT_REGISTERED_YET"
+    assert "NOT_REGISTERED_YET" in caplog.text, "未登记必须是【喊出来】的，不是静默降级"
+
+
+@pytest.mark.parametrize("path", ["/v1/chat", "/v1/chat/stream"])
+def test_unknown_model_returns_404(client: TestClient, path: str) -> None:
+    """回归 #48：model 必须在白名单内 —— 否则等于把上游 400 和「点单更贵的模型」漏给客户端"""
+    response = client.post(
+        path,
+        json={"messages": [{"role": "user", "content": "hi"}], "model": "gpt-4o"},
+    )
+
+    error = _assert_error_envelope(response, 404, "MODEL_NOT_FOUND")
+    assert "gpt-4o" in error["message"]
+
+
+@pytest.mark.parametrize("path", ["/v1/chat", "/v1/chat/stream"])
+def test_missing_upstream_key_returns_503(client: TestClient, path: str) -> None:
+    """回归 #18：没配 key 时不能发 `Bearer None`（上游只会回 401，被误读成「密钥错」）"""
+    app.dependency_overrides[get_settings] = lambda: Settings(llm_api_key=None)
+    try:
+        response = client.post(path, json={"messages": [{"role": "user", "content": "hi"}]})
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
+
+    _assert_error_envelope(response, 503, "LLM_NOT_CONFIGURED")
