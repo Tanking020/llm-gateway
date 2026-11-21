@@ -210,7 +210,7 @@ curl -s http://127.0.0.1:8000/v1/conversations?limit=20 \
 
 ## 关键设计决策
 
-每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，57 条 ADR）。以下是影响最大的几条：
+每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，60 条 ADR）。以下是影响最大的几条：
 
 | 决策 | 选择 | 为什么 | 代价 / 何时重审 |
 |---|---|---|---|
@@ -250,8 +250,8 @@ uv run pytest -q        # 225 个用例，约 15 s
 
 | | 结果 |
 |---|---|
-| `ruff check` / `format --check` | 全绿（51 files） |
-| `mypy --strict` | 全绿（54 source files，含 `tests/`、`scripts/` 与 `playground/`） |
+| `ruff check` / `format --check` | 全绿（45 files） |
+| `mypy --strict` | 全绿（48 source files，含 `tests/` 与 `scripts/`） |
 | `pyright`（`pyrightconfig.json`） | 0 errors（与编辑器同一套判断；📎 变异「改回 `getattr` 写法」→ mypy 仍绿而 pyright **红**） |
 | `pytest -q` | **225 passed** |
 | 分支覆盖 | **94%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
@@ -312,12 +312,12 @@ uv run pytest -q        # 225 个用例，约 15 s
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
 ├── tests/                  # 225 个用例，按「测哪一层」分为 21 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
-├── notes/                  # 机制与实测的深度笔记
+
 ├── Dockerfile              # 多阶段构建 + 非 root + exec 形式 CMD（13a-1）
 ├── .dockerignore           # 构建上下文只有 26 个文件 / 471 KB（排掉 .venv 113 MB、.env）
 ├── docker-compose.yml      # 单机栈：migrate（一次性）→ app（不发布端口）→ proxy（nginx 独占 80）
 ├── deploy/nginx.conf       # 反代：关缓冲（SSE）、上游重解析、body 上限、健康端点、**反代层 413/502/504 回 JSON 信封**（决策 52）、`/metrics` 404 硬阻断
-├── playground/             # 一次性实验脚本（不参与交付）
+
 ├── scripts/                # 验收探针（手工跑、不进 CI）：probe_graceful_shutdown.py（决策 39）、fake_upstream.py + loadtest_chat_stream.py（决策 51）
 ├── pyproject.toml          # 依赖、工具配置、lint 边界的唯一来源
 └── .github/workflows/ci.yml
@@ -332,7 +332,7 @@ uv run pytest -q        # 225 个用例，约 15 s
 | 🧾 **Step 13 收口报告** | [docs/step13-closeout.md](docs/step13-closeout.md)：交付清单 / 七道门 / 数字总表 / **未做清单** / 三处关键取舍（2026-11-21 快照，定级 **L3**） |
 | 📋 **规划中** | 消息持久化（`messages` 表）· 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
-完整的 95 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
+完整的 101 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 文档
 
@@ -344,7 +344,6 @@ uv run pytest -q        # 225 个用例，约 15 s
 | 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |
 | 离「敢上线」还差什么 | [docs/production-readiness.md](docs/production-readiness.md) |
 | 测试怎么跑、两个连接池谁占谁 | [tests/README.md](tests/README.md) |
-| 机制、协议与实测的深度笔记 | [notes/](notes/) |
 | 改代码必须满足什么 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ## Contributing

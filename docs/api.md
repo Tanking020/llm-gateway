@@ -228,7 +228,7 @@ data: [DONE]
 | —（我方自造） | — | 在请求上游之前发出 | `THINKING` |
 
 > ⭐ 算一遍：64 − 57（丢弃 ROLE + 思维链）+ 1（THINKING）+ 1（FINISH 拆成 2 帧）= **9** ✅
-> 帧的分类与顺序详见[阶段1 笔记](../notes/stage1-fastapi.md) §9.8d。
+> 帧的分类与顺序见下文「五类帧的分工」表（本文就是契约的唯一来源）。
 
 ```powershell
 # 请求体写进临时文件（含中文，避免 PowerShell 转义把 JSON 弄坏）
@@ -249,7 +249,7 @@ Remove-Item "$env:TEMP\chat_stream.json"
 
 > 🔴 **时序不能用 `curl -w` 的 `ttfb/total` 判**：`time_starttransfer` 量的是**响应头到达**，
 > 而流式接口的头是路由立刻发出的（实测 8.9ms）。要证明"内容在流"，必须用**带时间戳的客户端**
-> （httpx `iter_text()` + `perf_counter`）量首个数据帧时刻。详见[阶段1 笔记](../notes/stage1-fastapi.md) §9.3b ③。
+> （httpx `iter_text()` + `perf_counter`）量首个数据帧时刻。⭐ 判据：`curl -w` 的 `ttfb` 量的是**响应头**，不是首帧。
 >
 > ⚠️ `TestClient` 里的 `transfer-encoding` 是 `None` —— 它能验证**帧格式**，证明不了"分批发送"。
 > 时序必须用真 uvicorn + 真 HTTP 客户端。

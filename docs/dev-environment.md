@@ -1,7 +1,7 @@
 # 本机环境与操作纪律（Dev Environment）
 
 > 这个文件回答：**在这台机器上干活，有哪些「不做就会出错」的具体操作。**
-> 每条都来自真实事故；来龙去脉在 [ai-collaboration.md](ai-collaboration.md) §10（保留现场）。
+> 每条都来自真实事故；来龙去脉见 [DEVLOG.md](DEVLOG.md) 的坑表（§三 `K<n>`）。
 > 这里只留**可执行的纪律**。
 >
 > 环境换了（macOS / Linux / PowerShell 7）请回来改这张表，别默认老经验成立。
@@ -260,9 +260,5 @@ Step 13 的执行顺序因此调整为 **13b → 13c → 13d → 13a → 13e →
 
 ## 7. 相关
 
-| 想深入 | 去 |
-|---|---|
-| 这些纪律背后的 5 起事故 | [ai-collaboration.md](ai-collaboration.md) §10.1 ~ §10.8 |
-| 工具开关（VS Code 工具数超限、审批流卡死） | [ai-collaboration.md](ai-collaboration.md) §10.6 ~ §10.6d |
-| 仓库改名 / 换目录的完整流程 | [ai-collaboration.md](ai-collaboration.md) §10.7 |
-| 跨项目也成立的 Windows 编码知识 | [../notes/stage0-engineering-basics.md](../notes/stage0-engineering-basics.md) 拓展 8 |
+本文件的纪律都来自这个仓库自己的事故记录（见 [DEVLOG.md](DEVLOG.md) §三 坑表）
+与 [decisions.md](decisions.md) 的架构决定；跨项目的方法论不在本仓库维护。

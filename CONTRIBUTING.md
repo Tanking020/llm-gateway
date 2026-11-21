@@ -2,10 +2,10 @@
 
 > 本文件是**改这个仓库必须满足的条件**。它由项目的工程规范提炼而来：
 > 只保留「不做会出问题」的硬约束，教学解释与事故复盘在
-> [docs/dev-environment.md](docs/dev-environment.md) 与 [notes/](notes/)。
+> [docs/dev-environment.md](docs/dev-environment.md)。
 >
-> AI 助手的协作方式（谁来写、怎么批改、讲解顺序）见
-> [docs/ai-collaboration.md](docs/ai-collaboration.md)。
+> 本仓库不含过程笔记（能力路线、自检题、机制长文）—— 它们与具体项目解耦，
+> 不参与这个仓库的交付，也不列入「改了什么要更新什么」的清单。
 
 ---
 
@@ -44,7 +44,7 @@ uv run pytest -q          # 5. 回归测试（不碰真上游、不碰开发库�
 
 **三条容易踩的规则**：
 
-1. **范围一律用 `.`**，不要缩成 `src/` —— 否则 `playground/` 与 `tests/` 成了质量盲区。
+1. **范围一律用 `.`**，不要缩成 `src/` —— 否则 `scripts/` 与 `tests/` 成了质量盲区。
 2. **`.md` 必须排除在 ruff 之外**（`pyproject.toml` 的 `extend-exclude = ["*.md"]`）。
    否则 `ruff format .` 会改写文档里的 Python 示例：刻意对齐的注释被压掉、故意报错的例子被"修好"。
 3. **报「全绿」之前先确认命令范围**。带路径的 `mypy src` 与不带参数的结果可能不同。
@@ -89,7 +89,7 @@ config.py   ←任何层可读（只读，不写状态）
 | 测试文件 / 函数 | `test_<模块>.py` / `test_<行为>_<条件>_<预期>` | `test_stream_chat_when_client_disconnects_stops_generation` |
 | 路由路径 | 名词复数 + 版本前缀 | `/v1/conversations` |
 
-**标识符必须英文**（`src/` / `tests/` / `playground/` 一律）—— 中文只出现在**注释、docstring、字符串字面量**里。
+**标识符必须英文**（`src/` / `tests/` / `scripts/` 一律）—— 中文只出现在**注释、docstring、字符串字面量**里。
 理由：生态惯例、简历仓库的可读性，以及**中文标识符在编码被破坏时会直接语法错**（注释坏了还能跑）。
 
 ### 4.3 注释
@@ -148,7 +148,7 @@ uv run alembic downgrade base && uv run alembic upgrade head
 
 ## 6. 文档约定：改了什么，就要更新什么
 
-> 判据：**换个项目，这条还对吗？** 对 → `notes/`；不对 → `docs/`。
+> 判据：**换个项目，这条还对吗？** 对 → 不写进本仓库（属跨项目笔记）；不对 → `docs/`。
 
 | 你做了 | 必须更新 |
 |---|---|
@@ -159,10 +159,10 @@ uv run alembic downgrade base && uv run alembic upgrade head
 | 改了接口形状 / 中间件 / 状态机 | [docs/architecture.md](docs/architecture.md) + [docs/api.md](docs/api.md) |
 | ↳ 其中**「接口形状」包括**：端点增删、**新增必填请求头 / 请求体字段**、**新增错误码或状态码**、响应字段增删 | 同上（📎 2026-11-17 教训：13d-2 加了 `X-API-Key` + 401，`architecture.md` 改了，`api.md` 漏了 → 文档里的 curl 示例全部会 401） |
 | 改了**部署形态**（compose / nginx / 端口 / 网络 / 卷） | [docs/architecture.md](docs/architecture.md) §13.5 时序图 + `docker-compose.yml` 里的 `【注意】` + [docs/dev-environment.md](docs/dev-environment.md) §8.0d + `tests/test_docker_assets.py` 的守卫 |
-| 改了**日志字段或格式** | [docs/architecture.md](docs/architecture.md) §10.3 字段表 + [notes/logging.md](notes/logging.md) + `tests/test_log_json.py`；⚠️ 别在 `api.md` 里抄一份字段清单（单一真相） |
+| 改了**日志字段或格式** | [docs/architecture.md](docs/architecture.md) §10.3 字段表 + `tests/test_log_json.py`；⚠️ 别在 `api.md` 里抄一份字段清单（单一真相） |
 | 改了**端点 / 错误码 / 加删测试** | `tests/test_docs_contract.py` 会**直接变红**点名哪一处没同步（决策 49）：`api.md` 的错误码表与端点表、`README` / `tests/README` / `production-readiness` 里的用例数。⚠️ 单独跑该文件时两条计数用例会 skip（子集运行），`-rs` 可看原因 |
 | 踩了一个可复现的坑 | [docs/DEVLOG.md](docs/DEVLOG.md) §三 加一行（`K<n>`），**写出复现方式** |
-| 学到一条跨项目结论或原理 | [notes/](notes/) 的对应文件（不要写进 `docs/`） |
+| 学到一条跨项目结论或原理 | **不属于本仓库** —— 写进跨项目笔记，不要写进 `docs/` |
 | 改了阶段进度 | [docs/roadmap.md](docs/roadmap.md) |
 
 **单一真相**：一条事实只在一个文件里展开，其它地方只引用编号（`#38` / `决策 28` / `坑 K7` / `1.138`）。

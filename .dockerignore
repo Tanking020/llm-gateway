@@ -29,10 +29,8 @@
 
 # ============ 不是运行时依赖（占体积 / 拖慢上下文传输）============
 docs/
-notes/
 tests/
 scripts/
-playground/
 deploy/
 .vscode/
 README.md
