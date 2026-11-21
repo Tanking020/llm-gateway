@@ -27,7 +27,7 @@
 
 | 图 | 回答的问题 |
 |---|---|
-| [1. 请求穿过的七层](#1-全景一次请求穿过的七层) | 这个请求经过了哪些中间件？异常在哪一层被接住？ |
+| [1. 请求穿过的七层](#1-全景一次请求穿过的七层) | 这个请求经过了哪些中间件？异常在哪一层被接住？**请求头分哪四类、两样「ID」怎么不混（§1.5）？** |
 | [2. 代码分层与依赖](#2-代码分层与模块依赖) | 改一个文件会影响谁？**一个请求按什么顺序拿到资源（§2.4）？`app.py` 里谁调谁（§2.5）？** |
 | [3. 启动与关闭](#3-启动与关闭lifespan-的两条通道) | 表什么时候建？client 什么时候造？ |
 | [4. 数据模型](#4-数据模型er--ddl) | 有几张表？外键怎么连？删对话账单会怎样？ |
@@ -126,6 +126,38 @@ raise RuntimeError      → 一路冒到 ① ServerErrorMiddleware → _unhandle
 |---|---|
 | 路由 / ⑤ 里的处理器（200 / 400 / 404 / 422 / 502） | ✅ 有（经过 ④） |
 | ① ServerErrorMiddleware（**500**） | 🔴 **没有** —— 见待办 #57 |
+
+### 1.5 请求头全景：四类 + 两类「ID」（谁写、谁能伪造）
+
+> ⭐ **判据：能撤销、存库、伪造不了的才是凭据；只能对日志、谁都能编的是追踪号。**
+> 两者都叫 "ID"，但 `X-API-Key` 回答「**你是谁**」，`X-Request-ID` 回答「**这是哪一次请求**」。
+
+| 类 | 头 | 方向 | 谁写 | 客户端伪造会怎样 | 代码位置 |
+|---|---|---|---|---|---|
+| ① **凭据** | `X-API-Key` | 客户端 → 我们 | `python -m app.keys create`（明文只出现一次） | 查不到 sha256 → **401** | `deps.require_user` / `auth.find_user_by_key` |
+| ② **追踪** | `X-Request-ID` | 客户端 ↹ 我们 | 客户端可选；nginx `$rid`（[决策 57](decisions.md)）；应用兜底 12 位 hex | 只影响日志串联，**不影响鉴权** | `constants.HEADER_REQUEST_ID` / 中间件 / `nginx.conf` 的 `map` |
+| ③ **代理链路** | `X-Real-IP`、`X-Forwarded-For`、`X-Forwarded-Proto` | nginx → 应用 | **只有 nginx** | 被 uvicorn 丢弃（只信 `FORWARDED_ALLOW_IPS`，[决策 47](decisions.md)） | `nginx.conf` / `docker-compose.yml` |
+| ④ **上游与协议** | `Authorization: Bearer <LLM_API_KEY>`、`Content-Type`、`Origin` | 应用 → DeepSeek；客户端 → 我们 | 应用自己拼 / 客户端 | `Authorization` 进来**根本不被读取**（我们只认 `X-API-Key`） | `llm_client.py` / `constants.ALLOWED_ORIGINS` |
+
+**一次请求里它们各自出现在哪**（📎 与 §1 的七层、§10 的日志字段一一对应）：
+
+```text
+客户端 ──X-API-Key + (可选)X-Request-ID──▶ nginx ──+X-Real-IP / X-Forwarded-For / X-Forwarded-Proto
+                                              │      +X-Request-ID: $rid        ← 边界定稿（决策 57）
+                                              ▼
+                                             app ──Authorization: Bearer <LLM_API_KEY>──▶ DeepSeek
+                                              │
+客户端 ◀── X-Request-ID（同值回显）/ WWW-Authenticate（仅 401）/ Retry-After（429·503）/ ACAO（CORS）
+```
+
+⚠️ **回程三样头各有唯一来源，别混**：
+- `WWW-Authenticate: ApiKey` —— 只在 **401**，由 `deps._unauthorized()` 给（RFC 9110 §15.5.2）
+- `Retry-After` —— 只在 **429 / 503**，由 `AppError(headers=...)` 给
+- `X-Request-ID` —— **每个响应都有**（含 nginx 自己产生的 413/502/504），且响应头 / nginx `rid=` / 应用日志 `request_id` 三处同值
+
+⚠️ **两个反直觉点**：
+1. **`Authorization` 不是我们的鉴权头**。有人写 `Authorization: Bearer sk_...` 一样 401 —— 那个头只用于「我们 → 上游」那一段。
+2. **`X-Request-ID` 永远不能当凭据**。它是可猜、可伪造、不存库的；能靠它进来的系统等于没有鉴权。
 
 ---
 
@@ -1810,6 +1842,7 @@ nginx 错误在 app 日志里查不到，只能 `grep rid=<id>` 查 nginx 访问
 
 | 日期 | 变更 |
 |---|---|
+| 2026-11-21 | **新增 §1.5「请求头全景」**：四类头（凭据 `X-API-Key` / 追踪 `X-Request-ID` / 代理链路 `X-Real-IP`·XFF·Proto / 上游与协议 `Authorization`·`Content-Type`·`Origin`）× 谁写 × 伪造后果 × 代码位置；标注两个反直觉点（`Authorization` 不是我们的鉴权头、`X-Request-ID` 永远不能当凭据）。配套 [决策 57](decisions.md)（ID 的单一真相在 nginx 边界）与 RUNBOOK §7/§11c |
 | 2026-11-04 | **专门做一次「关系图」盘点**（只补图，不动代码）。新增 §2.4 依赖注入解析图（📎 实测解析顺序 `settings → db`、流式的依赖收尾排在**整条流之后**）、§2.5 `app.py` 内部调用链 + 扇入表（改一个 helper 要回归几个端点）、§7.7 错误码的**两个出口** + 每个码的产生点（`STREAM_*` 不在 `_STATUS_BY_CODE` 里）、§9.5 配置项 → 读取点、§13 运行形态（单进程 / 17·13 条路由 / 15 条 DB 连接 / 100 条上游连接 / `busy_timeout` 5s）、§14 决策 ↔ 代码 ↔ 测试对账表（空着的那几格 = 改坏没人红）。⚠️ 同时订正三处过期事实：§11 的用例数（24 → 指向 tests/README，不再抄）、§12.1 的 `flush`（已改 `commit`）、索引里「账单三态」（是四态） |
 | 2026-11-03 | **新增 §8.6「完整时序」**：三条生命线 × 十二个时刻的时序图 + 每个时刻出错会怎样（15 行矩阵）+ 账单状态机（时刻编号对应）+ 出口 × 状态全矩阵 + 三个「问题叠加」组合。⭐ 核心：**⑤（响应头发出）是「还能改状态码」与「只能往流里塞错误」的分界线**；⭐⭐ 另一个核心：**`recorded` 是锁存器** —— 一旦拿到 usage，状态就定格 `completed`，后面发生什么都改不了。📎 断开那一行按实测订正（读到 0 / 1 / 3 段就退出，三种都落 `aborted`） |
 | 2026-11-02 | 建立。13 节：七层栈 / 模块依赖 / lifespan / ER+DDL / 端点总表 / 成功形状 / 错误形状 / SSE 帧 / 配置 / 日志 / 测试 / 状态机 / 速查 |

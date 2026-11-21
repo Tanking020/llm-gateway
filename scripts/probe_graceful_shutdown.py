@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -90,10 +91,19 @@ def tail(path: Path, lines: int = 15) -> str:
 
 def drive(port: int, grace: int, hold: float) -> int:
     """父进程角色：建库 → 起子进程 → 开流 → 中途投信号 → 收尸 → 判定"""
+    workdir = Path(tempfile.mkdtemp(prefix="probe_graceful_"))
+    # 【注意】：每次跑都会留下一个约 60 KB 的临时库 + 子进程日志；不清会一直堆在 %TEMP%（#99）
+    try:
+        return _drive(workdir, port, grace, hold)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _drive(workdir: Path, port: int, grace: int, hold: float) -> int:
+    """真正的流程 —— 拆出来只为让外面那个 finally 覆盖到所有 return 路径"""
     import httpx
 
     base = f"http://127.0.0.1:{port}"
-    workdir = Path(tempfile.mkdtemp(prefix="probe_graceful_"))
     env = dict(os.environ)
     env.update(
         {
