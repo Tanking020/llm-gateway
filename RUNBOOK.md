@@ -38,7 +38,7 @@
 成功标志：`可用模型 N 个：...`。
 
 ⚠️ `ping` 不带密钥只会打印「未配置 LLM_API_KEY」并以 **1** 退出 —— 故意的（避免拿 `Bearer None` 去请求，报成误导性的 401）。
-⚠️ 这几个旋钮 **`.env.example` 里没有**，需要时自己加一行：`UPSTREAM_TOTAL_TIMEOUT` / `GRACEFUL_SHUTDOWN_TIMEOUT` / `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_BURST`。
+✅ **17 个旋钮全部在 `.env.example` 里有注释**（默认值 + 取值范围 + 反向约束）。`.env` 里只留你真正要改的那几行即可，其余删掉也照样生效。
 
 ---
 
