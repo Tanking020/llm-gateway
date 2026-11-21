@@ -11,7 +11,7 @@
 > | 为什么选了现在这个做法 | [decisions.md](decisions.md) |
 >
 > **档期语义**：`P0` = 阻断正确性或成本，现在就做｜`P1` = 对外上线前必须做｜`P2` = 有真实用户前做｜`P3` = 记录在案、不修。
-> **最后更新**：2026-11-21 · 共 94 条（关闭状态逐行标注）
+> **最后更新**：2026-11-21 · 共 95 条（关闭状态逐行标注）
 
 ---
 
@@ -133,6 +133,7 @@
 | 92 | ~~🟠 **应用下线时用户要等 **60 秒** 才拿到错误** —— `proxy_connect_timeout` 用的是 nginx 默认 60s，而容器停掉后 TCP SYN 被**丢弃**而不是被拒绝~~ | 📎 实测（2026-11-20，#89 验收时）：`docker compose stop app` 后请求 `/v1/models` → **504**，nginx 日志 `upstream timed out (110: Operation timed out) while connecting to upstream ... rt=60.060`。对照结论：**进程崩溃 / 端口没在听 ≈ 立刻 502；容器或实例下线 ≈ 等 60s 后 504** | ✅ **已解决（2026-11-20）**：`location /` 里显式 `proxy_connect_timeout 3s;`，守卫 `test_nginx_connect_timeout_is_short`（缺 / 过长 / 不小于读超时都红）。📎 **实测 `rt=60.060 → 3.010`**，且返回 504 JSON 信封 + `X-Request-ID`（决策 52）；📎 变异「删掉该行」「改成 60s」全红 |
 | 93 | 🟡 **「ADR 条数 / 待办条数 / 文件数」这类计数在文档里是第二处真相，但没有守卫** —— 📎 2026-11-21 体检实测：README 写「48 条 ADR」实际 **54**、写「89 条待办」实际 **92**、`ruff` 写「46 files」实际 **51**、`mypy` 写「49 source files」实际 **54**；`notes/stage1-fastapi.md` 的进度表还停在「10 数据库 ⬜ 未开始」。**只有「用例数」有守卫**（[决策 49](decisions.md)），所以只有它一直是对的 | 决策 49 已经定过判据（**重复事实用测试钉住**），但当时只覆盖了用例数。档期 `P3`（不改行为，只防文档腐烂）；触发条件：下次再发现一处计数漂移就动手 | ⬜ **未做**：可把 `tests/test_docs_contract.py` 的 `_COUNT_CLAIMS` 扩成「正则 + 期望值来自权威文件」（ADR 条数 ← `decisions.md` 数 `^## \d+\.`、待办条数 ← `todos.md` 数 `^\| \d+ \|`） |
 | 94 | ~~🟡 **`/docs` 里没法填 `X-API-Key` —— 所有需鉴权的端点点 "Try it out" 一律 401**~~（2026-11-21 学习者执行 RUNBOOK §3 时问「curl 和 /docs 里用是不是一样的」时定位） | 📎 实测 OpenAPI：`require_user` 用 `request.headers.get(HEADER_API_KEY)` 读头，**不是** `Header(...)` 参数 → FastAPI 看不到它 → 每条路由的 `parameters` 里**没有任何 header**，`components.securitySchemes` 也是 `{}`（所以连 `Authorize` 按钮都没有）。⚠️ 这是**对外契约的易用性缺口**：对接方拿到 `/docs` 的第一反应就是点 Try it out，然后撞 401、以为服务坏了 | `P2`（不影响功能，影响对接方第一次体验） | ✅ **已解决（2026-11-21，选 B 方案 / 决策 56）**：`deps.py` 加 `api_key_header = APIKeyHeader(name=HEADER_API_KEY, auto_error=False)`，`require_user` 收 `api_key: Annotated[str \| None, Security(api_key_header)] = None` 并改用它。📎 **真机冒烟**：`/openapi.json` 里 `securitySchemes` = `{"APIKeyHeader": {"type":"apiKey","in":"header","name":"X-API-Key"}}`、**8 个受保护操作**都有 `security`、5 个公开路由都没有；`/docs` **200**。📎 **两个变异方向都对**：① 把整个 `require_user` 退回修复前（**行为完全不变**）→ 只有新守卫 `test_openapi_declares_api_key_security` 红，**15 条行为用例全绿**（证明行为断言抓不到这类契约）；② `auto_error=False → True` → `WWW-Authenticate` 头消失，RFC 9110 断言红（证明那个参数不是随手写的）。⚠️ 6 条业务路由**一行未改**（`Security` 声明在子依赖里，FastAPI 会摊平依赖链收集） |
+| 95 | 🟡 **`_http_exception_handler` 会丢掉 `HTTPException` 自带的 headers**（2026-11-21 读 FastAPI 源码解释 #94 时发现） | 📎 实测：`errors.py` 的 `_http_exception_handler` 调 `_error_response(request, exc.status_code, code, detail)` 时**没有传 `headers=exc.headers`** → 上游塞进 `HTTPException.headers` 的任何头都会消失。📎 现场证据：把 `APIKeyHeader.auto_error` 翻成 `True`（FastAPI 自己抛 `HTTPException(401, headers={"WWW-Authenticate": "APIKey"})`）→ 响应里 **`WWW-Authenticate` 不见了**，RFC 9110 那条断言红 | `P2`（今天是 `auto_error=False` 挡住了它，所以**还没实际发作**；但任何将来用 `HTTPException(headers=...)` 的地方都会中） | ⬜ **未做**：`_error_response(..., headers=exc.headers or None)` 一行 + 1 条用例（构造一个带自定义头的 `HTTPException`，断言头出现在响应里）。⚠️ 要顺带想清楚：`exc.headers` 里若有 `X-Request-ID` 要不要允许覆盖我们的 |
 > - ✅ **已解决**：`basicConfig` 的静默失效 + 两套格式并存 + 每请求两行 → `dictConfig(force=True)` 落地，三条启动路径同一格式。
 > - ⬜ **仍未做**：**JSON 结构化**与**按天轮转** —— 它们只在「有日志平台 / 多机」时才有意义，随部署阶段一起做（另见待办 #55 的"无总时长上限"对日志量的影响）。
 >
