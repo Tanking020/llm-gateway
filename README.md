@@ -322,6 +322,7 @@ uv run pytest -q        # 206 个用例，约 15 s
 |---|---|
 | ✅ **已完成** | HTTP/ASGI 地基 → 参数与契约 → 依赖注入 → 错误处理与 `lifespan` → 中间件与 CORS → 异步正确姿势 → SSE 流式 → 上游适配器封层 → 持久化与账单 → 配置 / 日志 / 安全 → 回归测试 → CI → **容器化（镜像 + 一次性迁移 + nginx 入口）** → **访问日志带客户端 IP** → **日志 JSON 化 + 轮转** → **多租户鉴权** → **指标与告警**（[#66](docs/todos.md)）→ **压测定容量**（[#76](docs/todos.md)，[决策 51](docs/decisions.md)）→ **非流式接真上游**（[决策 53](docs/decisions.md)） |
 | 🔜 **上线前剩余（P1 / P2）** | 连接池参数按 13f 数字显式设定（[#59](docs/todos.md)）· 日配额与预算告警（门 4）· 告警接收端 Prometheus / Alertmanager（门 5）· 灰度与回滚预案（门 6，`P2`）· 数据治理：备份演练 / 保留策略 / PII（门 7）|
+| 🧾 **Step 13 收口报告** | [docs/step13-closeout.md](docs/step13-closeout.md)：交付清单 / 七道门 / 数字总表 / **未做清单** / 可讲给面试官的三件事（2026-11-21 快照，定级 **L3**） |
 | 📋 **规划中** | 消息持久化（`messages` 表）· 检索增强（混合检索 + 重排 + 量化评估）· 工具调用与多步规划 |
 
 完整的 93 条待办（含现状证据与档期）见 [docs/todos.md](docs/todos.md)；阶段状态见 [docs/roadmap.md](docs/roadmap.md)。
