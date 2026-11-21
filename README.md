@@ -118,6 +118,8 @@ uv run python -m app           # 监听地址 / 端口 / reload 全部读 .env
 > 用 `uv run python -m app` 而不是 `uvicorn app.api.app:app --reload`：前者的 `HOST` / `PORT` /
 > `DEBUG` 来自配置；后者会**静默绕过**它们（`.env` 写 `PORT=9001` 也不会生效）。
 
+📋 **所有命令（本地跑 / curl 配方 / 质量门 / 迁移 / 容器 / 日志指标 / 压测 / 上线检查 / 演示动线 / 排错）→ [RUNBOOK.md](RUNBOOK.md)**
+
 ### 用容器起整套（生产形态）
 
 前置：Docker Desktop（Linux 容器）。
