@@ -1,6 +1,10 @@
 # RUNBOOK · 运行与展示速查
 
 > **按「我要做什么」查。** 每条命令都能直接抄。
+>
+> 📎 **2026-11-21 逐条实跑校验过一遍**（Windows PowerShell 5.1 / uv 0.12.23 / Python 3.12.15 /
+> Docker 29.9.3）。标 **📎** 的是这次实测的数字；标 **⛔** 的是**当前跑不通**的命令（附原因与替代）。
+> 唯一未通过项：**§10 优雅停机探针**（探针漏带 `X-API-Key`，见那节）。
 > **只有两平台不同时才分两列** —— 只有一列 = Windows / Linux 都能直接跑。
 > Windows 侧是 **PowerShell 5.1**（不支持 `&&`、`||`，用 `;` 串联）。
 > 原理与取舍不在这里 —— 见 [§14](#14-去哪儿看什么)。
@@ -39,6 +43,15 @@
 
 成功标志：`可用模型 N 个：...` + `sk_` 开头的明文（**只显示这一次**）。
 
+📎 **本次实测**：`uv sync` → `Resolved 54 / Checked 52`；`upgrade head` 对空库跑 **3 条**迁移，
+对最新库**什么都不做**（幂等）；`ping` → `可用模型 2 个：deepseek-flash, deepseek-v4-pro`；
+`keys create` 的明文恒为 **46** 字符（`sk_` + 43）；`alembic current` → `7c1f0a2d9b44 (head)`。
+
+⚠️ **`ping` 只验上游、不碰数据库**（`main.py` 不 import 数据库）—— 所以它成功**不代表**你的 key 能用于 HTTP 接口。
+⚠️ **「试没配密钥」不能靠 `$env:LLM_API_KEY=""`**：PS 5.1 里赋空串等于**删掉这个变量**（📎 `os.environ` 读到 `None`），
+`.env` 的密钥照旧生效。要验这条，得在**没有 `.env` 的目录**里跑
+（`Push-Location $env:TEMP; uv run --project <仓库> python -m app.main ping` → 打印「未配置 LLM_API_KEY」+ 退出码 **1**）。
+
 ### §1.1 三个库：它们在哪儿、什么时候用哪个 ⚠️
 
 **这是最容易撞 401 的地方** —— key 签在 A 库，服务连的是 B 库，就会「key 明明对却说无效」。
@@ -61,6 +74,10 @@ docker compose exec app python -m app.keys list
 
 ⚠️ `uv run python -m app.keys create` 和 `docker compose exec app python -m app.keys create` **是两个不同的库**，不要混。
 
+📎 三者实测：开发库 `./app.db` 有 `alembic_version=7c1f0a2d9b44`；测试库由 pytest 建在 `%TEMP%`；
+容器库在卷 `llm-app_app_data` 里（`docker compose up` 之后才有，`ls -ln /app/data` 看到属主是 **10001**）。
+容器库是**独立的一份**：宿主签的 key 在容器里查不到，反之亦然。
+
 ---
 
 ⚠️ `ping` 不带密钥只会打印「未配置 LLM_API_KEY」并以 **1** 退出 —— 故意的（避免拿 `Bearer None` 去请求，报成误导性的 401）。
@@ -74,7 +91,12 @@ docker compose exec app python -m app.keys list
 uv run python -m app                 # 监听地址/端口/reload 全部读 .env
 ```
 
-打开 <http://127.0.0.1:8000/docs>（仅 `APP_ENV=dev` 时开）。
+打开 <http://127.0.0.1:8000/docs>（仅 `APP_ENV=dev` 时开；📎 实测 200，`/openapi.json` 里
+`securitySchemes={"APIKeyHeader":…}`、**8 个受保护操作**都带 `security`）。
+
+📎 启动第一屏是**一行 JSON**：`生效配置：{...}`（白名单 + 脱敏），紧接着 `Uvicorn running on http://127.0.0.1:8000`。
+⚠️ 8000 被占时只报最后一行 `[Errno 10048] error while attempting to bind on address ('127.0.0.1', 8000)`
+（前面几行仍然是「startup complete」，别被误导）。
 
 | 想改什么 | 改 `.env` 哪个键 |
 |---|---|
@@ -85,7 +107,9 @@ uv run python -m app                 # 监听地址/端口/reload 全部读 .env
 | 上游地址（换假上游也用它） | `LLM_BASE_URL` |
 
 ⚠️ **不要用** `uvicorn app.api.app:app --reload` —— 它**静默绕过** `HOST` / `PORT` / `DEBUG`（`.env` 写 `PORT=9001` 也不会生效）。
+📎 实测（`$env:PORT="9001"; uv run uvicorn app.api.app:app`）：它仍然去绑 **8000**，报 `10048`，退出码 3。
 ⚠️ `APP_ENV=prod` 且 `DEBUG=true` 会**拒绝启动**（有意为之）。
+📎 实测：`ValidationError: APP_ENV=prod 时不允许 DEBUG=true：traceback 会返回给客户端`，退出码 **1**（连端口都没碰）。
 ⚠️ **怎么把它停干净**：前台跑就 `Ctrl+C`。若用 `Start-Process` / `uv run ... &` 放到后台，**`uv` 只是包装器**——
 杀掉它并不会杀掉真正在听端口的 python 进程。查真凶：`Get-NetTCPConnection -State Listen -LocalPort 8000 | Select-Object -ExpandProperty OwningProcess`，再 `Stop-Process -Id <那个 PID>`。
 
@@ -102,24 +126,54 @@ uv run python -m app                 # 监听地址/端口/reload 全部读 .env
 ⚠️ 但 `/docs` **看不到逐帧流式**（它等响应读完才显示），也不会经过 nginx（直连 8000）——
 反代层的 413/502/504 与 SSE 缓冲行为只能在 §6 的 80 端口上验。
 
-先设一个环境变量（§9 签出来的明文）：
+先设一个变量（§9 签出来的明文）：
 
 | PowerShell | bash |
 |---|---|
-| `$env:KEY = "sk_xxx"` | `export KEY=sk_xxx` |
+| `$KEY = "sk_xxx"` | `export KEY=sk_xxx` |
+
+⚠️ 上面是**普通变量 `$KEY`**，不是环境变量 `$env:KEY` —— 两者在 PowerShell 里不是同一个东西。
+下面所有命令统一用 `$KEY`；若你习惯 `$env:KEY`，那就把出现的每一处都改成 `$env:KEY`（混用 = 头里是空串 = 401）。
+
+### ⚠️ PowerShell 5.1：JSON body 一律走临时文件（📎 实测）
+
+| 写法 | 实际发出去的 body | 结果 |
+|---|---|---|
+| `-d '{"title":"x"}'` | `{title:x}`（双引号被剥） | **422** `{"loc":["body",1],"type":"json_invalid"}` |
+| `-d '{\"title\":\"x\"}'` | `{"title":"x"}` | 200/201 —— 但**值里含空格时又会坏**（`{"title":"runbook verify"}` 实测同样 422） |
+| 变量中转 `$b='{"title":"x"}'; -d $b` | `{title:x}`（同样被剥） | 422 |
+| **写文件 + `--data-binary "@文件"`** | 原样字节（UTF-8 无 BOM） | ✅ 唯一不会坏、还能带中文的写法 |
+
+固定三行（PowerShell）：
+
+```powershell
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+[IO.File]::WriteAllText("$env:TEMP\body.json", '{"title":"第一次对话"}', $utf8)
+curl.exe -s -X POST http://127.0.0.1:8000/v1/conversations -H "X-API-Key: $KEY" -H "Content-Type: application/json" --data-binary "@$env:TEMP\body.json"
+```
 
 | 要做的事 | 命令（PowerShell 抄这列；bash 把 `curl.exe` 换成 `curl`） |
 |---|---|
-| 活着 | `curl.exe -s http://127.0.0.1:8000/health` |
-| 就绪（DB 通不通） | `curl.exe -s http://127.0.0.1:8000/health/ready` |
-| **非流式**对话 | `curl.exe -s http://127.0.0.1:8000/v1/chat -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"你好"}]}'` |
-| **流式**（SSE） | `curl.exe -N -s http://127.0.0.1:8000/v1/chat/stream -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"列出三种排序算法"}]}'` |
-| 建会话 | `curl.exe -s -X POST http://127.0.0.1:8000/v1/conversations -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"title":"第一次对话"}'` |
-| 列表（含账单统计） | `curl.exe -s "http://127.0.0.1:8000/v1/conversations?limit=20" -H "X-API-Key: $KEY"` |
-| 删会话 | `curl.exe -s -X DELETE http://127.0.0.1:8000/v1/conversations/1 -H "X-API-Key: $KEY"` |
-| 看错误形状（故意 400） | `curl.exe -s -i http://127.0.0.1:8000/v1/chat -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"assistant","content":"x"}]}'` |
-| 只想要状态码 | `curl.exe -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/health`（PowerShell 用 `-o NUL`） |
-| 指定 `request_id` 追链路 | 任意请求加 `-H "X-Request-ID: abc123"`；响应头与 body 的 `request_id` 恒等于它 |
+| 活着 | `curl.exe -s http://127.0.0.1:8000/health` → 📎 `{"status":"ok"}` |
+| 就绪（DB 通不通） | `curl.exe -s http://127.0.0.1:8000/health/ready` → 📎 `{"status":"ready"}` |
+| **非流式**对话 | body `{"messages":[{"role":"user","content":"你好"}]}` 写文件 → `curl.exe -s -X POST http://127.0.0.1:8000/v1/chat -H "X-API-Key: $KEY" -H "Content-Type: application/json" --data-binary "@$env:TEMP\body.json"` → 📎 200 + `{"content","model","usage_tokens"}` |
+| **流式**（SSE） | 同上换 `/v1/chat/stream`，**加 `-N`**；想量首帧时间再加 `-w`（格式串里的换行在 PowerShell 里写「反引号 + n」）→ 📎 `ttfb=0.16s / total=0.66s`（首帧远早于总时长才算真流式） |
+| 建会话 | body `{"title":"第一次对话"}` → POST `/v1/conversations` → 📎 **201**，`id` 从 1 起，`created_at` 带 `Z` |
+| 列表（含账单统计） | `curl.exe -s "http://127.0.0.1:8000/v1/conversations?limit=20" -H "X-API-Key: $KEY"` → 📎 `{items,total,limit,next_cursor,has_more}` |
+| 删会话 | `curl.exe -s -i -X DELETE http://127.0.0.1:8000/v1/conversations/1 -H "X-API-Key: $KEY"` → 📎 **204**；再删一次 → **404** `CONVERSATION_NOT_FOUND` |
+| 看错误形状（故意 400） | body `{"messages":[{"role":"assistant","content":"x"}]}` → 📎 **400** `LAST_MESSAGE_NOT_USER` |
+| 只想要状态码 | `curl.exe -s -o NUL -w "%{http_code}\n" http://127.0.0.1:8000/health`（bash 用 `-o /dev/null`） |
+| 指定 `request_id` 追链路 | 任意请求加 `-H "X-Request-ID: abc123"`；📎 响应头与 body 的 `request_id` 恒等于它 |
+| 真调上游模型清单（**花钱**） | `curl.exe -s -i http://127.0.0.1:8000/v1/upstream/models -H "X-API-Key: $KEY"` → 📎 200 + 2 个模型 |
+
+**状态码怎么读**（📎 实测出来的顺序，别搞反）：
+
+1. **JSON 解码在鉴权之前** → 坏 body + **无 key** = **422**（不是 401）
+2. **schema 校验在鉴权之后** → 好 JSON + 类型错 / 超长 + 无 key = **401**
+3. 所以「没带 key 却拿到 422」= body 坏了，不是鉴权坏了；反过来 401 也可能是「body 没问题，只是没身份」
+
+⚠️ **尾斜杠会 307**：`DELETE /v1/conversations/`（id 为空）→ **307** 跳到 `/v1/conversations`；
+curl 默认不跟随，加 `-L` 才看到 **405**（📎 两者都实测过）。
 
 **读流式输出的顺序**：`{"status":"thinking"}` → 多个 `{"delta":"字"}` → `{"finish_reason":"stop"}` → `{"usage":{...}}` → **`[DONE]` 才是结束**（`finish_reason` 之后还可能有帧；`200` 不代表成功）。
 
@@ -148,28 +202,49 @@ uv run pytest -q              # 5 回归（不碰真上游、不碰开发库）
 ⚠️ 报「全绿」前**确认范围**：一律用 `.`，别缩成 `src/`（否则 `tests/`、`scripts/` 成盲区）。
 ⚠️ **`mypy` 绿 ≠ 编辑器绿** —— 那种情况跑 `uv run pyright`，见 [§13](#13-排查症状--先跑什么)。
 
+📎 **2026-11-21 实测（五道门全绿）**：
+
+```text
+ruff format --check  51 files already formatted          exit 0
+ruff check           All checks passed!                  exit 0
+mypy                 Success: no issues found in 54 source files
+pyright              0 errors, 0 warnings, 0 informations
+pytest -q            208 passed in 17.90s                exit 0
+```
+
+📎 子集命令实测：`tests/test_adapter_http.py` → **28 passed**；
+`-k "usage or plain_dict"` → **8 passed, 200 deselected**；`--cov` → **TOTAL 93%**；
+`coverage html` → `htmlcov\index.html`；`--collect-only -q` 末行 `208 tests collected`。
+
 ---
 
 ## §5 改数据库（迁移）
 
-```bash
-# 1 对着【空库】生成迁移（对着有数据的库跑会算出空差集，且不报错）
-```
+**顺序不能换：先让「一次性库」到 head，再 autogenerate。**
+📎 实测：对着一个**没跑过迁移的空库**直接 `revision --autogenerate` → `FAILED: Target database is not up to date.`（退出码非 0）；
+对着**已是最新**的库则得到一个空迁移（`upgrade()` 里是 `pass`）。
 
 | PowerShell | bash |
 |---|---|
 | `$env:DATABASE_URL = "sqlite+aiosqlite:///$env:TEMP\autogen.db"` | `export DATABASE_URL="sqlite+aiosqlite:///$TMPDIR/autogen.db"` |
 
 ```bash
+# 1 一次性库先到 head（这一步不能省）
+uv run alembic upgrade head
+
+# 2 算的是「模型 vs 当前 head 结构」的差异
 uv run alembic revision --autogenerate -m "add xxx to yyy"
 
-# 2 人工 review 生成的文件：列类型 / 外键 ondelete / 索引 / downgrade 顺序
+# 3 人工 review 生成的文件：列类型 / 外键 ondelete / 索引 / downgrade 顺序
+#    ⚠️ 若决定「删掉它」，别先 upgrade（否则库版本号会指向不存在的 revision，见下）
 
-# 3 验证四连
+# 4 验证四连
 uv run alembic upgrade head
 uv run alembic check                                  # 期望：No new upgrade operations detected
 uv run alembic downgrade base; uv run alembic upgrade head
 ```
+
+⚠️ **别把 `DATABASE_URL` 指向开发库**：`--autogenerate` 本身只读结构，但**第 4 步那四条会真的执行 DDL**。
 
 | 症状 / 目的 | 命令 |
 |---|---|
@@ -180,6 +255,16 @@ uv run alembic downgrade base; uv run alembic upgrade head
 
 ⚠️ 迁移文件**必须提交**。⚠️ 启动时**不建表**（DDL 归迁移独占，[决策 32](docs/decisions.md)）。
 ⚠️ `downgrade` 只能撤结构，**撤不回被删的数据**。
+
+📎 **2026-11-21 实测**（对着 `%TEMP%\autogen.db` 一次性库）：`upgrade head` 建 3 张表 →
+`check` 输出 `No new upgrade operations detected.` → `current` 输出 `7c1f0a2d9b44 (head)` →
+`revision --autogenerate` 生成一个**空迁移**（`upgrade` 里是 `pass`）→ `downgrade -1` / `downgrade base` / `upgrade head` 全部 exit 0。
+
+⛔ **顺序陷阱（实测踩到）**：自动生成的空迁移**先被 `upgrade head` 应用了，然后才删掉文件** →
+库里的版本号指向一个不存在的 revision，之后所有 alembic 命令都报
+`ERROR [alembic.util.messaging] Can't locate revision identified by 'b3842e928d9d'`。
+✅ 正确顺序：**先 review 文件 → 决定「留下提交」还是「删掉」→ 删掉的话别先 upgrade**；
+万一已经踩了，对着一次性库直接删库重建即可（别对着开发库踩这一下）。
 
 ---
 
@@ -212,6 +297,22 @@ curl.exe -s http://127.0.0.1/health # 入口是 nginx 的 80，不是 8000
 ⚠️ 数据在命名卷 `llm-app_app_data`（WSL 的 ext4），宿主资源管理器打不开。
 ⚠️ **不要** `docker compose config` 整份贴出来 —— 它会明文解析出 `LLM_API_KEY`。
 
+📎 **2026-11-21 实测**：镜像 **284 MB**（不是 283）；`up -d` 顺序 migrate `Exited (0)` → app `healthy` → proxy `healthy`；
+`whoami` → `app`；`/app/data` 里 `app.db` 属主 `10001 10001`；`nginx -t` → `syntax is ok / test is successful`；
+`compose stop` 后 `start` 回来数据还在（健康检查 200）；`down`（无 `-v`）**保留**卷 `llm-app_app_data`。
+
+⚠️ **`docker compose build` 不要接 PowerShell 管道**：📎 实测 `docker compose build … | Select-Object -Last 40`
+虽然镜像构建成功（末尾 `Image llm-app:dev Built`），`$LASTEXITCODE` 却是 **1**（buildkit 走 stderr，被 PS 当成错误）。
+要么不接管道，要么把输出重定向到文件再 `Get-Content -Tail` —— §11a 第 4 条判「exit 0」时才不会被坑。
+
+⚠️ **验「宿主 8000 不发布」前，先确认本机没有开发服务在跑**：📎 我第一次验时 8000 上跑着 §2 的开发服务，
+`curl 127.0.0.1:8000/health` 回了 200，差点误判「端口泄露」。判据以 `docker compose ps` 的 PORTS 列为准：
+app 那行是 **`8000/tcp`**（不是 `0.0.0.0:8000->8000`），proxy 是 `0.0.0.0:80->80/tcp`。
+
+⛔ **`-p probe` 隔离试跑必须先停主栈**：📎 实测主栈在跑时 `docker compose -p probe up -d` 直接失败 ——
+`invalid pool request: Pool overlaps with other one on this address space`（子网 `172.30.0.0/24` 与 80 端口都是写死的，
+换项目名不会换端口/子网）。
+
 ---
 
 ## §7 看日志与指标
@@ -241,6 +342,19 @@ curl.exe -s http://127.0.0.1/health # 入口是 nginx 的 80，不是 8000
 | `docker run --rm -v "${PWD}\deploy:/rules:ro" --entrypoint promtool prom/prometheus:v3.6.0 check rules /rules/alerts.yml` | `docker run --rm -v "$PWD/deploy:/rules:ro" --entrypoint promtool prom/prometheus:v3.6.0 check rules /rules/alerts.yml` |
 
 ⚠️ 轮转由 Docker 做（`10m × 3`，每服务最多 30 MB）；**不要**在 Python 里加文件 handler（[决策 48](docs/decisions.md)）。
+
+📎 **实测（2026-11-21）**：
+- 日志逐行 `ConvertFrom-Json` 全部成功；`Format-Table` 列太宽会被截断，想看清加 `| Out-String -Width 200`
+- `promtool check rules` → `SUCCESS: 3 rules found`
+- 容器网络内抓 `/metrics` → 200，含 `http_requests_total{method,path,status}` / `db_pool_checked_out` 等
+
+⛔ **两处「对不上号」，排查时别被骗**（都实测过）：
+1. **nginx 的 `rid=` 不是应用的 `request_id`**。我发请求时带了 `X-Request-ID: sse80-001`，
+   应用日志里是 `sse80-001`，但 nginx access log 记的是它自己生成的 `rid=2fae8d87a435…` ——
+   因为 `deploy/nginx.conf` 没有 `proxy_set_header X-Request-ID`。**所以拿 client 看到的 ID 只能搜 app 日志**
+   （见待办 #98）。
+2. **从宿主 curl 时，应用日志的 `client` 是 Docker 网桥地址**（📎 `172.30.0.128`），不是 `127.0.0.1`；
+   容器内 healthcheck 才是 `127.0.0.1`。只有**从另一台机器**访问，才能看到真实外部 IP。
 
 ---
 
@@ -282,6 +396,21 @@ uv run python scripts/loadtest_chat_stream.py --key sk_xxx --concurrency 1,4,8,1
 ⚠️ 探针只打 app **直连**端口（`/metrics` 在 nginx 那边是 404）。
 📋 结果填 [docs/loadtest-record.md](docs/loadtest-record.md)（前置条件 / 数据 / 判定 / 结论，四节缺一不可比）。
 
+📎 **2026-11-21 实测**（假上游 `FAKE_PORT=18099`、`--concurrency 1,4,8,16 --rounds 3 --gate 4`）：
+
+```text
+c=1   codes={'200': 3}                 ttfb p50= 25ms p95= 63ms total p95= 427ms pool_peak=1
+c=4   codes={'200': 12}                ttfb p50= 76ms p95= 98ms total p95= 427ms pool_peak=4
+c=8   codes={'200': 24}                ttfb p50=348ms p95=484ms total p95= 803ms pool_peak=4
+c=16  codes={'200': 36, '503': 12}     ttfb p50=463ms p95=868ms total p95=1247ms pool_peak=4
+PASS: 低并发全成功、高并发出现 503（闸门生效）   exit 0
+```
+
+⚠️ **两个坑（实测）**：
+1. 压测服务若改了 `PORT`，探针**必须加 `--base http://127.0.0.1:<port>`** —— 它默认打 8000，
+   而 8000 上很可能是你的**开发服务**（真上游、真花钱、限流也没放大）。
+2. 起压测服务前先确认 8000/你选的端口**没被占**，否则只会看到 `10048`，探针全线连不上。
+
 ---
 
 ## §9 API key 运维
@@ -298,16 +427,47 @@ uv run python -m app.keys revoke --id 3                    # 打时间戳，不�
 ⚠️ **签给哪个库由 `DATABASE_URL` 决定**：`.env` 里没写就用 `./app.db`；容器用的是命名卷里的库 ——
 **两者不是同一个库**，在宿主签的 key 到容器里查不到（反之亦然）。签完先 `list` 确认，再用 §3 验一次。
 
+📎 **实测（2026-11-21）**：`create` → 明文 46 字符；`list` 只显示 hash 前 12 位；
+`list --user verify` 只列该用户；`revoke --id 3` → `已撤销 key id=3`，**紧接着请求立刻 401**
+（`API key 无效或已撤销`）；**再 revoke 同一 id → `已经是撤销状态，无需再撤`，退出码 0**（幂等）；
+`revoke --id 999` → `没有 id=999 的 key`，**退出码 1**。
+
 ---
 
 ## §10 优雅停机验收
+
+> ⛔ **2026-11-21 实测：这条命令现在 FAIL（退出码 1），原因已定位，不是停机逻辑坏了。**
 
 ```bash
 uv run python scripts/probe_graceful_shutdown.py            # 默认 --hold 1.0
 uv run python scripts/probe_graceful_shutdown.py --hold 5   # 把窗口顶穿
 ```
 
-期望 `PASS` + 退出码 0。`FAIL` = 「窗口内该跑完的没跑完」或「超窗口没被切断」。
+📎 实跑输出（原样）：
+
+```text
+[父进程] 响应码=401 帧数=0 末帧=''
+!! 响应码 401，不是 200 —— 日志末尾：
+{"msg": "request", "method": "POST", "path": "/v1/chat/stream", "status": 401, ...}
+==> 结论：FAIL
+```
+
+**根因**：探针写于 13c-6，**13d-4 给所有业务路由加了鉴权之后它没跟着改** —— 子进程用的是临时库（没有 key），
+父进程发流时也**没带 `X-API-Key`**，于是第一步就 401，后面「没收到帧 / 没机会发信号」全是连带现象。
+
+✅ **停机机制本身是好的**：我把探针复制到 `%TEMP%`，只加两处（签发一把 key + 请求头带上它），
+其余逻辑一字不动 → **PASS**：
+
+```text
+[父进程] 1.08s 已投递信号
+[父进程] 响应码=200 帧数=16 末帧='{"delta": "滴"}'
+[父进程] 客户端结局=客户端异常 RemoteProtocolError（流被切断时属正常）
+[父进程] 总耗时=3.44s 信号后=2.36s 子进程退出码=3
+==> 结论：PASS 窗口生效（在途流按窗口被掐断）
+```
+
+修法（**要改代码，需步骤卡**）已登记待办 **#97**：在 `drive()` 里用 `python -m app.keys create` 签一把临时 key，
+再给 `client.stream(...)` 加 `headers={"X-API-Key": key}`。修好之前，本节的期望结果**不可用**。
 
 ---
 
@@ -319,10 +479,10 @@ uv run python scripts/probe_graceful_shutdown.py --hold 5   # 把窗口顶穿
 
 | # | 检查 | 命令 | 通过判据 |
 |---|---|---|---|
-| 1 | 五道门全绿 | `uv run ruff format --check . ; uv run ruff check . ; uv run mypy . ; uv run pyright ; uv run pytest -q` | 0 error / `pyright` 0 errors / 全 passed |
+| 1 | 五道门全绿 | `uv run ruff format --check . ; uv run ruff check . ; uv run mypy . ; uv run pyright ; uv run pytest -q` | 0 error / `pyright` 0 errors / 全 passed（📎 当前 **208 passed**） |
 | 2 | 模型与迁移一致 | `uv run alembic check` | `No new upgrade operations detected` |
-| 3 | 生产配置正确 | 检查 `.env` | `APP_ENV=prod`、`DEBUG=false`、`LLM_API_KEY` 已填 |
-| 4 | 镜像能构建 | `docker compose build --build-arg PIP_INDEX_URL=...` | exit 0，镜像大小 ~283 MB |
+| 3 | 生产配置正确 | 检查 `.env` | `APP_ENV=prod`、`DEBUG=false`、`LLM_API_KEY` 已填（⚠️ **本地演示用 `dev` 即可**，切 `prod` 会关掉 `/docs`） |
+| 4 | 镜像能构建 | `docker compose build --build-arg PIP_INDEX_URL=...` | exit 0，镜像 **284 MB**（⚠️ 别接 PowerShell 管道，否则退出码会假报 1，见 §6） |
 | 5 | 工作区干净 | `git status --short` | 无多余文件；`git log --oneline -1` 记下这次的提交号 |
 
 ### 11b 发版（一条命令 + 三步确认）
@@ -334,6 +494,8 @@ curl.exe -s http://127.0.0.1/health   # {"status":"ok"}
 curl.exe -s http://127.0.0.1/health/ready
 ```
 
+📎 实测顺序：`migrate Exited (0)` → `app (healthy)` → `proxy (healthy)`；80 端口回 `{"status":"ok"}`。
+
 ### 11c 发版后（对外契约逐条验）
 
 | # | 验什么 | 命令 | 通过判据 |
@@ -343,9 +505,14 @@ curl.exe -s http://127.0.0.1/health/ready
 | 3 | **SSE 真流式**（不是攒着一次到） | `curl.exe -N -s http://127.0.0.1/v1/chat/stream -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"数到十"}]}'` | 逐帧到达（不是最后一次性出现） |
 | 4 | 反代层错误也是 JSON | 传 >1 MB body | `413` + `application/json`（不是 nginx HTML） |
 | 5 | `/metrics` 对宿主封死 | `curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1/metrics`（bash 用 `/dev/null`） | `404` |
-| 6 | 日志能追链路 | 拿响应里的 `request_id`，按 [§7](#7-看日志与指标) 搜 | 命中的那一行里 `client` 是真实来源 IP |
+| 6 | 日志能追链路 | 拿响应里的 `request_id`，按 [§7](#7-看日志与指标) 搜 | 命中的那一行里 `client` 是**可信链解析后**的来源（⚠️ 从宿主测会是 Docker 网桥 IP，见 §7；nginx 自己的 `rid=` 是另一个号，别拿错） |
 | 7 | 实例下线快速失败 | `docker compose stop app` 后请求一次 | **3 秒内** `504` JSON（不是等 60 秒） |
 | 8 | 起回来 | `docker compose start app` | healthy，请求恢复 200 |
+
+📎 **11c 逐条实测（2026-11-21，全过）**：无 key → `401` + `www-authenticate: ApiKey` + 我们的信封；
+带 key → `201`；SSE 经 nginx 逐帧（`ttfb=0.249s / total=0.705s`，末帧 `[DONE]`）；
+`/metrics` → **404**；1.2 MB body → **413** + `PAYLOAD_TOO_LARGE`（JSON，不是 nginx HTML）；
+`stop app` → **3.01s** 回 `504 GATEWAY_TIMEOUT`（JSON）；`start app` → healthy + `200`。
 
 ### 11d 回滚（当前只有手工方案 ⚠️）
 
@@ -362,6 +529,10 @@ uv run alembic downgrade -1                # ⚠️ 只撤结构，撤不回被�
 ---
 
 ## §12 演示动线（5 分钟）
+
+**开场前 30 秒准备**（否则 0:30 那条演不了越权）：
+`uv run python -m app.keys create --user demo --label laptop` 和
+`uv run python -m app.keys create --user bob --label other` 各签一把，分别存进 `$KEY` / `$KEY2`。
 
 | 分 | 做什么 | 命令 / 位置 |
 |---|---|---|
@@ -380,6 +551,12 @@ uv run alembic downgrade -1                # ⚠️ 只撤结构，撤不回被�
 
 | 症状 | 先跑这个 | 大概率原因 |
 |---|---|---|
+| `422` + `"type":"json_invalid"` + `"loc":["body",N]` | 看 body 是不是用 `-d '{...}'` 发的 | **PowerShell 5.1 剥了双引号**，curl 发出去的不是 JSON → 改用临时文件（§3） |
+| `307 Temporary Redirect` | 看 URL 末尾是不是多了 `/` | Starlette 的尾斜杠重定向；curl 默认不跟随 → 去掉斜杠，或加 `-L`（会得到 405） |
+| `alembic current` 报 `Can't locate revision` | 看 `alembic/versions/` 里还剩哪些文件 | 库的版本号指向一个**已删除**的迁移文件（§5 顺序陷阱） |
+| `revision --autogenerate` 报 `Target database is not up to date` | `uv run alembic upgrade head` | 指向的库没跑过迁移（§5 第 1 步不能省） |
+| `docker compose -p probe up -d` 报 `Pool overlaps` | `docker compose ps` | 主栈还在跑：子网 `172.30.0.0/24` 与 80 端口写死，先 `docker compose down` |
+| `docker compose build` 回 exit 1 但日志末尾是 `Built` | 看有没有接 PowerShell 管道 | buildkit 走 stderr，被 PS 当错误；重跑别接管道 |
 | 编辑器一片红，但 `mypy` 绿 | `uv run pyright` | 类型推断分叉（`getattr` / 反射）；按 [docs/dev-environment.md](docs/dev-environment.md) §8.0f 五步走 |
 | `401 UNAUTHORIZED` | `curl.exe -i` 看 body 里的 `message` | **先看是哪一句**：`缺少 X-API-Key 请求头` = 头没送到；`API key 无效或已撤销` = 头到了但**库里没有这把 key**（最常见：key 签在另一个库 / 另一个容器里） |
 | `Invoke-WebRequest : 无法绑定参数 "Headers"` | 改用 `curl.exe` | 裸 `curl` 是 PowerShell 的别名，不是真 curl |
@@ -405,7 +582,7 @@ uv run alembic downgrade -1                # ⚠️ 只撤结构，撤不回被�
 
 | 想知道 | 去哪 |
 |---|---|
-| 为什么这么设计、放弃了什么、何时重审 | [docs/decisions.md](docs/decisions.md)（55 条 ADR） |
+| 为什么这么设计、放弃了什么、何时重审 | [docs/decisions.md](docs/decisions.md)（56 条 ADR） |
 | 系统长什么样（中间件栈 / ER / 帧序 / 状态机 / 两层接缝） | [docs/architecture.md](docs/architecture.md) |
 | 端点契约与真实响应样本 | [docs/api.md](docs/api.md) |
 | 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |
