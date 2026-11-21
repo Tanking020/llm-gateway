@@ -23,6 +23,26 @@
 
 ---
 
+<details>
+<summary>目录</summary>
+
+- [概览](#概览)
+- [能力一览](#能力一览)
+- [架构](#架构)
+- [快速开始](#快速开始)
+- [使用](#使用)
+- [关键设计决策](#关键设计决策)
+- [可靠性与成本控制](#可靠性与成本控制)
+- [测试与质量门](#测试与质量门)
+- [实测结果](#实测结果)
+- [项目结构](#项目结构)
+- [Roadmap](#roadmap)
+- [文档](#文档)
+- [Contributing](#contributing)
+- [License](#license)
+
+</details>
+
 ## 概览
 
 面向 LLM 应用的异步 API 服务。对外提供 **SSE 流式对话**与会话管理接口，对内把「流式输出、
@@ -340,12 +360,14 @@ uv run pytest -q        # 225 个用例，约 15 s
 
 | 想知道 | 去哪 |
 |---|---|
-| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（57 条 ADR） |
+| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（61 条 ADR） |
 | 系统长什么样（中间件栈 / ER / 帧序 / 状态机） | [docs/architecture.md](docs/architecture.md) |
 | 端点契约与真实响应样本 | [docs/api.md](docs/api.md) |
 | 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |
 | 离「敢上线」还差什么 | [docs/production-readiness.md](docs/production-readiness.md) |
 | 测试怎么跑、两个连接池谁占谁 | [tests/README.md](tests/README.md) |
+| 这个版本有什么、已知边界在哪 | [CHANGELOG.md](CHANGELOG.md)（能力清单 / 关键取舍 / **已知边界**） |
+| 怎么报安全漏洞 | [.github/SECURITY.md](.github/SECURITY.md)（私有报告通道 + 部署前提） |
 | 改代码必须满足什么 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ## Contributing

@@ -1,0 +1,18 @@
+# Dependabot：只开 GitHub Actions 的自动更新
+#
+# 【注意】：Python 依赖【故意】不开自动更新 ——
+#   ① `uv.lock` 把「包来自哪个镜像源」也锁进去了（决策 60 / 坑 K102），
+#      Dependabot 在自己的环境里重新解析会用别的索引，产出的 PR 必然过不了 `uv sync --locked`；
+#   ② 升级 Python 依赖要连同索引一起改：`$env:UV_DEFAULT_INDEX="<index>"; uv lock --upgrade`，
+#      人工做一次比让机器人每天开坏 PR 便宜。
+#   Actions 的版本升级不受这个约束，自动更安全。
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
