@@ -18,7 +18,7 @@
 | Git | 2.55.0.windows.3 | `git --version` |
 | uv 镜像 | `%APPDATA%\uv\uv.toml` → 清华 PyPI 镜像（`default = true`） | `Get-Content $env:APPDATA\uv\uv.toml` |
 | 编码 | 用户级 `PYTHONUTF8=1`（Python 侧默认 UTF-8） | `[Environment]::GetEnvironmentVariable("PYTHONUTF8","User")` |
-| 项目根 | `C:\Users\23353\Desktop\llm-app-engineering` | `Get-Location` 必须在这里 |
+| 项目根 | `%USERPROFILE%\Desktop\llm-app-engineering` | `Get-Location` 必须在这里 |
 
 ## 2. PowerShell 5.1 的四条硬规则
 
