@@ -25,6 +25,10 @@ services:
       # 【注意】：只信「自己那一层」代理的 IP —— 写 "*" 等于任何人伪造 X-Forwarded-For 都算数。
       #   必须与下方 networks.app_net 里 proxy 的 ipv4_address 一致（守卫会查）
       FORWARDED_ALLOW_IPS: "172.30.0.2"
+      # 【注意】：容器形态默认 prod —— dev 会开放 /docs 与 /openapi.json，而 nginx 只挡了 /metrics（决策 58）。
+      #   ⚠️ 不能写成 ${APP_ENV:-prod}：compose 会用 .env 做插值，而 .env 里 APP_ENV=dev 会把它填成 dev。
+      #   演示交互文档：$env:APP_ENV_CONTAINER="dev"; docker compose up -d
+      APP_ENV: ${APP_ENV_CONTAINER:-prod}
     # 【注意】：迁移没成功就不启动 app —— 否则空库第一请求就是 no such table（#84、K93）
     depends_on:
       migrate:
@@ -78,7 +82,9 @@ services:
       app:
         condition: service_healthy
     ports:
-      - "80:80"
+      # 【注意】：只绑 loopback —— 明文 HTTP 上的 X-API-Key 是 bearer，同网段抓包即可读写该用户全部数据。
+      #   公网演示先加 TLS（#100），或临时用 ssh -L / cloudflared 隧道（决策 58）
+      - "127.0.0.1:80:80"
     volumes:
       # 【注意】：ro —— 容器不该改配置；挂到 conf.d 是替换镜像自带的默认站点
       - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro

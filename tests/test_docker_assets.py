@@ -274,7 +274,31 @@ def test_app_is_not_published_to_host() -> None:
     assert "ports" not in app, "app 不能再发布宿主端口 —— 入口只允许 nginx"
     assert app.get("expose") == ["8000"]
     published = [str(p) for p in proxy["ports"]]
-    assert published == ["80:80"], f"只有 proxy 该发布端口，实际 {published}"
+    assert published == ["127.0.0.1:80:80"], f"只有 proxy 该发布端口，实际 {published}"
+
+
+def test_plaintext_entry_binds_loopback_only() -> None:
+    """回归：明文入口不许暴露到局域网/公网 —— 除非 nginx 自己终结 TLS（决策 58）"""
+    published = [str(p) for p in _compose()["services"]["proxy"]["ports"]]
+    has_tls = re.search(r"listen\s+443\b", _nginx_code()) is not None
+    for spec in published:
+        # 【注意】：两段式 "80:80" 等于绑 0.0.0.0；三段式才是 host_ip:host_port:container_port
+        host_ip = spec.rsplit(":", 2)[0] if spec.count(":") >= 2 else "0.0.0.0"
+        assert host_ip in {"127.0.0.1", "::1"} or has_tls, (
+            f"明文 HTTP 只能绑 loopback，实际 host_ip={host_ip}（决策 58）"
+        )
+
+
+def test_compose_defaults_app_env_to_prod() -> None:
+    """回归：容器默认必须是 prod —— 否则 /docs 与 /openapi.json 经反代匿名可读（决策 58）
+
+    【注意】：变量名必须是 APP_ENV_CONTAINER。写成 ${APP_ENV:-prod} 时，compose 会用 .env
+    做插值，而 .env 里的 APP_ENV=dev 会把它填成 dev —— 📎 2026-11-21 实测「守卫绿、行为错」。
+    """
+    env = _compose()["services"]["app"]["environment"]
+    assert env.get("APP_ENV") == "${APP_ENV_CONTAINER:-prod}", (
+        "compose 的 APP_ENV 必须走专用变量名，否则会被 .env 的 APP_ENV=dev 插值覆盖"
+    )
 
 
 def test_proxy_waits_for_healthy_app_and_exits_gracefully() -> None:

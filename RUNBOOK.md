@@ -295,6 +295,10 @@ docker compose ps               # app / proxy 都 healthy；migrate 是 exited 0
 curl.exe -s http://127.0.0.1/health # 入口是 nginx 的 80，不是 8000
 ```
 
+> ⚠️ **入口只绑 127.0.0.1（决策 58）**：`http://127.0.0.1/...` 可用，`http://<局域网IP>/` 不可用 —— 这是有意的。
+> 容器默认 `APP_ENV=prod`（没有 /docs）；演示文档：`$env:APP_ENV_CONTAINER="dev"; docker compose up -d`。
+> 公网演示/上线前必须补 TLS，见待办 #100。
+
 | 要做的事 | 命令 |
 |---|---|
 | 看**没起来**的容器（停在 `created`） | `docker compose ps -a` |
