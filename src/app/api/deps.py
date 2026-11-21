@@ -16,7 +16,8 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Security
+from fastapi.security import APIKeyHeader
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,6 +103,15 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 
 
+api_key_header = APIKeyHeader(
+    name=HEADER_API_KEY,  # 复用既有常量，避免头名在两处各写一遍（两处写必然漂）
+    # 【注意】：必须 auto_error=False —— 设成 True 时 FastAPI 会自己抛 HTTPException，
+    #    于是 401 的 body 不再是我们的 {"error": {...}} 信封，也没有 WWW-Authenticate（RFC 9110）
+    auto_error=False,
+    description="库中只存 sha256，明文只在签发时显示一次",
+)
+
+
 def _unauthorized(message: str) -> AppError:
     """401 的唯一来源：两种情况（没带 / 无效或撤销）用同一份形状
 
@@ -115,7 +125,12 @@ def _unauthorized(message: str) -> AppError:
     )
 
 
-async def require_user(request: Request, db: DbDep, config: SettingsDep) -> User:
+async def require_user(
+    request: Request,
+    db: DbDep,
+    config: SettingsDep,
+    api_key: Annotated[str | None, Security(api_key_header)] = None,
+) -> User:
     """鉴权 + 限流：把 X-API-Key 换成「当前用户」，换不到就 401；换到了再扣一次令牌
 
     【注意】：限流【故意】挂在鉴权后面而不是独立一格 ——
@@ -124,10 +139,9 @@ async def require_user(request: Request, db: DbDep, config: SettingsDep) -> User
            （test_source_rules 已经保证每条非公开路由都声明 CurrentUserDep）。
         代价：将来要做「未登录也按 IP 限流」时必须拆到中间件 —— 那时是一次真实的重构。
     """
-    raw = request.headers.get(HEADER_API_KEY)
-    if not raw:
+    if not api_key:
         raise _unauthorized("缺少 X-API-Key 请求头")
-    user = await find_user_by_key(db, raw)
+    user = await find_user_by_key(db, api_key)
     if user is None:
         raise _unauthorized("API key 无效或已撤销")
 

@@ -5,6 +5,7 @@
 > [`src/app/api/app.py`](../src/app/api/app.py)（路由）。
 >
 > 自动生成的交互式文档：服务启动后打开 `http://127.0.0.1:8000/docs`（仅 `APP_ENV=dev` 时开启）。
+> 需鉴权的端点：先点右上角 **Authorize** 填一次 `X-API-Key`，之后 Try it out 才会带上（决策 56）。
 > ⚠️ **走 compose 时入口是 nginx 的 80**（`http://127.0.0.1/docs`），宿主上的 8000 已不再发布（决策 46）。
 > 形状的图形化版本（七层栈 / ER / 帧序 / 状态机）见 [architecture.md](architecture.md)。
 > 端点表的变更记录见 [DEVLOG.md](DEVLOG.md)。
