@@ -67,7 +67,9 @@ uv run python -m app                 # 监听地址/端口/reload 全部读 .env
 
 ## §3 调接口（curl 配方）
 
-⚠️ PowerShell 里写 **`curl.exe`**（裸 `curl` 是 `Invoke-WebRequest` 别名，参数不兼容）。
+⚠️ **PowerShell 里必须写 `curl.exe`** —— 裸 `curl` 是 `Invoke-WebRequest` 的别名，参数不兼容，会报
+「无法绑定参数 "Headers"」。下面的命令**已经写成 `curl.exe`，直接抄**；bash / Linux 上把 `.exe` 去掉即可。
+⚠️ `-o /dev/null` 在 PowerShell 里要写成 `-o NUL`（表里已按平台标好）。
 **除 `/health`、`/health/ready`、`/metrics`、`/v1/models*` 外，全部要 `X-API-Key`。**
 
 ⚠️ **`/docs` 里点 "Try it out" 现在可以带 key 了**：点右上角 **Authorize** 填一次即可（2026-11-21 修复，决策 56）。
@@ -80,17 +82,17 @@ uv run python -m app                 # 监听地址/端口/reload 全部读 .env
 |---|---|
 | `$env:KEY = "sk_xxx"` | `export KEY=sk_xxx` |
 
-| 要做的事 | 命令（两平台只差 `curl.exe` / `curl`） |
+| 要做的事 | 命令（PowerShell 抄这列；bash 把 `curl.exe` 换成 `curl`） |
 |---|---|
-| 活着 | `curl -s http://127.0.0.1:8000/health` |
-| 就绪（DB 通不通） | `curl -s http://127.0.0.1:8000/health/ready` |
-| **非流式**对话 | `curl -s http://127.0.0.1:8000/v1/chat -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"你好"}]}'` |
-| **流式**（SSE） | `curl -N -s http://127.0.0.1:8000/v1/chat/stream -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"列出三种排序算法"}]}'` |
-| 建会话 | `curl -s -X POST http://127.0.0.1:8000/v1/conversations -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"title":"第一次对话"}'` |
-| 列表（含账单统计） | `curl -s "http://127.0.0.1:8000/v1/conversations?limit=20" -H "X-API-Key: $KEY"` |
-| 删会话 | `curl -s -X DELETE http://127.0.0.1:8000/v1/conversations/1 -H "X-API-Key: $KEY"` |
-| 看错误形状（故意 400） | `curl -s -i http://127.0.0.1:8000/v1/chat -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"assistant","content":"x"}]}'` |
-| 只想要状态码 | `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/health`（PowerShell 用 `-o NUL`） |
+| 活着 | `curl.exe -s http://127.0.0.1:8000/health` |
+| 就绪（DB 通不通） | `curl.exe -s http://127.0.0.1:8000/health/ready` |
+| **非流式**对话 | `curl.exe -s http://127.0.0.1:8000/v1/chat -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"你好"}]}'` |
+| **流式**（SSE） | `curl.exe -N -s http://127.0.0.1:8000/v1/chat/stream -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"列出三种排序算法"}]}'` |
+| 建会话 | `curl.exe -s -X POST http://127.0.0.1:8000/v1/conversations -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"title":"第一次对话"}'` |
+| 列表（含账单统计） | `curl.exe -s "http://127.0.0.1:8000/v1/conversations?limit=20" -H "X-API-Key: $KEY"` |
+| 删会话 | `curl.exe -s -X DELETE http://127.0.0.1:8000/v1/conversations/1 -H "X-API-Key: $KEY"` |
+| 看错误形状（故意 400） | `curl.exe -s -i http://127.0.0.1:8000/v1/chat -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"assistant","content":"x"}]}'` |
+| 只想要状态码 | `curl.exe -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/health`（PowerShell 用 `-o NUL`） |
 | 指定 `request_id` 追链路 | 任意请求加 `-H "X-Request-ID: abc123"`；响应头与 body 的 `request_id` 恒等于它 |
 
 **读流式输出的顺序**：`{"status":"thinking"}` → 多个 `{"delta":"字"}` → `{"finish_reason":"stop"}` → `{"usage":{...}}` → **`[DONE]` 才是结束**（`finish_reason` 之后还可能有帧；`200` 不代表成功）。
@@ -161,7 +163,7 @@ uv run alembic downgrade base; uv run alembic upgrade head
 docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 docker compose up -d            # ① migrate 跑完 → ② app healthy → ③ proxy 起
 docker compose ps               # app / proxy 都 healthy；migrate 是 exited 0
-curl -s http://127.0.0.1/health # 入口是 nginx 的 80，不是 8000
+curl.exe -s http://127.0.0.1/health # 入口是 nginx 的 80，不是 8000
 ```
 
 | 要做的事 | 命令 |
@@ -258,7 +260,7 @@ uv run python scripts/loadtest_chat_stream.py --key sk_xxx --concurrency 1,4,8,1
 
 ## §9 API key 运维
 
-```bash
+```text
 uv run python -m app.keys create --user me --label laptop   # 明文只显示这一次
 uv run python -m app.keys list                             # 只显示 hash 前缀
 uv run python -m app.keys list --user me
@@ -267,6 +269,8 @@ uv run python -m app.keys revoke --id 3                    # 打时间戳，不�
 
 ⚠️ 库里**只存 sha256**，明文丢了只能重签。
 ⚠️ 顺序是 **commit → print**：宁可留一行查得到 hash 的记录，也不要给出一把库里不存在的 key。
+⚠️ **签给哪个库由 `DATABASE_URL` 决定**：`.env` 里没写就用 `./app.db`；容器用的是命名卷里的库 ——
+**两者不是同一个库**，在宿主签的 key 到容器里查不到（反之亦然）。签完先 `list` 确认，再用 §3 验一次。
 
 ---
 
@@ -300,19 +304,19 @@ uv run python scripts/probe_graceful_shutdown.py --hold 5   # 把窗口顶穿
 ```bash
 docker compose up -d --build
 docker compose ps                 # app / proxy healthy，migrate exited 0
-curl -s http://127.0.0.1/health   # {"status":"ok"}
-curl -s http://127.0.0.1/health/ready
+curl.exe -s http://127.0.0.1/health   # {"status":"ok"}
+curl.exe -s http://127.0.0.1/health/ready
 ```
 
 ### 11c 发版后（对外契约逐条验）
 
 | # | 验什么 | 命令 | 通过判据 |
 |---|---|---|---|
-| 1 | 无 key → 401 且是**我们的**信封 | `curl -s -i -X POST http://127.0.0.1/v1/conversations -H "Content-Type: application/json" -d '{"title":"x"}'` | `401` + `{"error":{"code":"UNAUTHORIZED",...,"request_id":...}}` |
+| 1 | 无 key → 401 且是**我们的**信封 | `curl.exe -s -i -X POST http://127.0.0.1/v1/conversations -H "Content-Type: application/json" -d '{"title":"x"}'` | `401` + `{"error":{"code":"UNAUTHORIZED",...,"request_id":...}}` |
 | 2 | 带 key → 201 | 同上加 `-H "X-API-Key: $KEY"` | `201` |
-| 3 | **SSE 真流式**（不是攒着一次到） | `curl -N -s http://127.0.0.1/v1/chat/stream -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"数到十"}]}'` | 逐帧到达（不是最后一次性出现） |
+| 3 | **SSE 真流式**（不是攒着一次到） | `curl.exe -N -s http://127.0.0.1/v1/chat/stream -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"数到十"}]}'` | 逐帧到达（不是最后一次性出现） |
 | 4 | 反代层错误也是 JSON | 传 >1 MB body | `413` + `application/json`（不是 nginx HTML） |
-| 5 | `/metrics` 对宿主封死 | `curl -s -o NUL -w "%{http_code}" http://127.0.0.1/metrics`（bash 用 `/dev/null`） | `404` |
+| 5 | `/metrics` 对宿主封死 | `curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1/metrics`（bash 用 `/dev/null`） | `404` |
 | 6 | 日志能追链路 | 拿响应里的 `request_id`，按 [§7](#7-看日志与指标) 搜 | 命中的那一行里 `client` 是真实来源 IP |
 | 7 | 实例下线快速失败 | `docker compose stop app` 后请求一次 | **3 秒内** `504` JSON（不是等 60 秒） |
 | 8 | 起回来 | `docker compose start app` | healthy，请求恢复 200 |
@@ -335,7 +339,7 @@ uv run alembic downgrade -1                # ⚠️ 只撤结构，撤不回被�
 
 | 分 | 做什么 | 命令 / 位置 |
 |---|---|---|
-| 0:00 | 起整套 + 证明活着 | `docker compose up -d` → `curl -s http://127.0.0.1/health` |
+| 0:00 | 起整套 + 证明活着 | `docker compose up -d` → `curl.exe -s http://127.0.0.1/health` |
 | 0:30 | **鉴权与越权** | 无 key → 401；带 key 建会话 → 201；访问别人的 id → **404**（不是 403，不泄露存在性） |
 | 1:30 | **流式逐帧** | [§3](#3-调接口curl-配方) 的 `-N` 那一行；指一下 **`[DONE]` 才是结束信号** |
 | 2:30 | **日志追链路** | [§7](#7-看日志与指标)；拿响应里的 `request_id` 搜一条 |
@@ -351,7 +355,9 @@ uv run alembic downgrade -1                # ⚠️ 只撤结构，撤不回被�
 | 症状 | 先跑这个 | 大概率原因 |
 |---|---|---|
 | 编辑器一片红，但 `mypy` 绿 | `uv run pyright` | 类型推断分叉（`getattr` / 反射）；按 [docs/dev-environment.md](docs/dev-environment.md) §8.0f 五步走 |
-| `401 UNAUTHORIZED` | `curl -i` 看 body 与请求头 | 忘了 `X-API-Key` / key 已撤 / 键名拼错 |
+| `401 UNAUTHORIZED` | `curl.exe -i` 看 body 里的 `message` | **先看是哪一句**：`缺少 X-API-Key 请求头` = 头没送到；`API key 无效或已撤销` = 头到了但**库里没有这把 key**（最常见：key 签在另一个库 / 另一个容器里） |
+| `Invoke-WebRequest : 无法绑定参数 "Headers"` | 改用 `curl.exe` | 裸 `curl` 是 PowerShell 的别名，不是真 curl |
+| 签了 key 但仍 `无效或已撤销` | `uv run python -m app.keys list` | 库不对：`.env` 没写 `DATABASE_URL` 时用 `./app.db`；容器用的是命名卷里的库 —— 两者不是同一个 |
 | `404` 而不是 `403` | —— | **这是设计**：越权与不存在同一个观测结果（[决策 12](docs/decisions.md)） |
 | `429 RATE_LIMITED` | 看响应 `Retry-After` | 每用户 60 次/分 + 突发 20；压测必须放大 |
 | `503` + `Retry-After` | 看 `MAX_CONCURRENT_UPSTREAM_CALLS` | 上游闸门满，排队超时（默认 1.0s） |
