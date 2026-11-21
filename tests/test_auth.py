@@ -7,6 +7,8 @@ import pytest
 from conftest import OTHER_API_KEY, TEST_API_KEY
 from fastapi.testclient import TestClient
 
+from app.api.app import app
+
 REQ = {"messages": [{"role": "user", "content": "hi"}]}
 
 
@@ -48,6 +50,32 @@ def test_public_routes_need_no_key(anon_client: TestClient) -> None:
     """健康检查与本地静态模型表不能要鉴权 —— 否则负载均衡和探测机器人全挂"""
     assert anon_client.get("/health").status_code == 200
     assert anon_client.get("/v1/models").status_code == 200
+
+
+def test_openapi_declares_api_key_security() -> None:
+    """#94 守卫：/docs 必须能填 key —— 否则对接方点 Try it out 一律 401
+
+    为什么必须有用例：这条契约在【OpenAPI 产物】里，行为测试看不见 ——
+    把 Security(...) 删掉之后所有 401 用例仍然绿，只有这里会红。
+    """
+    schema = app.openapi()
+    scheme = schema["components"]["securitySchemes"]["APIKeyHeader"]
+    assert scheme["type"] == "apiKey"
+    assert scheme["in"] == "header"
+    # 【注意】：头名必须与真实头一致，否则 /docs 发出去的那个头服务端不认，照样 401
+    assert scheme["name"] == "X-API-Key"
+    assert schema["paths"]["/v1/conversations"]["get"]["security"] == [{"APIKeyHeader": []}]
+
+
+def test_public_routes_are_not_marked_secure() -> None:
+    """反例：/health 若被标上 security，/docs 会逼着健康检查也填 key
+
+    【注意】：不能写 /metrics —— 它是 include_in_schema=False，压根不在 OpenAPI 里（会 KeyError）
+    """
+    schema = app.openapi()
+    for path in ("/health", "/health/ready", "/v1/models", "/v1/models/latest"):
+        for op in schema["paths"][path].values():
+            assert not op.get("security"), f"{path} 不该要求凭据"
 
 
 def test_invalid_key_is_401(anon_client: TestClient) -> None:

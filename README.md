@@ -3,7 +3,7 @@
 [![CI](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-app-engineering/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-206%20passed-success)
+![Tests](https://img.shields.io/badge/tests-208%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-93%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -17,7 +17,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 206 tests · 93% branch coverage · CI on every push.
+> 208 tests · 93% branch coverage · CI on every push.
 
 ---
 
@@ -205,7 +205,7 @@ curl -s http://127.0.0.1:8000/v1/conversations?limit=20 \
 
 ## 关键设计决策
 
-每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，54 条 ADR）。以下是影响最大的几条：
+每条决策都记录了**代价**与**重审条件**（[docs/decisions.md](docs/decisions.md)，56 条 ADR）。以下是影响最大的几条：
 
 | 决策 | 选择 | 为什么 | 代价 / 何时重审 |
 |---|---|---|---|
@@ -240,7 +240,7 @@ uv run ruff format .    # 格式化
 uv run ruff check .     # lint（E/F/I/UP/B/TID）
 uv run mypy .           # 类型检查（strict + warn_unreachable）
 uv run pyright          # 类型检查（与编辑器 Pylance 对齐，只拦 error）
-uv run pytest -q        # 206 个用例，约 15 s
+uv run pytest -q        # 208 个用例，约 15 s
 ```
 
 | | 结果 |
@@ -248,7 +248,7 @@ uv run pytest -q        # 206 个用例，约 15 s
 | `ruff check` / `format --check` | 全绿（51 files） |
 | `mypy --strict` | 全绿（54 source files，含 `tests/`、`scripts/` 与 `playground/`） |
 | `pyright`（`pyrightconfig.json`） | 0 errors（与编辑器同一套判断；📎 变异「改回 `getattr` 写法」→ mypy 仍绿而 pyright **红**） |
-| `pytest -q` | **206 passed** |
+| `pytest -q` | **208 passed** |
 | 分支覆盖 | **93%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑上面五条 + `uv sync --locked` |
 
@@ -305,7 +305,7 @@ uv run pytest -q        # 206 个用例，约 15 s
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 206 个用例，按「测哪一层」分为 21 个文件
+├── tests/                  # 208 个用例，按「测哪一层」分为 21 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线自检
 ├── notes/                  # 机制与实测的深度笔记
 ├── Dockerfile              # 多阶段构建 + 非 root + exec 形式 CMD（13a-1）
@@ -333,7 +333,7 @@ uv run pytest -q        # 206 个用例，约 15 s
 
 | 想知道 | 去哪 |
 |---|---|
-| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（54 条 ADR） |
+| 为什么这么设计、放弃了什么、何时该重审 | [docs/decisions.md](docs/decisions.md)（56 条 ADR） |
 | 系统长什么样（中间件栈 / ER / 帧序 / 状态机） | [docs/architecture.md](docs/architecture.md) |
 | 端点契约与真实响应样本 | [docs/api.md](docs/api.md) |
 | 什么时候做了什么、踩了什么坑、证据 | [docs/DEVLOG.md](docs/DEVLOG.md) |

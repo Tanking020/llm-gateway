@@ -60,6 +60,8 @@ uv run python -m app                 # 监听地址/端口/reload 全部读 .env
 
 ⚠️ **不要用** `uvicorn app.api.app:app --reload` —— 它**静默绕过** `HOST` / `PORT` / `DEBUG`（`.env` 写 `PORT=9001` 也不会生效）。
 ⚠️ `APP_ENV=prod` 且 `DEBUG=true` 会**拒绝启动**（有意为之）。
+⚠️ **怎么把它停干净**：前台跑就 `Ctrl+C`。若用 `Start-Process` / `uv run ... &` 放到后台，**`uv` 只是包装器**——
+杀掉它并不会杀掉真正在听端口的 python 进程。查真凶：`Get-NetTCPConnection -State Listen -LocalPort 8000 | Select-Object -ExpandProperty OwningProcess`，再 `Stop-Process -Id <那个 PID>`。
 
 ---
 
@@ -68,10 +70,8 @@ uv run python -m app                 # 监听地址/端口/reload 全部读 .env
 ⚠️ PowerShell 里写 **`curl.exe`**（裸 `curl` 是 `Invoke-WebRequest` 别名，参数不兼容）。
 **除 `/health`、`/health/ready`、`/metrics`、`/v1/models*` 外，全部要 `X-API-Key`。**
 
-⚠️ **`/docs` 里点 "Try it out" 会一律 401** —— 本项目把 key 从 `request.headers` 里读（不是 `Header(...)` 参数），
-所以 OpenAPI 里**没有** `X-API-Key` 字段，`/docs` 也就没有地方填它（见待办 **#94**）。
-**要带 key 试调，用下面这张表，不要用 `/docs`。** `/docs` 只用来看契约与响应模型。
-⚠️ 另外 `/docs` **看不到逐帧流式**（它等响应读完才显示），也不会经过 nginx（直连 8000）——
+⚠️ **`/docs` 里点 "Try it out" 现在可以带 key 了**：点右上角 **Authorize** 填一次即可（2026-11-21 修复，决策 56）。
+⚠️ 但 `/docs` **看不到逐帧流式**（它等响应读完才显示），也不会经过 nginx（直连 8000）——
 反代层的 413/502/504 与 SSE 缓冲行为只能在 §6 的 80 端口上验。
 
 先设一个环境变量（§9 签出来的明文）：

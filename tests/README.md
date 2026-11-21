@@ -26,7 +26,7 @@
 
 ## 1. 二十一个文件各测什么
 
-**206 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
+**208 个用例**，按「测哪一层」分家 —— **一层一个文件**，改哪层就只跑那个文件：
 
 | 文件 | 用例 | 测哪一层 | 上游怎么来 | 要真服务吗 |
 |---|---|---|---|---|
@@ -38,7 +38,7 @@
 | `test_docker_assets.py` | 20 | **容器产物静态检查**（13a-1 / 13a-2b / 13a-2c / 13e-1）：`.env`/`.venv`/`.git`/`__pycache__` 必须被排掉 / `uv.lock`·`alembic`·`src` 不许被排掉 / **Dockerfile 每个 `COPY` 源都要活过 `.dockerignore`** / 非 root + exec 形式 CMD / **compose 里 `app` 等 `migrate` 成功、两者同卷同 URL、`migrate` 不挂 `env_file`、连接串只写一份、`app` 不自己跑迁移**（决策 45）/ **app 不发布宿主端口、反代等 app 健康、SIGQUIT、`deploy/` 不进上下文、nginx 关缓冲 + 重解析 + 读超时 > 应用预算**（决策 46）/ **`FORWARDED_ALLOW_IPS` == 代理固定 IP 且不能是 `*`**（决策 47） | 不涉及（**只读文件，不用 Docker**） | ❌ ；**反代层 413/502/504 必须回 JSON 信封**（#89 / 决策 52：`error_page` + `@json_*`、`default_type`、`add_header always`、码名进 api.md、CORS 白名单与应用一致、禁 `proxy_intercept_errors`） |
 | `test_docs_contract.py` | 4 | **文档 ↔ 代码契约**（#90，决策 49）：`api.md` 的错误码表 == `_STATUS_BY_CODE`（含状态码数值）/ `api.md` 端点表 == `app.routes` / 各文档宣称的「N 个用例」== 实际收集数 / 本表逐文件数 == 实际收集。⚠️ 后两条**只在全量跑时生效**：子集运行会 skip（拿子集的数比全量文档是假红） | 不涉及（**只读文件**） | ❌ |
 | `test_metrics.py` | 8 | **指标层**（13e-3，决策 50）：`/metrics` 不在 OpenAPI 里 / 输出是 Prometheus 文本且五个核心指标都在 / **path 标签是路由模板**（不是真实 URL）/ 错误计数覆盖 401（走 `_error_response` 单一出口）/ 流式不进耗时直方图 / **探针路径不计量**（否则稀释 5xx 比例）/ **池占用是真读数**（借出连接时必须 ≥1）/ **池无 `checkedout` 时退化成 0**（不抛 AttributeError） | 不涉及 | ❌ |
-| `test_auth.py` | 14 | **鉴权与归属**（13d-2）：6 个端点的 401 / 公开路由免鉴权 / 错 key / **已撤销 key** / 越权读改写删全 **404** / 列表与 `total` 不泄露 / 聊天挂别人对话 id / **库里只有 sha256** | 不涉及（`FakeLlm` 只用于 chat 两条） | ❌ |
+| `test_auth.py` | 16 | **鉴权与归属**（13d-2）：6 个端点的 401 / 公开路由免鉴权 / 错 key / **已撤销 key** / 越权读改写删全 **404** / 列表与 `total` 不泄露 / 聊天挂别人对话 id / **库里只有 sha256** | 不涉及（`FakeLlm` 只用于 chat 两条） | ❌ |
 | `test_conversations.py` | 12 | 对话 CRUD 契约：全生命周期 / 游标分页 / 422 校验 / 404 语义 / **提交失败必须 5xx（不能先回 201）** | 不涉及 | ❌ |
 | `test_upstream.py` | 11 | **路由层接线**：假 LLM 注入生效、三类上游故障 → 502、**上游 429 → 429 + `Retry-After`**、pre-flight 能改状态码 | `FakeLlm` | ❌ |
 | `test_errors.py` | 11 | **错误形状契约**：envelope 三键 / 三种 404 靠业务码分 / 422 的 `details` 只留三键 / 500 不泄漏 / **500 的 CORS 头与 404 一致且不外泄给外来源** / **DB 连不上 → 503（SQL 错仍 500）** | `FakeLlm` | ❌ |

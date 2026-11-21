@@ -1759,6 +1759,7 @@ nginx 错误在 app 日志里查不到，只能 `grep rid=<id>` 查 nginx 访问
 | 53 | 非流式 `/v1/chat` 接真上游 | [llm_client.py](../src/app/llm_client.py) `complete()` / `LlmCompletion`、[app.py](../src/app/api/app.py) `chat`、[conftest.py](../tests/conftest.py) `_forbid_real_upstream` | `test_upstream.py`（4）、`test_adapter_http.py`（6）、`test_limits.py` `test_gate_applies_to_non_stream_chat`、`test_source_rules.py`（`_READ_ONLY_ROUTES` 已空） |
 | 54 | `LlmCompletion.usage` 保持 `dict`，不换 `MappingProxyType` | [llm_client.py](../src/app/llm_client.py) `LlmCompletion` docstring | `test_adapter_http.py::test_complete_usage_stays_a_plain_dict`（📎 变异「换成 proxy」→ 该条红、既有 `==` 条仍绿） |
 | 55 | 质量门 4 道 → 5 道：加 `pyright` 与编辑器对齐 | [pyrightconfig.json](../pyrightconfig.json)、[.github/workflows/ci.yml](../.github/workflows/ci.yml)、[pyproject.toml](../pyproject.toml) dev 组 | CI 独立一步 `Type check (editor parity)`。📎 **变异 A**（`_pool_checked_out` 改回 `getattr`）→ mypy 仍绿 / pyright **2 errors**；📎 **变异 B**（`constants.py` 加 `int = "x"`）→ 两边都红 |
+| 56 | `/docs` 的凭据改成 OpenAPI 声明（`APIKeyHeader` + `Security`） | [deps.py](../src/app/api/deps.py) `api_key_header` / `require_user` | `test_auth.py`：`test_openapi_declares_api_key_security` + `test_public_routes_are_not_marked_secure`。📎 变异「退回修复前（行为不变）」→ 只有前一条红、15 条行为用例全绿 |
 
 ⭐ **这张表最有用的是最后一列的空格。** 空着的那几条（#12 #23 #24）意味着：
 **改坏了不会有任何测试变红** —— 目前只靠注释和人工实测守着。

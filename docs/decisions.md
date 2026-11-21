@@ -13,7 +13,7 @@
 > **格式固定五段**（缺一不可）：
 > **背景 → 方案对比 → 决定 → 代价（明确写下放弃了什么）→ 触发重审的条件**
 
-**最后更新**：2026-11-21 · 共 55 条
+**最后更新**：2026-11-21 · 共 56 条
 
 ---
 
@@ -76,6 +76,7 @@
 | [53](#53-非流式-v1chat-接真上游一次调用--闸门--记账) | 非流式怎么调上游 | **适配器加 `complete()`；同闸门、成功记一行账单、失败不记** | 2026-11-20 |
 | [54](#54-llmcompletionusage-保持-dict不换-mappingproxytype) | `usage` 要不要做成不可变 | **保持 `dict`；只读靠约定 + 一条 `isinstance` 反向用例** | 2026-11-21 |
 | [55](#55-质量门从-4-道变-5-道加-pyright-与编辑器对齐) | 要不要跑两套类型检查器 | **跑**：`mypy` 管严格度、`pyright` 管与编辑器一致，**并集**才算过 | 2026-11-21 |
+| [56](#56-让-docs-能填-api-key凭据改成-openapi-声明) | `/docs` 里怎么填 API key | **`APIKeyHeader` + `Security(...)`**，`/docs` 顶部出 Authorize 按钮 | 2026-11-21 |
 
 ---
 
@@ -982,6 +983,18 @@
 | **决定** | **A**。定 `pyrightconfig.json`（`include` 四个目录 / `pythonVersion 3.12` / `venvPath` / **`typeCheckingMode: standard`** / `reportMissingTypeStubs: none`），CI 加独立一步 `Type check (editor parity)`。⭐ **规则定为「并集」**：mypy 与 pyright 都过才算过；若 pyright 报的写法 mypy 允许 → **改代码**，不加 `# pyright: ignore` |
 | **代价** ⚠️ | ① **+1 个开发依赖**（`pyright` 1.1.414，连带 `nodeenv`），📎 冷启 **10.3s** / 缓存后 **7.9s**；CI 每跑一次多约 20~40s<br>② **两套严格度要维护**：并集意味着「比任何一个都严」，某天可能出现「mypy 认为合法、pyright 认为不合法」的写法 → 那时必须改代码，不能加 ignore（这条规则本身是负担）<br>③ pyright 发版极快（1.1.4xx 周更）→ **无代码改动也可能变红**，靠 `uv sync --locked` 冻结版本兜住<br>④ `standard` 模式**不是**「比 mypy strict 更严」，它是**另一种**严格度 —— 本条只买「与编辑器一致」，不买「更严的类型检查」 |
 | **重审条件** | ① 出现「mypy 合法 / pyright 报错」且**确实是 pyright 误报**（不是我们代码问题）→ 才考虑降级为 `--level error` 之外的手段，并在本条记下具体案例；② CI 时间成为瓶颈（>5 min）→ 把 pyright 拆成只在 `push` 跑、PR 不跑；③ 将来改成「用 Pylance CLI / basedpyright」→ 只需换命令与配置，规则不变；④ 如果 pyright 因版本升级连续两次「无代码改动变红」→ 改成显式钉死版本号并用 renovate 类工具评审升级 |
+
+---
+
+## 56. 让 `/docs` 能填 API key（凭据改成 OpenAPI 声明）
+
+| 项 | 内容 |
+|---|---|
+| **背景** | 2026-11-21 学习者执行 RUNBOOK 时问「curl 和 `/docs` 里用是不是一样的」。取证发现 `/docs` 里**没法填 key**：`require_user` 用 `request.headers.get(HEADER_API_KEY)` 读头，**不是** `Header(...)` 参数 → FastAPI 生成 OpenAPI 时看不见它 → 每条路由 `parameters` 里没有 header、`components.securitySchemes` 是 `{}`（连 `Authorize` 按钮都没有）。📎 后果：所有需鉴权的端点点 Try it out **一律 401**，对接方第一反应是「服务坏了」（#94） |
+| **方案对比** | **A 改成 `api_key: Annotated[str, Header(alias=HEADER_API_KEY)]`**：✅ 改动最小 ❌ 那个输入框会**重复出现在每条路由**上，且仍然没有 `Authorize` 按钮<br>**B `APIKeyHeader` + `Security(...)`**：✅ `/docs` 顶部一个**一次性**的 Authorize；✅ 声明在子依赖里即可，6 条路由的 `Depends(require_user)` 写法**一行都不用改** ❌ OpenAPI 产物多一个 scheme，要定「`auto_error` 怎么设」<br>**C 只写文档「请用 curl」**：❌ 把易用性缺口变成一句说明文字，撞 401 的问题照旧 |
+| **决定** | **B**。`deps.py` 加模块级 `api_key_header = APIKeyHeader(name=HEADER_API_KEY, auto_error=False, description=...)`；`require_user` 增加参数 `api_key: Annotated[str \| None, Security(api_key_header)] = None`，函数体改用 `api_key` 而不是 `request.headers.get(...)`。⭐ 两个关键选择：① **`auto_error=False`** —— 让缺头时返回 `None`，由我们自己的 `_unauthorized()` 抛 401，**保住单一错误出口 + `WWW-Authenticate: ApiKey`**；② **`Security(...)` 写在子依赖里而不是每条路由上** —— 📎 实测 FastAPI 会摊平依赖链收集 security，所以调用方写法不变，`test_source_rules` 的 AST 守卫也不受影响 |
+| **代价** ⚠️ | ① **对外契约的产物变了**：`/openapi.json` 多一个 `securitySchemes.APIKeyHeader`，每条受保护操作多一个 `security` 字段 —— 消费 OpenAPI 的代码生成器会按它生成「需要鉴权」的客户端（通常这是好事，但属于可观测变化）<br>② **多一条必须记住的约定**：`auto_error` 必须保持 `False`，否则 401 会变成 FastAPI 自己的形状（📎 变异实测：改回 `True` → `WWW-Authenticate` 头消失，RFC 9110 那条断言红）<br>③ `require_user` 的签名多一个参数（虽然调用方不用改）<br>④ 依赖 `Security` 在子依赖里的传播行为 —— 这是 FastAPI 的实现细节，升级时要留意（已用用例钉住） |
+| **重审条件** | ① 要把 `/docs` 也关掉（`APP_ENV=prod` 已关）或换成自建文档站 → 本条的收益只对 `/docs` 有效，届时重新评估；② 若将来支持多种凭据（如 `Authorization: Bearer` 给浏览器、`X-API-Key` 给服务端）→ 变成多个 scheme，需要重写这段声明并考虑 `/docs` 里 Authorize 只能填一个的问题；③ 若 FastAPI 改变「子依赖里的 `Security` 是否传播到 operation」的行为 → 守卫用例 `test_openapi_declares_api_key_security` 会红，按新行为调整 |
 
 ---
 ## 待定 / 需要以后拍板的
