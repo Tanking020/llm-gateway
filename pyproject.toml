@@ -2,9 +2,9 @@
 [project]
 
 # 本项目的名字（也是打包出来的包名，必须和 src\app 的包结构对得上）
-name = "llm-app-engineering"
+name = "llm-gateway"
 
-# 本项目 llm-app-engineering 自己的版本号
+# 本项目 llm-gateway 自己的版本号
 version = "0.1.0"
 
 # 本项目自己的一句话说明
@@ -39,7 +39,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 # ============ 下面是告诉构建器：包在哪 ============
-# 但我们的代码在 src/app（不是根目录下的 llm-app-engineering），所以要显式告诉它。
+# 但我们的代码在 src/app（不是根目录下的 llm-gateway），所以要显式告诉它。
 # 这里写的是【目录路径】：src 下面有个叫 app 的包
 [tool.hatch.build.targets.wheel]
 packages = ["src/app"]

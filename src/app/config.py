@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # 例如字段 app_name ← 环境变量 APP_NAME。这个映射是自动的，不用手写
 
     # 应用名：字符串类型
-    app_name: str = "llm-app-engineering"
+    app_name: str = "llm-gateway"
 
     # 运行环境 Literal["dev", "prod"] = 只允许这两个值，
     # 写成别的（如 APP_ENV=test）会直接校验失败 —— 这就是"枚举式约束"

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# llm-app-engineering —— 生产镜像
+# LLM Gateway —— 生产镜像
 #
 # 阶段 1（builder）：装依赖，最终只把 /opt/venv 交出去（uv 与源码都留在 builder，不进最终层）
 # 阶段 2（runtime）：只带 venv + alembic 配置，以非 root 用户运行
