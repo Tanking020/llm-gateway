@@ -22,16 +22,16 @@ jobs:
         run: uv sync --locked
 
       - name: Format check
-        run: uv run ruff format --check .
+        run: uv run python scripts/check.py format
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run python scripts/check.py lint
 
       - name: Type check
-        run: uv run mypy .
+        run: uv run python scripts/check.py mypy
 
       - name: Type check (editor parity)
-        run: uv run pyright
+        run: uv run python scripts/check.py pyright
 
       - name: Test
-        run: uv run pytest -q
+        run: uv run python scripts/check.py test

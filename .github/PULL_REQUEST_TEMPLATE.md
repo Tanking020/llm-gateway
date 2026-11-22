@@ -14,7 +14,7 @@
 
 ## 自检（缺一项就别点 Ready for review）
 
-- [ ] **五道门全绿**：`uv run ruff format --check . ; uv run ruff check . ; uv run mypy . ; uv run pyright ; uv run pytest -q`
+- [ ] **五道门全绿**：`uv run python scripts/check.py`（命令与参数只在 `scripts/check.py` 定义）
 - [ ] **行为有牙**：新行为至少一条用例；关键路径做了变异（改坏一行 → 用例红 → 还原）并在描述里写结果
 - [ ] **契约同步**：端点 / 错误码 / 必填头有变 → `docs/api.md` + `docs/architecture.md`
 - [ ] **文档同步**：取舍变化 → `docs/decisions.md` 加 ADR（背景 / 方案对比 / 决定 / **代价** / 重审条件）

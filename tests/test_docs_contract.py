@@ -21,6 +21,7 @@ _API_MD = _ROOT / "docs" / "api.md"
 _README = _ROOT / "README.md"
 _TESTS_README = _ROOT / "tests" / "README.md"
 _PRODUCTION_READINESS = _ROOT / "docs" / "production-readiness.md"
+_CI_YML = _ROOT / ".github" / "workflows" / "ci.yml"
 
 # 文档路由不写进端点表（它们随 APP_ENV 关闭，不是业务契约）
 # 【注意】：/metrics 同理 —— 它是运维端点，`include_in_schema=False`，
@@ -74,8 +75,7 @@ def test_api_md_endpoint_table_matches_routes() -> None:
 _COUNT_CLAIMS: list[tuple[Path, str, int]] = [
     (_README, r"tests-(\d+)%20passed", 1),
     (_README, r"\n> (\d+) tests · ", 1),
-    (_README, r"uv run pytest -q\s+# (\d+) 个用例", 1),
-    (_README, r"\| `pytest -q` \| \*\*(\d+) passed\*\* \|", 1),
+    (_README, r"\| `test` \| \*\*(\d+) passed\*\* \|", 1),
     (_README, r"# (\d+) 个用例，按「测哪一层」分为 \d+ 个文件", 1),
     (_TESTS_README, r"^\*\*(\d+) 个用例\*\*，按「测哪一层」", 1),
     (_PRODUCTION_READINESS, r"\*\*(\d+) 个用例\*\*", 2),
@@ -181,3 +181,22 @@ def test_relative_links_point_to_tracked_files() -> None:
             broken.append(f"{doc} -> {target}")
 
     assert not broken, f"这些相对链接指向未提交的文件（线上会 404）：{broken}"
+
+
+# ============ 五道门只允许定义在 scripts/check.py（2026-11-22 / 决策 63）============
+
+
+def test_ci_runs_gate_script_not_bare_commands() -> None:
+    """回归：CI 只许调 `scripts/check.py`（改了门槛忘了同步 CI 会红）
+
+    【注意】：这是回归守卫，不是配置校验器 —— 它防的是「图快，在 YAML 里又手敲一遍
+        `uv run pytest -q`」，那种改动一定是明文出现在文件里的。
+    """
+    text = _CI_YML.read_text(encoding="utf-8")
+    assert "scripts/check.py" in text, "ci.yml 没有调用 scripts/check.py"
+    bare = [
+        needle
+        for needle in ("ruff format", "ruff check", "uv run mypy", "uv run pyright", "pytest")
+        if needle in text
+    ]
+    assert not bare, f"ci.yml 里又写了裸命令 {bare}；门槛只在 scripts/check.py 定义"

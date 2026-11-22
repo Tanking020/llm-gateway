@@ -199,14 +199,12 @@ curl 默认不跟随，加 `-L` 才看到 **405**（📎 两者都实测过）�
 
 ## §4 质量门与测试
 
-**五道门，提交前全绿**：
+**五道门，提交前全绿**（命令与参数只在 [`scripts/check.py`](scripts/check.py) 定义，决策 63）：
 
 ```bash
-uv run ruff format .          # 1 格式化（加 --check 只检查不改）
-uv run ruff check .           # 2 lint
-uv run mypy .                 # 3 类型检查（strict）
-uv run pyright                # 4 类型检查（与编辑器一致，只拦 error）
-uv run pytest -q              # 5 回归（不碰真上游、不碰开发库）
+uv run python scripts/check.py           # 五道门全跑：format / lint / mypy / pyright / test
+uv run python scripts/check.py --list    # 看每道门实际跑的命令（= CI 跑的那些）
+uv run python scripts/check.py test      # 只跑一道（CI 里每道门是一个独立 step）
 ```
 
 | 我要什么 | 命令 |
@@ -220,19 +218,24 @@ uv run pytest -q              # 5 回归（不碰真上游、不碰开发库）
 ⚠️ 报「全绿」前**确认范围**：一律用 `.`，别缩成 `src/`（否则 `tests/`、`scripts/` 成盲区）。
 ⚠️ **`mypy` 绿 ≠ 编辑器绿** —— 那种情况跑 `uv run pyright`，见 [§13](#13-排查症状--先跑什么)。
 
-📎 **2026-11-21 实测（五道门全绿）**：
+📎 **2026-11-22 实测（`uv run python scripts/check.py` 全绿）**：
 
 ```text
-ruff format --check  45 files already formatted          exit 0
-ruff check           All checks passed!                  exit 0
-mypy                 Success: no issues found in 48 source files
-pyright              0 errors, 0 warnings, 0 informations
-pytest -q            226 passed in 14.70s                exit 0
+质量门 5 道 | <仓库根>
+    ok     0.1s  format  格式化检查（只读）
+    ok     0.1s  lint    lint（E/F/I/UP/B/TID）
+    ok     0.5s  mypy    类型检查（strict）
+    ok     8.4s  pyright 类型检查（对齐编辑器）
+    ok    16.0s  test    回归测试
 ```
+
+逐道的原始输出：`ruff format --check` → **46 files already formatted**；
+`ruff check` → **All checks passed!**；`mypy` → **Success: no issues found in 49 source files**；
+`pyright` → **0 errors, 0 warnings, 0 informations**；`pytest -q` → **228 passed**。
 
 📎 子集命令实测：`tests/test_adapter_http.py` → **28 passed**；
 `-k "usage or plain_dict"` → **8 passed, 200 deselected**；`--cov` → **TOTAL 93%**；
-`coverage html` → `htmlcov\index.html`；`--collect-only -q` 末行 `208 tests collected`。
+`coverage html` → `htmlcov\index.html`；`--collect-only -q` 末行 `228 tests collected`。
 
 ---
 
@@ -494,7 +497,7 @@ uv run python scripts/probe_graceful_shutdown.py --hold 5   # 把窗口顶穿
 
 | # | 检查 | 命令 | 通过判据 |
 |---|---|---|---|
-| 1 | 五道门全绿 | `uv run ruff format --check . ; uv run ruff check . ; uv run mypy . ; uv run pyright ; uv run pytest -q` | 0 error / `pyright` 0 errors / 全 passed（📎 当前 **208 passed**） |
+| 1 | 五道门全绿 | `uv run python scripts/check.py` | 每道门都 `ok`（脚本逐道打印耗时；任一道红就停并回显命令） |
 | 2 | 模型与迁移一致 | `uv run alembic check` | `No new upgrade operations detected` |
 | 3 | 生产配置正确 | 检查 `.env` | `APP_ENV=prod`、`DEBUG=false`、`LLM_API_KEY` 已填（⚠️ **本地演示用 `dev` 即可**，切 `prod` 会关掉 `/docs`） |
 | 4 | 镜像能构建 | `docker compose build` | exit 0，镜像 **284 MB**（⚠️ 别接 PowerShell 管道，否则退出码会假报 1，见 §6）。**不许加 `--build-arg PIP_INDEX_URL`** —— 索引必须与 `uv.lock` 一致（#101） |
