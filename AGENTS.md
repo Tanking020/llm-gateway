@@ -50,4 +50,4 @@
 | 决策 `N` | [docs/decisions.md](docs/decisions.md) 的第 N 条 ADR（含代价与重审条件） |
 | `#N` | [docs/todos.md](docs/todos.md) 的编号（唯一事实源，**永不重用**） |
 | 坑 `K<n>` | [docs/DEVLOG.md](docs/DEVLOG.md) §三 的踩坑条目 |
-| 五道门 | `ruff format` / `ruff check` / `mypy` / `pyright` / `pytest` |
+| 五道门 | `format` / `lint` / `mypy` / `pyright` / `test`；唯一入口 `uv run python scripts/check.py` |

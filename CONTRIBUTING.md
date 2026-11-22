@@ -23,20 +23,21 @@ cp .env.example .env    # Windows: Copy-Item .env.example .env
 ## 2. 质量门（提交前必须全绿，CI 会再跑一遍）
 
 ```bash
-uv run ruff format .     # 1. 格式化
-uv run ruff check .       # 2. lint（E/F/I/UP/B/TID）
-uv run mypy .             # 3. 类型检查（strict）
-uv run pyright            # 4. 类型检查（与编辑器 Pylance 对齐，只拦 error）
-uv run pytest -q          # 5. 回归测试（不碰真上游、不碰开发库）
+uv run python scripts/check.py           # 五道门全跑（前一道红就停）
+uv run python scripts/check.py --list    # 看每道门实际跑的命令
+uv run python scripts/check.py test      # 只跑一道：format / lint / mypy / pyright / test
 ```
 
-| 门槛 | 标准 |
+⚠️ **命令与参数只在 [scripts/check.py](scripts/check.py) 定义**（决策 63）—— 同一串命令曾分散在
+本文件 / README / RUNBOOK / PR 模板 / CI 五处，失效方式不是「有人写错」，而是**只改了一部分**。
+
+| 门 | 标准 |
 |---|---|
-| `ruff format --check .` | 0 diff |
-| `ruff check .` | 0 error（`--fix` 后仍报的必须手改） |
-| `mypy .` | `--strict` 0 error；**不允许静默加** `# type: ignore`（要加必须写原因） |
+| `format` | 0 diff |
+| `lint` | 0 error（`--fix` 后仍报的必须手改） |
+| `mypy` | `--strict` 0 error；**不允许静默加** `# type: ignore`（要加必须写原因） |
 | `pyright` | 0 error。**规则是「并集」**：`mypy` 与 `pyright` 都过才算过。若 pyright 报的写法 mypy 允许 → **改代码**，不加 `# pyright: ignore` |
-| `pytest` | 全绿；**新增行为必须带用例** |
+| `test` | 全绿；**新增行为必须带用例** |
 
 ⚠️ **为什么两道类型检查都要跑**（[决策 55](docs/decisions.md)）：两者对**同一个写法**的推断会分叉。
 📎 实测 `getattr(obj, "名字", None)`：`mypy` 把它当 `Any` 从此什么错都放行，`pyright` 当 `object` 于是 `int(object)` 报错。
@@ -165,6 +166,7 @@ uv run alembic downgrade base && uv run alembic upgrade head
 | 学到一条跨项目结论或原理 | **不属于本仓库** —— 写进跨项目笔记，不要写进 `docs/` |
 | 改了阶段进度 | [docs/roadmap.md](docs/roadmap.md) |
 | 改了协作约定 | [AGENTS.md](AGENTS.md)（AI 与人的共同约定；质量门仍以本文件 §2 为准） |
+| 改质量门的命令 / 参数 | 只改 `scripts/check.py` 的 `GATES` 一处（决策 63）；CI 与各文档只调用它 —— 在 `ci.yml` 里裸写 `ruff` / `mypy` / `pytest` 会被 `test_ci_runs_gate_script_not_bare_commands` 拦下 |
 | **改版本号 / 发版** | 只改 [pyproject.toml](pyproject.toml) 一处 —— 运行时从打包元数据读（`app/api/app.py` 的 `_app_version()`），`uv lock` 会同步 `uv.lock`；同时补 [CHANGELOG.md](CHANGELOG.md)。⚠️ **不要在代码里写死版本号**，`test_openapi_version_comes_from_the_packaging_metadata` 会红 |
 
 **单一真相**：一条事实只在一个文件里展开，其它地方只引用编号（`#38` / `决策 28` / `坑 K7` / `1.138`）。
@@ -179,6 +181,7 @@ uv run alembic downgrade base && uv run alembic upgrade head
 | 模型白名单 | `src/app/api/app.py` 的 `KNOWN_MODELS` | `/v1/models*` 与两条 chat 的校验（#48） |
 | 镜像索引 | `Dockerfile` 的 `ARG PIP_INDEX_URL` | `uv sync --locked`（必须等于 `uv.lock` 的 registry，决策 60） |
 | 用例数 | pytest 实际收集 | `test_docs_contract.py` 拿它比对 README / tests-README / production-readiness |
+| 质量门的命令与参数 | [scripts/check.py](scripts/check.py) 的 `GATES` | CI 的每个 step 与各文档的「怎么跑」（决策 63；`ci.yml` 里出现裸命令会红） |
 
 ## 7. 安全
 
@@ -191,7 +194,7 @@ uv run alembic downgrade base && uv run alembic upgrade head
 
 - 标题与提交信息同规范；正文写「为什么」+「怎么验证的」。
 - 提交前自查：五道质量门全绿、`git status` 无多余文件、文档已按 §6 更新。
-- CI（`.github/workflows/ci.yml`）会在 push 与 PR 上跑：`uv sync --locked` → `ruff format --check` → `ruff check` → `mypy` → `pytest`。
+- CI（`.github/workflows/ci.yml`）会在 push 与 PR 上跑：`uv sync --locked` → 五道门（每道门一个 step，都调 `scripts/check.py`）。
   **`--locked` 是刻意的**：它断言 `uv.lock` 与 `pyproject.toml` 同步 —— 改了依赖却忘了 `uv lock`，CI 立刻红。
 
 ## 9. 许可证
