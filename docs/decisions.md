@@ -359,7 +359,7 @@
 | **重审条件** | —— |
 | ⭐ 为什么分家 | **代码注释的读者在编辑器里**（等宽字体下彩色 emoji 宽度不齐、干扰对齐）；**md 的读者在渲染视图里**（emoji 是有效的层级扫读提示） |
 
-> 📍 原始位置：`ai-collaboration.md` §4.4b；[.github/copilot-instructions.md](../.github/copilot-instructions.md) §三 6b
+> 📍 原始位置：`ai-collaboration.md` §4.4b；`.github/copilot-instructions.md` §三 6b
 
 ---
 
