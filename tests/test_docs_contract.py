@@ -5,7 +5,9 @@
 判据：**「改一处会不会漏另一处」** —— 会漏的，就必须让它变红。
 """
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -134,3 +136,48 @@ def test_tests_readme_per_file_counts_match_collection() -> None:
     )
     mismatched = {n: (documented[n], per_file[n]) for n in per_file if documented[n] != per_file[n]}
     assert not mismatched, f"逐文件用例数不一致（文档, 实际）：{mismatched}"
+
+
+# ============ 相对链接必须指向【已提交】的文件（2026-11-22）============
+_LINK = re.compile(r"\]\(([^)\s]+)\)")
+_EXTERNAL = ("http://", "https://", "mailto:")
+
+
+def _tracked_files() -> set[str] | None:
+    """仓库里【已提交】的文件（posix 相对路径）；不在 git 工作区时返回 None"""
+    try:
+        done = subprocess.run(["git", "ls-files", "-z"], cwd=_ROOT, capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return {p for p in done.stdout.decode("utf-8").split("\0") if p}
+
+
+def test_relative_links_point_to_tracked_files() -> None:
+    """回归：相对链接的目标必须是【已提交】的文件
+
+    【注意】：只判断「磁盘上存不存在」不够 —— 本地有、仓库没有的文件（例如被 .gitignore
+        排除的 .github/copilot-instructions.md）在 GitHub 上是 404，而本机永远检查不出来。
+        📎 2026-11-22 实测：974 条链接报 0 broken，线上实际 14 处 404。
+    """
+    tracked = _tracked_files()
+    if tracked is None:
+        pytest.skip("不在 git 工作区（例如源码 tarball）：无法判断哪些文件已提交")
+
+    # 目录也可能被链接（如 ../.github/ISSUE_TEMPLATE），只要它下面有已提交文件就算通
+    dirs_with_files = {p.rsplit("/", 1)[0] for p in tracked if "/" in p}
+    broken: list[str] = []
+    for doc in sorted(p for p in tracked if p.endswith(".md")):
+        text = (_ROOT / doc).read_text(encoding="utf-8")
+        for match in _LINK.finditer(text):
+            target = match.group(1)
+            if target.startswith(_EXTERNAL) or target.startswith("#"):
+                continue
+            path = target.split("#")[0]
+            if not path:
+                continue
+            resolved = os.path.normpath(os.path.join(os.path.dirname(doc), path))
+            if resolved.replace("\\", "/") in tracked | dirs_with_files:
+                continue
+            broken.append(f"{doc} -> {target}")
+
+    assert not broken, f"这些相对链接指向未提交的文件（线上会 404）：{broken}"

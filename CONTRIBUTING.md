@@ -164,6 +164,7 @@ uv run alembic downgrade base && uv run alembic upgrade head
 | 踩了一个可复现的坑 | [docs/DEVLOG.md](docs/DEVLOG.md) §三 加一行（`K<n>`），**写出复现方式** |
 | 学到一条跨项目结论或原理 | **不属于本仓库** —— 写进跨项目笔记，不要写进 `docs/` |
 | 改了阶段进度 | [docs/roadmap.md](docs/roadmap.md) |
+| 改了协作约定 | [AGENTS.md](AGENTS.md)（AI 与人的共同约定；质量门仍以本文件 §2 为准） |
 | **改版本号 / 发版** | 只改 [pyproject.toml](pyproject.toml) 一处 —— 运行时从打包元数据读（`app/api/app.py` 的 `_app_version()`），`uv lock` 会同步 `uv.lock`；同时补 [CHANGELOG.md](CHANGELOG.md)。⚠️ **不要在代码里写死版本号**，`test_openapi_version_comes_from_the_packaging_metadata` 会红 |
 
 **单一真相**：一条事实只在一个文件里展开，其它地方只引用编号（`#38` / `决策 28` / `坑 K7` / `1.138`）。
