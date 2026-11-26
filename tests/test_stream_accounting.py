@@ -174,6 +174,57 @@ def test_index_not_zero_is_logged(client: TestClient) -> None:
     )
 
 
+def test_delta_not_dict_is_logged(client: TestClient) -> None:
+    """回归：`delta` 不是 dict 时必须留一行 warning（#102）
+
+    不这么写就会错：`_as_dict()` 把非 dict 兜成 `{}` → `content` 变 `None` → 走进
+        「首帧 / 结束帧」那条静默分支 —— 客户端缺字，而服务端零日志，线上查不到。
+    【注意】：`delta` 缺失（None）是正常帧（纯 `finish_reason` / 纯 `usage` 帧），
+        那种情况【不该】报警 —— 第二条断言钉住这一点，否则每个正常流都会被刷屏。
+    """
+
+    class _Collect(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.messages: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.messages.append(f"{record.levelname}: {record.getMessage()}")
+
+    handler = _Collect()
+    # 【注意】：直接挂在 app 模块的 logger 上 —— dictConfig 之后应用 logger 可能不向 root
+    #   传播，caplog 会捕不到（与 test_index_not_zero_is_logged 同因）
+    target = logging.getLogger("app.api.app")
+    target.addHandler(handler)
+
+    def _delta_warnings() -> list[str]:
+        return [m for m in handler.messages if m.startswith("WARNING") and "delta" in m]
+
+    try:
+        # ① 非 dict 的 delta → 必须报警
+        _stream(
+            client,
+            [
+                {"choices": [{"index": 0, "delta": {"content": "大"}}]},
+                {"choices": [{"index": 0, "delta": "oops"}]},
+            ],
+        )
+        assert _delta_warnings(), f"delta 非 dict 时没有 warning，日志：{handler.messages}"
+
+        # ② delta 缺失（正常帧）→ 一条都不该有
+        handler.messages.clear()
+        _stream(
+            client,
+            [
+                {"choices": [{"index": 0, "delta": {"content": "好"}}]},
+                {"choices": [{"index": 0, "finish_reason": "stop"}]},
+            ],
+        )
+        assert not _delta_warnings(), f"delta 缺失的正常帧不该报警，日志：{handler.messages}"
+    finally:
+        target.removeHandler(handler)
+
+
 def test_duplicate_usage_is_recorded_only_once(client: TestClient, db_path: Path) -> None:
     """上游在好几帧里重复给 usage：只认第一份，绝不重复扣费"""
     _stream(

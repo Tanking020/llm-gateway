@@ -5,7 +5,7 @@
 [![CI](https://github.com/Tanking020/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanking020/llm-gateway/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-228%20passed-success)
+![Tests](https://img.shields.io/badge/tests-230%20passed-success)
 ![Coverage](https://img.shields.io/badge/branch%20coverage-94%25-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -19,7 +19,7 @@
 > **Spend is reconcilable** — one billing row per call, with a four-state machine that separates
 > *"is the amount correct"* from *"is the content empty"*.
 >
-> 228 tests · 94% branch coverage · CI on every push.
+> 230 tests · 94% branch coverage · CI on every push.
 
 ---
 
@@ -273,7 +273,7 @@ uv run python scripts/check.py --list    # 看每道门实际跑的命令
 | `format` / `lint` | 全绿（46 files） |
 | `mypy --strict` | 全绿（49 source files，含 `tests/` 与 `scripts/`） |
 | `pyright`（`pyrightconfig.json`） | 0 errors（与编辑器同一套判断；📎 变异「改回 `getattr` 写法」→ mypy 仍绿而 pyright **红**） |
-| `test` | **228 passed** |
+| `test` | **230 passed** |
 | 分支覆盖 | **94%**（`llm_client.py` / `models.py` / `errors.py` / `logging_setup.py` / `constants.py` 100%） |
 | CI | `.github/workflows/ci.yml`：push / PR 跑 `uv sync --locked` + 五道门（每道门一个 step，都调 `scripts/check.py`） |
 
@@ -330,7 +330,7 @@ uv run python scripts/check.py --list    # 看每道门实际跑的命令
 │   └── main.py             # CLI：上游连通性检查
 ├── alembic/                # 数据库迁移：env.py（连库 + 指向 metadata）+ versions/（每个迁移一个文件）
 ├── alembic.ini             # 迁移配置（连接串不写在这里，由 settings 注入）
-├── tests/                  # 228 个用例，按「测哪一层」分为 21 个文件
+├── tests/                  # 230 个用例，按「测哪一层」分为 22 个文件
 ├── docs/                   # 决策 · 架构 · 契约 · 开发日志 · 待办 · 上线评估
 ├── README.md               # 首屏：能力 / 架构 / 快速开始 / 实测数字
 ├── CHANGELOG.md            # 版本变更（能力清单 / 关键取舍 / 已知边界）
