@@ -167,6 +167,10 @@ select = ["E", "F", "I", "UP", "B", "TID"]
 # test_access_log.py 要【真的做 TCP 客户端】才能让 uvicorn 的 ProxyHeadersMiddleware 进栈
 #   （TestClient 直连 ASGI，那层中间件根本不存在）。判据同 concurrency：从外面连 127.0.0.1
 "tests/test_access_log.py" = ["TID251"]
+# test_stream_disconnect.py 要【真的做 TCP 客户端】并在中途断开 —— TestClient 直连 ASGI，
+#   "客户端关连接"这件事根本不存在（httpx 的 stream 上下文退出只影响本地缓冲区），
+#   服务端收不到取消信号，也就测不到 except BaseException 那条分支。判据同上
+"tests/test_stream_disconnect.py" = ["TID251"]
 # playground/ 是学习实验脚本，刻意直接写 httpx（不经过适配器），不是业务代码
 "playground/*.py" = ["TID251"]
 # scripts/ 是【验收探针】：它必须当 HTTP 客户端去敲【本项目的服务】，与 playground 同型
