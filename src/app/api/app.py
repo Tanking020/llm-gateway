@@ -925,7 +925,14 @@ async def chat_stream(
                     logger.warning("上游候选 index=%s，只处理 0，已丢弃", choice.get("index"))
                     continue
                 # DeepSeek 每帧都有 delta，但换上游可能变，这里同样是防御性编程
-                delta = _as_dict(choice.get("delta"))
+                # 【注意】：只对「非 None 且不是 dict」报警 —— delta 缺失（None）是正常帧
+                #   （纯 finish_reason / 纯 usage 帧），写成 `not isinstance(...)` 会把正常流刷屏。
+                #   不报警的话，非 dict 的 delta 会被 _as_dict 兜成 {} → content 为 None →
+                #   走「首帧 / 结束帧」那条静默分支：客户端缺字而服务端零日志（待办 #102）
+                raw_delta = choice.get("delta")
+                if raw_delta is not None and not isinstance(raw_delta, dict):
+                    logger.warning("上游 delta 不是对象，已丢弃: type=%s", type(raw_delta).__name__)
+                delta = _as_dict(raw_delta)
 
                 # 结束原因：只在最后一帧有值（"stop" = 模型自己说完 / "length" = 被截断）
                 #   必须放在下面 content 的判断【之前】，否则会被 continue 跳过

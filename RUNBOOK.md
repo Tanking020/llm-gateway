@@ -231,11 +231,11 @@ uv run python scripts/check.py test      # 只跑一道（CI 里每道门是一�
 
 逐道的原始输出：`ruff format --check` → **46 files already formatted**；
 `ruff check` → **All checks passed!**；`mypy` → **Success: no issues found in 49 source files**；
-`pyright` → **0 errors, 0 warnings, 0 informations**；`pytest -q` → **228 passed**。
+`pyright` → **0 errors, 0 warnings, 0 informations**；`pytest -q` → **229 passed**。
 
 📎 子集命令实测：`tests/test_adapter_http.py` → **28 passed**；
 `-k "usage or plain_dict"` → **8 passed, 200 deselected**；`--cov` → **TOTAL 93%**；
-`coverage html` → `htmlcov\index.html`；`--collect-only -q` 末行 `228 tests collected`。
+`coverage html` → `htmlcov\index.html`；`--collect-only -q` 末行 `229 tests collected`。
 
 ---
 
